@@ -5,6 +5,12 @@
   "init": "ATSP6;ATST96;ATSH7E0;ATCRA7E8;ATFCSH7E0;ATFCSD300000;ATFCSM1;ATWUC;ATWUA7E0,023E005555555555;ATWUD32;ATWUI04;",
   "pids": [
     {
+      "pid": "2250171",
+      "parameters": {
+        "ENGINE_RPM": "[B4:B5]/4"
+      }
+    },
+    {
       "pid": "22621A1",
       "parameters": {
         "CHARGE_AIR_TEMP_PRE_IC": "[B4:B5]*0.25-50"

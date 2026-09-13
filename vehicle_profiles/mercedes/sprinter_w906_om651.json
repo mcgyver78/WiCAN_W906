@@ -169,7 +169,7 @@
     {
       "pid": "22601F1",
       "parameters": {
-        "ECU_DISTANCE": "[B4:B5]*2"
+        "ECU_DISTANCE": "[B4:B7]*2"
       }
     }
   ]

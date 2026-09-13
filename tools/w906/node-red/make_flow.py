@@ -68,7 +68,7 @@ split_code = (
     "    if (m.kind === 'gauge') return { topic: k, payload: p[k] };\n"
     "    return { topic: k, payload: (p[k].toFixed(m.digits) + ' ' + m.unit).trim() };\n"
     "});\n"
-    "out.push({ payload: offline ? 'schläft (Zündung aus)' : 'aktiv' });\n"
+    "out.push({ payload: offline ? 'schläft (IGN aus)' : 'aktiv' });\n"
     "return out;" % (json.dumps(meta, ensure_ascii=False), json.dumps([v[0] for v in VALUES])))
 
 wires = []
@@ -118,7 +118,7 @@ def status_text(nid, label, order, y):
             "name": label, "label": label, "format": "{{msg.payload}}", "layout": "row-spread", "className": "",
             "style": False, "font": "", "fontSize": 16, "color": "#000000", "x": 620, "y": y, "wires": []}
 
-nodes.append(status_text("w906_ui_ecu", "Motorsteuergerät", 2, 620))
+nodes.append(status_text("w906_ui_ecu", "ECU", 2, 620))
 nodes.append({"id": "w906_live_trigger", "type": "trigger", "z": TAB, "name": "Datenfluss", "op1": "live",
               "op2": "keine Daten (>30 s)", "op1type": "str", "op2type": "str", "duration": "30", "extend": True,
               "overrideDelay": False, "units": "s", "reset": "", "bytopic": "all", "topic": "topic", "outputs": 1,

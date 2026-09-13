@@ -1,0 +1,62 @@
+{
+  "car_model": "Mercedes-Benz: Sprinter W906 OM651 (EU)",
+  "note": "Experimental, EU vehicles only (US Sprinter NCV3 profiles are not compatible). Needs a firmware with the ATWU wake-up commands, see W906.md in github.com/mcgyver78/WiCAN_W906.",
+  "comment": "Engine ECU (Delphi CRD3) is addressed physically on 7E0/7E8. CAN captures with Xentry show the diagnostic bus starting its traffic right after the first tester frame to 7E0, so a physical TesterPresent (as Xentry pads it with 55) is used as wake-up frame. Mode 01 PIDs are the ones reported as supported by a EU W906 in meatpiHQ/wican-fw#520 and still need to be verified on the OM651.",
+  "init": "ATSP6;ATST96;ATSH7E0;ATCRA7E8;ATFCSH7E0;ATFCSD300000;ATFCSM1;ATWUC;ATWUA7E0,023E005555555555;ATWUD32;ATWUI04;",
+  "pids": [
+    {
+      "pid": "01051",
+      "parameters": {
+        "COOLANT_TMP": "B3-40"
+      }
+    },
+    {
+      "pid": "010C1",
+      "parameters": {
+        "ENGINE_RPM": "[B3:B4]*0.25"
+      }
+    },
+    {
+      "pid": "010D1",
+      "parameters": {
+        "SPEED": "B3"
+      }
+    },
+    {
+      "pid": "010F1",
+      "parameters": {
+        "INTAKE_AIR_TMP": "B3-40"
+      }
+    },
+    {
+      "pid": "01101",
+      "parameters": {
+        "MAF": "[B3:B4]*0.01"
+      }
+    },
+    {
+      "pid": "01111",
+      "parameters": {
+        "THROTTLE": "B3/2.55"
+      }
+    },
+    {
+      "pid": "01231",
+      "parameters": {
+        "FUEL_PRESSURE": "[B3:B4]*10"
+      }
+    },
+    {
+      "pid": "01421",
+      "parameters": {
+        "LV_V": "[B3:B4]/1000"
+      }
+    },
+    {
+      "pid": "01461",
+      "parameters": {
+        "TMP_A": "B3-40"
+      }
+    }
+  ]
+}

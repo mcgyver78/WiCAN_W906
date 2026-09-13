@@ -2,6 +2,9 @@
 
 [www.meatpi.com](https://www.meatpi.com)
 ---
+> **WiCAN_W906 fork:** adds Mercedes-Benz Sprinter W906 (EU) support – CAN wake-up frames (`ATWU…`), a vehicle profile and CAN log analysis tools. See [W906.md](W906.md) (German).
+
+
 ### [Documentation](https://meatpihq.github.io/wican-fw/) | [Supported Vehicles](https://meatpihq.github.io/wican-fw/config/automate/supported_vehicles) | [Firmware updates](https://github.com/meatpiHQ/wican-fw/releases/) | [Discord server](https://discord.com/invite/2hpHVDmyfw) | [Reddit](https://www.reddit.com/r/wican/)
 
 ## **WiCAN PRO Recommended**

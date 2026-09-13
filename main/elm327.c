@@ -90,6 +90,25 @@ typedef struct __xelm327_config
 static _xelm327_config_t elm327_config;
 static SemaphoreHandle_t elm327_mutex = NULL;
 
+#define ELM327_WAKE_MAX_FRAMES			4
+#define ELM327_WAKE_FRAME_GAP_MS		10
+#define ELM327_WAKE_HOLDOFF_US			(1000*1000)
+
+// WiCAN extension (not part of the ELM327 command set): raw CAN frames that are
+// sent to wake up a sleeping diagnostic bus/gateway before requests are sent,
+// e.g. on the Mercedes-Benz Sprinter W906. Configured with the ATWUx commands.
+typedef struct __xelm327_wake
+{
+	twai_message_t frames[ELM327_WAKE_MAX_FRAMES];
+	int64_t last_wake_time;
+	int64_t last_rsp_time;
+	uint32_t delay_ms;
+	uint32_t idle_ms;
+	uint8_t count;
+}_xelm327_wake_t;
+
+static _xelm327_wake_t elm327_wake;
+
 static void elm327_set_default_config(bool reset_protocol)
 {
 	// Header or ID settings
@@ -122,6 +141,11 @@ static void elm327_set_default_config(bool reset_protocol)
 	elm327_config.echo = 1;
 	elm327_config.space_print = 1;
 	elm327_config.display_dlc = 0;
+
+	// Wake-up settings
+	memset(&elm327_wake, 0, sizeof(elm327_wake));
+	elm327_wake.delay_ms = 500;
+	elm327_wake.idle_ms = 5000;
 }
 
 typedef char* (*elm327_command_callback)(const char* command_str);
@@ -450,6 +474,132 @@ static char* elm327_set_fc_data(const char* command_str)
 	return (char*)ok_str;
 }
 
+static bool elm327_is_hex_str(const char *str, size_t len)
+{
+	for(size_t i = 0; i < len; i++)
+	{
+		if(!isxdigit((unsigned char)str[i])) return false;
+	}
+	return true;
+}
+
+/*
+ * WiCAN extension, add a raw wake-up frame (no ISO-TP PCI byte is added):
+ * - ATWUA xyz,dd..       11bit identifier, 0 to 8 data bytes
+ * - ATWUA wwxxyyzz,dd..  29bit identifier, 0 to 8 data bytes
+ */
+static char* elm327_wake_add_frame(const char* command_str)
+{
+	const char *id_str = command_str+3;
+	const char *separator = strchr(id_str, ',');
+
+	if(separator == NULL || elm327_wake.count >= ELM327_WAKE_MAX_FRAMES) return 0;
+
+	size_t id_size = separator - id_str;
+	const char *data_str = separator + 1;
+	size_t data_size = strlen(data_str);
+
+	if(!(id_size == 3 || id_size == 8) || (data_size % 2) != 0 || data_size > 16) return 0;
+	if(!elm327_is_hex_str(id_str, id_size) || !elm327_is_hex_str(data_str, data_size)) return 0;
+
+	twai_message_t *frame = &elm327_wake.frames[elm327_wake.count];
+	memset(frame, 0, sizeof(twai_message_t));
+	frame->identifier = elm327_parse_hex_str(id_str, id_size);
+	frame->extd = (id_size == 8);
+
+	if((frame->extd == 0 && frame->identifier > TWAI_STD_ID_MASK) ||
+		(frame->extd == 1 && frame->identifier > TWAI_EXTD_ID_MASK))
+	{
+		return 0;
+	}
+
+	frame->data_length_code = data_size/2;
+	elm327_fill_data_from_hex_str(data_str, frame->data, frame->data_length_code);
+	elm327_wake.count++;
+
+	return (char*)ok_str;
+}
+
+// ATWUC: clear all wake-up frames
+static char* elm327_wake_clear(const char* command_str)
+{
+	if(strlen(command_str+3) != 0) return 0;
+
+	elm327_wake.count = 0;
+	elm327_wake.last_wake_time = 0;
+	elm327_wake.last_rsp_time = 0;
+
+	return (char*)ok_str;
+}
+
+// ATWUD hh: wait hh x 10ms after the wake-up frames were sent
+static char* elm327_wake_set_delay(const char* command_str)
+{
+	if(strlen(command_str+3) != 2 || !elm327_is_hex_str(command_str+3, 2)) return 0;
+
+	elm327_wake.delay_ms = elm327_parse_hex_str(command_str+3, 2) * 10;
+
+	return (char*)ok_str;
+}
+
+// ATWUI hh: wake up again before a request if the bus was quiet for hh seconds,
+// 00 only wakes up on the first request and after a request got no response
+static char* elm327_wake_set_idle(const char* command_str)
+{
+	if(strlen(command_str+3) != 2 || !elm327_is_hex_str(command_str+3, 2)) return 0;
+
+	elm327_wake.idle_ms = elm327_parse_hex_str(command_str+3, 2) * 1000;
+
+	return (char*)ok_str;
+}
+
+static void elm327_wake_send(void)
+{
+	for(uint8_t i = 0; i < elm327_wake.count; i++)
+	{
+		twai_message_t frame = elm327_wake.frames[i];
+
+		if( elm327_can_log != NULL)
+		{
+			elm327_can_log(&frame, ELM327_CAN_TX);
+		}
+		can_send(&frame, pdMS_TO_TICKS(ELM327_WAKE_FRAME_GAP_MS));
+		vTaskDelay(pdMS_TO_TICKS(ELM327_WAKE_FRAME_GAP_MS));
+	}
+
+	if(elm327_wake.count > 0)
+	{
+		vTaskDelay(pdMS_TO_TICKS(elm327_wake.delay_ms));
+	}
+	elm327_wake.last_wake_time = esp_timer_get_time();
+}
+
+// ATWUS: send the wake-up frames now
+static char* elm327_wake_send_now(const char* command_str)
+{
+	if(strlen(command_str+3) != 0) return 0;
+
+	elm327_wake_send();
+
+	return (char*)ok_str;
+}
+
+static bool elm327_wake_due(bool after_no_response)
+{
+	if(elm327_wake.count == 0) return false;
+
+	int64_t now = esp_timer_get_time();
+
+	// Don't flood the bus when the vehicle doesn't answer at all
+	if(elm327_wake.last_wake_time != 0 && (now - elm327_wake.last_wake_time) < ELM327_WAKE_HOLDOFF_US) return false;
+
+	if(after_no_response || elm327_wake.last_rsp_time == 0) return true;
+
+	return elm327_wake.idle_ms > 0 && (now - elm327_wake.last_rsp_time) > ((int64_t)elm327_wake.idle_ms * 1000);
+}
+
+static uint8_t elm327_transceive(twai_message_t *txframe, uint8_t req_expected_rsp, char *rsp, QueueHandle_t *queue);
+
 static char* elm327_set_protocol(const char* command_str)
 {
 	char new_protocol;
@@ -766,8 +916,6 @@ static int8_t elm327_request(char *cmd, char *rsp, QueueHandle_t *queue)
 		return 0;
 	}
 
-	twai_message_t rx_frame;
-
 	txframe.identifier = elm327_get_identifier();
 	txframe.extd = elm327_config.protocol == '7' || elm327_config.protocol == '9';
 
@@ -830,13 +978,49 @@ static int8_t elm327_request(char *cmd, char *rsp, QueueHandle_t *queue)
 	// 	ESP_LOGI(TAG, "sending %08X", txframe.identifier&TWAI_EXTD_ID_MASK);
 	// }
 	// ESP_LOG_BUFFER_HEX(TAG, txframe.data, 8);
+	uint8_t rsp_found = 0;
+
+	if(elm327_wake_due(false))
+	{
+		elm327_wake_send();
+	}
+
+	rsp_found = elm327_transceive(&txframe, req_expected_rsp, rsp, queue);
+
+	if(rsp_found == 0 && elm327_wake_due(true))
+	{
+		// Nothing answered, the bus may have gone back to sleep.
+		// Wake it up and retry the request once.
+		ESP_LOGW(TAG, "No response, sending wake-up frames and retrying");
+		elm327_wake_send();
+		rsp_found = elm327_transceive(&txframe, req_expected_rsp, rsp, queue);
+	}
+
+	if(rsp_found == 0)
+	{
+		strcat((char*)rsp, "NO DATA\r\r>");
+	}
+	else
+	{
+		elm327_wake.last_rsp_time = esp_timer_get_time();
+		strcat((char*)rsp, "\r>");
+	}
+	elm327_response(rsp, 0, queue);
+
+	return 0;
+}
+
+static uint8_t elm327_transceive(twai_message_t *txframe, uint8_t req_expected_rsp, char *rsp, QueueHandle_t *queue)
+{
+	twai_message_t rx_frame;
+
 	if( elm327_can_log != NULL)
 	{
-		elm327_can_log(&txframe, ELM327_CAN_TX);
+		elm327_can_log(txframe, ELM327_CAN_TX);
 	}
 	while( xQueueReceive(*can_rx_queue, ( void * ) &rx_frame, pdMS_TO_TICKS(1)) == pdPASS );
 	can_flush_rx();
-	can_send(&txframe, 1);
+	can_send(txframe, 1);
 	xEventGroupSetBits(elm327_event_group, ELM327_READY_TO_RECEIVE_CAN);
 
 	TickType_t xtimeout = (elm327_config.req_timeout*4.096) / portTICK_PERIOD_MS;
@@ -998,17 +1182,7 @@ static int8_t elm327_request(char *cmd, char *rsp, QueueHandle_t *queue)
 	xEventGroupClearBits(elm327_event_group, ELM327_READY_TO_RECEIVE_CAN);
 	ESP_LOGW(TAG, "Response time: %" PRIu32, (uint32_t)((esp_timer_get_time() - txtime)/1000));
 
-	if(rsp_found == 0)
-	{
-		strcat((char*)rsp, "NO DATA\r\r>");
-	}
-	else
-	{
-		strcat((char*)rsp, "\r>");
-	}
-	elm327_response(rsp, 0, queue);
-
-	return 0;
+	return rsp_found;
 }
 
 
@@ -1016,6 +1190,11 @@ const xelm327_cmd_t elm327_commands[] = {
 											{"fcsd", elm327_set_fc_data},// set the flow control data
 											{"fcsh", elm327_set_fc_header},// set the flow control header
 											{"fcsm", elm327_set_fc_mode}, // determine if the fc_data and/or fc_header is uses
+											{"wua", elm327_wake_add_frame},// WiCAN: add raw wake-up frame
+											{"wuc", elm327_wake_clear},// WiCAN: clear wake-up frames
+											{"wud", elm327_wake_set_delay},// WiCAN: delay after wake-up
+											{"wui", elm327_wake_set_idle},// WiCAN: idle time before waking up again
+											{"wus", elm327_wake_send_now},// WiCAN: send wake-up frames now
 											{"dpn", elm327_describe_protocol_num},//describe protocol by number
 											{"cra", elm327_set_receive_address},
 											{"cp", elm327_set_priority_bits},// set five most significant bits of 29bit header

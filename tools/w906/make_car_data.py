@@ -19,6 +19,26 @@ PARAMS = os.path.join(ROOT, ".vehicle_profiles", "params.json")
 PROFILE_ONLY_FIELDS = ("note", "comment", "add_to_docs", "extends")
 
 
+def auto_pid_settings(car_model: str, topic: str, cycle_ms: int) -> dict:
+    """AutoPID page settings: vehicle specific PIDs, grouped JSON to one MQTT topic."""
+    return {
+        "initialisation": "",
+        "webhook_data_mode": "full",
+        "grouping": "enable",
+        "autopid_polling": "enable",
+        "group_dest_type": "MQTT_Topic",
+        "destination": topic,
+        "cycle": str(cycle_ms),
+        "car_specific": "enable",
+        "ha_discovery": "disable",
+        "car_model": car_model,
+        "pids": [],
+        "std_pids": [],
+        "standard_pids": "disable",
+        "ecu_protocol": "6",
+    }
+
+
 def convert(profile: dict, params: dict, period_ms: int) -> dict:
     if "extends" in profile:
         raise ValueError("profiles using 'extends' are not supported")
@@ -45,7 +65,10 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("profile", nargs="?", default=DEFAULT_PROFILE, help="vehicle profile (default: W906 OM651)")
     parser.add_argument("-o", "--output", default="wican_w906_car_data.json", help="output file")
-    parser.add_argument("--period", type=int, default=5000, help="polling period per parameter in ms (default 5000)")
+    parser.add_argument("--period", type=int, default=1000, help="polling period per parameter in ms (default 1000)")
+    parser.add_argument("--topic", default="wican/sprinter/engine", help="MQTT topic for the grouped JSON")
+    parser.add_argument("--profile-only", action="store_true",
+                        help="only the vehicle profile, keep the AutoPID settings on the device")
     args = parser.parse_args(argv)
 
     with open(args.profile, encoding="utf-8") as handle:
@@ -53,8 +76,12 @@ def main(argv=None) -> int:
     with open(PARAMS, encoding="utf-8") as handle:
         params = json.load(handle)
 
+    config = convert(profile, params, args.period)
+    if not args.profile_only:
+        config["auto_pid"] = auto_pid_settings(profile["car_model"], args.topic, args.period)
+
     with open(args.output, "w", encoding="utf-8") as handle:
-        json.dump(convert(profile, params, args.period), handle, indent=2, ensure_ascii=False)
+        json.dump(config, handle, indent=2, ensure_ascii=False)
         handle.write("\n")
     print("written %s" % args.output)
     return 0

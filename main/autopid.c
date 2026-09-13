@@ -55,6 +55,21 @@
 
 #define TAG "AUTOPID"
 
+// When no parameter got a response for this long the vehicle is considered asleep:
+// only one request (including the ELM327 wake-up frames) is sent per probe interval
+// and an offline status is published instead of stale values.
+#define AUTOPID_ECU_ASLEEP_TIMEOUT_US       (10 * 1000 * 1000)
+#define AUTOPID_ECU_PROBE_INTERVAL_MS       30000
+#define AUTOPID_ECU_ASLEEP_PUBLISH_MS       10000
+
+static int64_t last_ecu_response_time = 0;
+static wc_timer_t ecu_probe_timer = 0;
+
+static bool autopid_ecu_asleep(void)
+{
+    return (esp_timer_get_time() - last_ecu_response_time) > AUTOPID_ECU_ASLEEP_TIMEOUT_US;
+}
+
 #define TEMP_BUFFER_LENGTH  32
 #define ECU_CONNECTED_BIT			        BIT0
 #define AUTOPID_POLLING_DISABLED_BIT	    BIT1
@@ -1014,6 +1029,20 @@ void autopid_data_publish(void) {
     }
 }
 
+static void autopid_publish_ecu_offline(void)
+{
+    static char payload[] = "{\"ecu\":\"offline\"}";
+
+    if(all_pids->group_destination && strlen(all_pids->group_destination) > 0)
+    {
+        mqtt_publish(all_pids->group_destination, payload, 0, 0, 1);
+    }
+    else
+    {
+        mqtt_publish(config_server_get_mqtt_rx_topic(), payload, 0, 0, 1);
+    }
+}
+
 bool autopid_get_ecu_status(void)
 {
 	EventBits_t uxBits;
@@ -1580,11 +1609,20 @@ static void autopid_task(void *pvParameters)
             xEventGroupWaitBits(xautopid_event_group, AUTOPID_REQUEST_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
         }
 
+        bool ecu_probe = false;
+        bool ecu_asleep = autopid_ecu_asleep();
+
+        if(ecu_asleep && wc_timer_is_expired(&ecu_probe_timer))
+        {
+            wc_timer_set(&ecu_probe_timer, AUTOPID_ECU_PROBE_INTERVAL_MS);
+            ecu_probe = true;
+        }
+
         elm327_lock();
         xSemaphoreTake(all_pids->mutex, portMAX_DELAY);
         
         // Loop through all PIDs
-        for(uint32_t i = 0; i < all_pids->pid_count; i++) 
+        for(uint32_t i = 0; i < all_pids->pid_count && (!ecu_asleep || ecu_probe); i++) 
         {
             pid_data2_t *curr_pid = &all_pids->pids[i];
             // Skip if PID type not enabled
@@ -1596,12 +1634,12 @@ static void autopid_task(void *pvParameters)
             }
 
             // Loop through parameters
-            for(uint32_t p = 0; p < curr_pid->parameters_count; p++) 
+            for(uint32_t p = 0; p < curr_pid->parameters_count && (!ecu_asleep || ecu_probe); p++) 
             {
                 parameter_t *param = &curr_pid->parameters[p];
                 
                 // Check parameter timer
-                if(wc_timer_is_expired(&param->timer)) 
+                if(ecu_probe || wc_timer_is_expired(&param->timer)) 
                 {
                     // autopid_data_write
                     if(curr_pid->pid_type != previous_pid_type) {
@@ -1681,6 +1719,7 @@ static void autopid_task(void *pvParameters)
                                     double result;
 
                                     param->failed = false;
+                                    last_ecu_response_time = esp_timer_get_time();
 
                                     ESP_LOGI(TAG, "Response received, length: %lu", elm327_response.length);
                                     xEventGroupSetBits(xautopid_event_group, ECU_CONNECTED_BIT);
@@ -1766,12 +1805,14 @@ static void autopid_task(void *pvParameters)
                                 else
                                 {   
                                     param->failed = true;
+                                    param->value = FLT_MAX;
                                     ESP_LOGE(TAG, "Failed to process command: %s", curr_pid->cmd);
                                 }
                             }
                             else
                             {
                                 param->failed = true;
+                                param->value = FLT_MAX;
                                 ESP_LOGE(TAG, "Failed Queue Receive: curr_pid->cmd timeout");
                             }
                         }
@@ -1784,6 +1825,9 @@ static void autopid_task(void *pvParameters)
                     {
                         ESP_LOGE(TAG, "Failed, cmd is NULL");
                     }
+
+                    // While probing a sleeping vehicle a single request is enough
+                    ecu_probe = false;
                 }
             }
         }
@@ -1801,9 +1845,16 @@ static void autopid_task(void *pvParameters)
 
         if (strcmp("enable", all_pids->grouping) == 0 && all_pids->group_destination_type == DEST_MQTT_TOPIC && wc_timer_is_expired(&group_cycle_timer))
         {
-            wc_timer_set(&group_cycle_timer, all_pids->cycle);
-            
-            autopid_data_publish();
+            if(autopid_ecu_asleep())
+            {
+                wc_timer_set(&group_cycle_timer, AUTOPID_ECU_ASLEEP_PUBLISH_MS);
+                autopid_publish_ecu_offline();
+            }
+            else
+            {
+                wc_timer_set(&group_cycle_timer, all_pids->cycle);
+                autopid_data_publish();
+            }
         }
 
         if (wc_timer_is_expired(&ecu_check_timer)) {

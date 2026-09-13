@@ -215,11 +215,32 @@
       "max": "10100"
     }
   },
+  "DPF_ASH": {
+    "description": "Diesel particulate filter ash content",
+    "settings": {
+      "unit": "g",
+      "class": "weight"
+    }
+  },
   "DPF_DIFF_PRESSURE": {
     "description": "Diesel particulate filter differential pressure",
     "settings": {
       "unit": "hPa",
       "class": "pressure"
+    }
+  },
+  "DPF_KM_SINCE_REGEN": {
+    "description": "Distance since last diesel particulate filter regeneration",
+    "settings": {
+      "unit": "km",
+      "class": "distance"
+    }
+  },
+  "DPF_REGEN_STATUS": {
+    "description": "Diesel particulate filter regeneration status (raw code, 1 = not active)",
+    "settings": {
+      "unit": "",
+      "class": "none"
     }
   },
   "DRIVE_MODE": {
@@ -238,6 +259,13 @@
   },
   "EGR_RATE": {
     "description": "Exhaust gas recirculation rate",
+    "settings": {
+      "unit": "%",
+      "class": "none"
+    }
+  },
+  "EGR_VALVE": {
+    "description": "Exhaust gas recirculation valve position",
     "settings": {
       "unit": "%",
       "class": "none"

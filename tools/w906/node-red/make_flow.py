@@ -17,7 +17,8 @@ BROKER = args.broker_id or "w906_mqtt_broker"
 TAB, UI_TAB = "w906_flow_tab", "w906_ui_tab"
 G = {"status": ("w906_grp_status", "Status", 6, 1), "engine": ("w906_grp_engine", "Motor", 6, 2),
      "fuel": ("w906_grp_fuel", "Kraftstoff", 6, 3), "air": ("w906_grp_air", "Ladeluft", 6, 4),
-     "exhaust": ("w906_grp_exhaust", "Abgas", 6, 5), "charts": ("w906_grp_charts", "Verlauf", 12, 6)}
+     "exhaust": ("w906_grp_exhaust", "Abgas", 6, 5), "dpf": ("w906_grp_dpf", "DPF / AGR", 6, 6),
+     "charts": ("w906_grp_charts", "Verlauf", 12, 7)}
 
 nodes = [{"id": TAB, "type": "tab", "label": "Sprinter Motor", "disabled": False,
           "info": "Live-Daten WiCAN W906 via MQTT " + args.topic},
@@ -62,13 +63,18 @@ VALUES = [
     ("DPF_DIFF_PRESSURE", "DPF Differenzdruck", "hPa", "exhaust", "gauge", 0, 200, (100, 160)),
     ("EGT_POST_EGR_COOLER", "nach AGR-Kühler", "°C", "exhaust", "text", None, None, None),
     ("LAMBDA", "Lambda", "", "exhaust", "text", None, None, None),
+    ("THROTTLE", "Drosselklappe", "%", "air", "text", None, None, None),
+    ("EGR_VALVE", "AGR-Ventil", "%", "dpf", "text", None, None, None),
+    ("DPF_KM_SINCE_REGEN", "km seit Regeneration", "km", "dpf", "text", None, None, None),
+    ("DPF_ASH", "Aschegehalt DPF", "g", "dpf", "text", None, None, None),
+    ("DPF_REGEN_STATUS", "Regeneration", "", "dpf", "text", None, None, None),
 ]
 
 nodes.append({"id": "w906_mqtt_engine", "type": "mqtt in", "z": TAB, "name": "WiCAN Motordaten", "topic": args.topic,
               "qos": "0", "datatype": "json", "broker": BROKER, "nl": False, "rap": True, "rh": 0, "inputs": 0,
               "x": 150, "y": 100, "wires": [["w906_split", "w906_charts_fn", "w906_live_trigger"]]})
 
-meta = {v[0]: {"kind": v[4], "unit": v[2], "digits": 2 if v[0] == "LAMBDA" else (0 if v[0] in ("OIL_LEVEL", "ECU_DISTANCE", "FUEL_L", "BOOST_PRESSURE_LP", "INTAKE_AIR_PRESSURE", "BARO_PRESSURE", "AIR_MASS_PER_STROKE") else 1)} for v in VALUES}
+meta = {v[0]: {"kind": v[4], "unit": v[2], "digits": 2 if v[0] == "LAMBDA" else (0 if v[0] in ("OIL_LEVEL", "ECU_DISTANCE", "FUEL_L", "BOOST_PRESSURE_LP", "INTAKE_AIR_PRESSURE", "BARO_PRESSURE", "AIR_MASS_PER_STROKE", "DPF_KM_SINCE_REGEN", "DPF_REGEN_STATUS") else 1)} for v in VALUES}
 split_code = (
     "// The WiCAN sends {\"ecu\":\"offline\"} instead of stale values while the vehicle is asleep\n"
     "const meta = %s;\n"
@@ -80,7 +86,7 @@ split_code = (
     "    if (offline) return { topic: k, payload: m.kind === 'gauge' ? 0 : '–' };\n"
     "    if (typeof p[k] !== 'number') return null;\n"
     "    if (m.kind === 'gauge') return { topic: k, payload: p[k] };\n"
-    "    return { topic: k, payload: (p[k].toFixed(m.digits) + ' ' + m.unit).trim() };\n"
+    "    if (k === 'DPF_REGEN_STATUS') return { topic: k, payload: p[k] === 1 ? 'nicht aktiv' : 'Code ' + p[k] };\n    return { topic: k, payload: (p[k].toFixed(m.digits) + ' ' + m.unit).trim() };\n"
     "});\n"
     "out.push({ payload: offline ? 'schläft (IGN aus)' : 'aktiv' });\n"
     "return out;" % (json.dumps(meta, ensure_ascii=False), json.dumps([v[0] for v in VALUES])))

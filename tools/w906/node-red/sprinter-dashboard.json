@@ -99,11 +99,22 @@
     "className": ""
   },
   {
+    "id": "w906_grp_dpf",
+    "type": "ui_group",
+    "name": "DPF / AGR",
+    "tab": "w906_ui_tab",
+    "order": 6,
+    "disp": true,
+    "width": "6",
+    "collapse": false,
+    "className": ""
+  },
+  {
     "id": "w906_grp_charts",
     "type": "ui_group",
     "name": "Verlauf",
     "tab": "w906_ui_tab",
-    "order": 6,
+    "order": 7,
     "disp": true,
     "width": "12",
     "collapse": false,
@@ -805,12 +816,117 @@
     "wires": []
   },
   {
+    "id": "w906_ui_throttle",
+    "type": "ui_text",
+    "z": "w906_flow_tab",
+    "group": "w906_grp_air",
+    "order": 11,
+    "width": 6,
+    "height": 1,
+    "name": "Drosselklappe",
+    "label": "Drosselklappe",
+    "format": "{{msg.payload}}",
+    "layout": "row-spread",
+    "className": "",
+    "style": false,
+    "font": "",
+    "fontSize": 16,
+    "color": "#000000",
+    "x": 620,
+    "y": 1160,
+    "wires": []
+  },
+  {
+    "id": "w906_ui_egr_valve",
+    "type": "ui_text",
+    "z": "w906_flow_tab",
+    "group": "w906_grp_dpf",
+    "order": 1,
+    "width": 6,
+    "height": 1,
+    "name": "AGR-Ventil",
+    "label": "AGR-Ventil",
+    "format": "{{msg.payload}}",
+    "layout": "row-spread",
+    "className": "",
+    "style": false,
+    "font": "",
+    "fontSize": 16,
+    "color": "#000000",
+    "x": 620,
+    "y": 1200,
+    "wires": []
+  },
+  {
+    "id": "w906_ui_dpf_km_since_regen",
+    "type": "ui_text",
+    "z": "w906_flow_tab",
+    "group": "w906_grp_dpf",
+    "order": 2,
+    "width": 6,
+    "height": 1,
+    "name": "km seit Regeneration",
+    "label": "km seit Regeneration",
+    "format": "{{msg.payload}}",
+    "layout": "row-spread",
+    "className": "",
+    "style": false,
+    "font": "",
+    "fontSize": 16,
+    "color": "#000000",
+    "x": 620,
+    "y": 1240,
+    "wires": []
+  },
+  {
+    "id": "w906_ui_dpf_ash",
+    "type": "ui_text",
+    "z": "w906_flow_tab",
+    "group": "w906_grp_dpf",
+    "order": 3,
+    "width": 6,
+    "height": 1,
+    "name": "Aschegehalt DPF",
+    "label": "Aschegehalt DPF",
+    "format": "{{msg.payload}}",
+    "layout": "row-spread",
+    "className": "",
+    "style": false,
+    "font": "",
+    "fontSize": 16,
+    "color": "#000000",
+    "x": 620,
+    "y": 1280,
+    "wires": []
+  },
+  {
+    "id": "w906_ui_dpf_regen_status",
+    "type": "ui_text",
+    "z": "w906_flow_tab",
+    "group": "w906_grp_dpf",
+    "order": 4,
+    "width": 6,
+    "height": 1,
+    "name": "Regeneration",
+    "label": "Regeneration",
+    "format": "{{msg.payload}}",
+    "layout": "row-spread",
+    "className": "",
+    "style": false,
+    "font": "",
+    "fontSize": 16,
+    "color": "#000000",
+    "x": 620,
+    "y": 1320,
+    "wires": []
+  },
+  {
     "id": "w906_split",
     "type": "function",
     "z": "w906_flow_tab",
     "name": "Werte verteilen",
-    "func": "// The WiCAN sends {\"ecu\":\"offline\"} instead of stale values while the vehicle is asleep\nconst meta = {\"ENGINE_RPM\": {\"kind\": \"gauge\", \"unit\": \"1/min\", \"digits\": 1}, \"ACCEL_PEDAL\": {\"kind\": \"gauge\", \"unit\": \"%\", \"digits\": 1}, \"COOLANT_TMP\": {\"kind\": \"gauge\", \"unit\": \"°C\", \"digits\": 1}, \"ENGINE_OIL_TEMP\": {\"kind\": \"gauge\", \"unit\": \"°C\", \"digits\": 1}, \"OIL_LEVEL\": {\"kind\": \"text\", \"unit\": \"mm\", \"digits\": 0}, \"ECU_DISTANCE\": {\"kind\": \"text\", \"unit\": \"km\", \"digits\": 0}, \"RAIL_PRESSURE\": {\"kind\": \"gauge\", \"unit\": \"bar\", \"digits\": 1}, \"INJECTION_QUANTITY\": {\"kind\": \"text\", \"unit\": \"mg\", \"digits\": 1}, \"FUEL_L\": {\"kind\": \"text\", \"unit\": \"L\", \"digits\": 0}, \"FUEL_TEMP\": {\"kind\": \"text\", \"unit\": \"°C\", \"digits\": 1}, \"BOOST_PRESSURE\": {\"kind\": \"gauge\", \"unit\": \"hPa\", \"digits\": 1}, \"BOOST_PRESSURE_LP\": {\"kind\": \"text\", \"unit\": \"hPa\", \"digits\": 0}, \"AIR_MASS_PER_STROKE\": {\"kind\": \"text\", \"unit\": \"mg/Hub\", \"digits\": 0}, \"EGR_RATE\": {\"kind\": \"text\", \"unit\": \"%\", \"digits\": 1}, \"WASTEGATE\": {\"kind\": \"text\", \"unit\": \"%\", \"digits\": 1}, \"INTAKE_AIR_TMP\": {\"kind\": \"text\", \"unit\": \"°C\", \"digits\": 1}, \"INTAKE_AIR_PRESSURE\": {\"kind\": \"text\", \"unit\": \"hPa\", \"digits\": 0}, \"BARO_PRESSURE\": {\"kind\": \"text\", \"unit\": \"hPa\", \"digits\": 0}, \"CHARGE_AIR_TEMP_PRE_IC\": {\"kind\": \"text\", \"unit\": \"°C\", \"digits\": 1}, \"CHARGE_AIR_TEMP_POST_IC\": {\"kind\": \"text\", \"unit\": \"°C\", \"digits\": 1}, \"EGT_PRE_TURBO\": {\"kind\": \"gauge\", \"unit\": \"°C\", \"digits\": 1}, \"EGT_PRE_CAT\": {\"kind\": \"gauge\", \"unit\": \"°C\", \"digits\": 1}, \"EGT_PRE_DPF\": {\"kind\": \"gauge\", \"unit\": \"°C\", \"digits\": 1}, \"EGT_PRE_SCR\": {\"kind\": \"gauge\", \"unit\": \"°C\", \"digits\": 1}, \"EXHAUST_BACK_PRESSURE\": {\"kind\": \"gauge\", \"unit\": \"hPa\", \"digits\": 1}, \"DPF_DIFF_PRESSURE\": {\"kind\": \"gauge\", \"unit\": \"hPa\", \"digits\": 1}, \"EGT_POST_EGR_COOLER\": {\"kind\": \"text\", \"unit\": \"°C\", \"digits\": 1}, \"LAMBDA\": {\"kind\": \"text\", \"unit\": \"\", \"digits\": 2}};\nconst keys = [\"ENGINE_RPM\", \"ACCEL_PEDAL\", \"COOLANT_TMP\", \"ENGINE_OIL_TEMP\", \"OIL_LEVEL\", \"ECU_DISTANCE\", \"RAIL_PRESSURE\", \"INJECTION_QUANTITY\", \"FUEL_L\", \"FUEL_TEMP\", \"BOOST_PRESSURE\", \"BOOST_PRESSURE_LP\", \"AIR_MASS_PER_STROKE\", \"EGR_RATE\", \"WASTEGATE\", \"INTAKE_AIR_TMP\", \"INTAKE_AIR_PRESSURE\", \"BARO_PRESSURE\", \"CHARGE_AIR_TEMP_PRE_IC\", \"CHARGE_AIR_TEMP_POST_IC\", \"EGT_PRE_TURBO\", \"EGT_PRE_CAT\", \"EGT_PRE_DPF\", \"EGT_PRE_SCR\", \"EXHAUST_BACK_PRESSURE\", \"DPF_DIFF_PRESSURE\", \"EGT_POST_EGR_COOLER\", \"LAMBDA\"];\nconst p = msg.payload || {};\nconst offline = p.ecu === 'offline';\nconst out = keys.map(k => {\n    const m = meta[k];\n    if (offline) return { topic: k, payload: m.kind === 'gauge' ? 0 : '–' };\n    if (typeof p[k] !== 'number') return null;\n    if (m.kind === 'gauge') return { topic: k, payload: p[k] };\n    return { topic: k, payload: (p[k].toFixed(m.digits) + ' ' + m.unit).trim() };\n});\nout.push({ payload: offline ? 'schläft (IGN aus)' : 'aktiv' });\nreturn out;",
-    "outputs": 29,
+    "func": "// The WiCAN sends {\"ecu\":\"offline\"} instead of stale values while the vehicle is asleep\nconst meta = {\"ENGINE_RPM\": {\"kind\": \"gauge\", \"unit\": \"1/min\", \"digits\": 1}, \"ACCEL_PEDAL\": {\"kind\": \"gauge\", \"unit\": \"%\", \"digits\": 1}, \"COOLANT_TMP\": {\"kind\": \"gauge\", \"unit\": \"°C\", \"digits\": 1}, \"ENGINE_OIL_TEMP\": {\"kind\": \"gauge\", \"unit\": \"°C\", \"digits\": 1}, \"OIL_LEVEL\": {\"kind\": \"text\", \"unit\": \"mm\", \"digits\": 0}, \"ECU_DISTANCE\": {\"kind\": \"text\", \"unit\": \"km\", \"digits\": 0}, \"RAIL_PRESSURE\": {\"kind\": \"gauge\", \"unit\": \"bar\", \"digits\": 1}, \"INJECTION_QUANTITY\": {\"kind\": \"text\", \"unit\": \"mg\", \"digits\": 1}, \"FUEL_L\": {\"kind\": \"text\", \"unit\": \"L\", \"digits\": 0}, \"FUEL_TEMP\": {\"kind\": \"text\", \"unit\": \"°C\", \"digits\": 1}, \"BOOST_PRESSURE\": {\"kind\": \"gauge\", \"unit\": \"hPa\", \"digits\": 1}, \"BOOST_PRESSURE_LP\": {\"kind\": \"text\", \"unit\": \"hPa\", \"digits\": 0}, \"AIR_MASS_PER_STROKE\": {\"kind\": \"text\", \"unit\": \"mg/Hub\", \"digits\": 0}, \"EGR_RATE\": {\"kind\": \"text\", \"unit\": \"%\", \"digits\": 1}, \"WASTEGATE\": {\"kind\": \"text\", \"unit\": \"%\", \"digits\": 1}, \"INTAKE_AIR_TMP\": {\"kind\": \"text\", \"unit\": \"°C\", \"digits\": 1}, \"INTAKE_AIR_PRESSURE\": {\"kind\": \"text\", \"unit\": \"hPa\", \"digits\": 0}, \"BARO_PRESSURE\": {\"kind\": \"text\", \"unit\": \"hPa\", \"digits\": 0}, \"CHARGE_AIR_TEMP_PRE_IC\": {\"kind\": \"text\", \"unit\": \"°C\", \"digits\": 1}, \"CHARGE_AIR_TEMP_POST_IC\": {\"kind\": \"text\", \"unit\": \"°C\", \"digits\": 1}, \"EGT_PRE_TURBO\": {\"kind\": \"gauge\", \"unit\": \"°C\", \"digits\": 1}, \"EGT_PRE_CAT\": {\"kind\": \"gauge\", \"unit\": \"°C\", \"digits\": 1}, \"EGT_PRE_DPF\": {\"kind\": \"gauge\", \"unit\": \"°C\", \"digits\": 1}, \"EGT_PRE_SCR\": {\"kind\": \"gauge\", \"unit\": \"°C\", \"digits\": 1}, \"EXHAUST_BACK_PRESSURE\": {\"kind\": \"gauge\", \"unit\": \"hPa\", \"digits\": 1}, \"DPF_DIFF_PRESSURE\": {\"kind\": \"gauge\", \"unit\": \"hPa\", \"digits\": 1}, \"EGT_POST_EGR_COOLER\": {\"kind\": \"text\", \"unit\": \"°C\", \"digits\": 1}, \"LAMBDA\": {\"kind\": \"text\", \"unit\": \"\", \"digits\": 2}, \"THROTTLE\": {\"kind\": \"text\", \"unit\": \"%\", \"digits\": 1}, \"EGR_VALVE\": {\"kind\": \"text\", \"unit\": \"%\", \"digits\": 1}, \"DPF_KM_SINCE_REGEN\": {\"kind\": \"text\", \"unit\": \"km\", \"digits\": 0}, \"DPF_ASH\": {\"kind\": \"text\", \"unit\": \"g\", \"digits\": 1}, \"DPF_REGEN_STATUS\": {\"kind\": \"text\", \"unit\": \"\", \"digits\": 0}};\nconst keys = [\"ENGINE_RPM\", \"ACCEL_PEDAL\", \"COOLANT_TMP\", \"ENGINE_OIL_TEMP\", \"OIL_LEVEL\", \"ECU_DISTANCE\", \"RAIL_PRESSURE\", \"INJECTION_QUANTITY\", \"FUEL_L\", \"FUEL_TEMP\", \"BOOST_PRESSURE\", \"BOOST_PRESSURE_LP\", \"AIR_MASS_PER_STROKE\", \"EGR_RATE\", \"WASTEGATE\", \"INTAKE_AIR_TMP\", \"INTAKE_AIR_PRESSURE\", \"BARO_PRESSURE\", \"CHARGE_AIR_TEMP_PRE_IC\", \"CHARGE_AIR_TEMP_POST_IC\", \"EGT_PRE_TURBO\", \"EGT_PRE_CAT\", \"EGT_PRE_DPF\", \"EGT_PRE_SCR\", \"EXHAUST_BACK_PRESSURE\", \"DPF_DIFF_PRESSURE\", \"EGT_POST_EGR_COOLER\", \"LAMBDA\", \"THROTTLE\", \"EGR_VALVE\", \"DPF_KM_SINCE_REGEN\", \"DPF_ASH\", \"DPF_REGEN_STATUS\"];\nconst p = msg.payload || {};\nconst offline = p.ecu === 'offline';\nconst out = keys.map(k => {\n    const m = meta[k];\n    if (offline) return { topic: k, payload: m.kind === 'gauge' ? 0 : '–' };\n    if (typeof p[k] !== 'number') return null;\n    if (m.kind === 'gauge') return { topic: k, payload: p[k] };\n    if (k === 'DPF_REGEN_STATUS') return { topic: k, payload: p[k] === 1 ? 'nicht aktiv' : 'Code ' + p[k] };\n    return { topic: k, payload: (p[k].toFixed(m.digits) + ' ' + m.unit).trim() };\n});\nout.push({ payload: offline ? 'schläft (IGN aus)' : 'aktiv' });\nreturn out;",
+    "outputs": 34,
     "timeout": 0,
     "noerr": 0,
     "initialize": "",
@@ -902,6 +1018,21 @@
       ],
       [
         "w906_ui_lambda"
+      ],
+      [
+        "w906_ui_throttle"
+      ],
+      [
+        "w906_ui_egr_valve"
+      ],
+      [
+        "w906_ui_dpf_km_since_regen"
+      ],
+      [
+        "w906_ui_dpf_ash"
+      ],
+      [
+        "w906_ui_dpf_regen_status"
       ],
       [
         "w906_ui_ecu"

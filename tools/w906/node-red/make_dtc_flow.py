@@ -194,6 +194,10 @@ for (const ecu of p.ecus) {
     }
 }
 const count = p.dtc_count || 0;
+// Without any trouble code list every control unit, so the check is visible
+if (count === 0 && silent === 0) {
+    for (const ecu of p.ecus) rows.push({ ecu: ecu.name, code: '–', text: '–', info: '', status: 'i.O.' });
+}
 const when = new Date().toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 const summary = count === 0 ? 'keine Fehler' : count + ' Fehler';
 return [{ payload: action + ' fertig, ' + Math.round((p.duration_ms || 0) / 1000) + ' s' },

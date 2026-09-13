@@ -19,6 +19,13 @@ args = parser.parse_args()
 texts = json.load(open(args.texts, encoding="utf-8")) if args.texts else {}
 
 BROKER = args.broker_id or "w906_mqtt_broker"
+CSS = """<style>
+.w906-small, .w906-small p, .w906-small span, .w906-small .label, .w906-small .value,
+.w906-small button, .w906-small .md-button, .w906-small .tabulator, .w906-small .tabulator * {
+    font-size: 14px !important; line-height: 1.3 !important; text-transform: none !important;
+}
+.w906-small .value { white-space: normal !important; }
+</style>"""
 TAB, UI_TAB = "w906_dtc_flow_tab", "w906_dtc_ui_tab"
 GROUP_ACTIONS, GROUP_RESULT = "w906_dtc_grp_actions", "w906_dtc_grp_result"
 DTC_TOPIC = args.topic + "/dtc"
@@ -43,7 +50,7 @@ if not args.broker_id:
 
 def text(nid, label, order, x, y):
     return {"id": nid, "type": "ui_text", "z": TAB, "group": GROUP_ACTIONS, "order": order, "width": 6, "height": 1,
-            "name": label, "label": label, "format": "{{msg.payload}}", "layout": "row-spread", "className": "",
+            "name": label, "label": label, "format": "{{msg.payload}}", "layout": "row-left", "className": "w906-small",
             "style": False, "font": "", "fontSize": 16, "color": "#000000", "x": x, "y": y, "wires": []}
 
 
@@ -64,12 +71,12 @@ nodes.append(function("w906_dtc_remember", "WiCAN merken",
 nodes.append(text("w906_dtc_ui_device", "WiCAN", 1, 600, 60))
 
 nodes.append({"id": "w906_dtc_btn_read", "type": "ui_button", "z": TAB, "name": "Lesen", "group": GROUP_ACTIONS, "order": 4,
-              "width": 3, "height": 1, "passthru": False, "label": "Fehlerspeicher lesen", "tooltip": "", "color": "",
-              "bgcolor": "", "className": "", "icon": "fa-search", "payload": "read_dtc", "payloadType": "str",
+              "width": 3, "height": 1, "passthru": False, "label": "Lesen", "tooltip": "Fehlerspeicher aller Steuergeräte lesen", "color": "",
+              "bgcolor": "", "className": "w906-small", "icon": "fa-search", "payload": "read_dtc", "payloadType": "str",
               "topic": "", "topicType": "str", "x": 150, "y": 140, "wires": [["w906_dtc_command"]]})
 nodes.append({"id": "w906_dtc_btn_clear", "type": "ui_button", "z": TAB, "name": "Löschen", "group": GROUP_ACTIONS, "order": 5,
-              "width": 3, "height": 1, "passthru": False, "label": "Fehlerspeicher löschen", "tooltip": "",
-              "color": "", "bgcolor": "#ca3838", "className": "", "icon": "fa-trash", "payload": "clear", "payloadType": "str",
+              "width": 3, "height": 1, "passthru": False, "label": "Löschen", "tooltip": "Fehlerspeicher löschen (mit Sicherheitsabfrage)",
+              "color": "", "bgcolor": "#ca3838", "className": "w906-small", "icon": "fa-trash", "payload": "clear", "payloadType": "str",
               "topic": "", "topicType": "str", "x": 150, "y": 200, "wires": [["w906_dtc_confirm"]]})
 nodes.append({"id": "w906_dtc_confirm", "type": "ui_toast", "z": TAB, "position": "dialog", "displayTime": "3",
               "highlight": "", "sendall": False, "outputs": 1, "ok": "Löschen", "cancel": "Abbrechen", "raw": False,
@@ -80,9 +87,9 @@ nodes.append(function("w906_dtc_confirmed", "bestätigt?",
                       1, [["w906_dtc_command"]], 560, 200))
 nodes.append(function("w906_dtc_command", "Befehl an WiCAN",
                       "const id = flow.get('wican_id');\n"
-                      "if (!id) return [null, { payload: 'WiCAN nicht gefunden (MQTT?)' }];\n"
+                      "if (!id) return [null, { payload: 'WiCAN nicht gefunden' }];\n"
                       "return [{ topic: 'wican/' + id + '/cmd', payload: JSON.stringify({ cmd: msg.payload }) },\n"
-                      "        { payload: msg.payload === 'clear_dtc' ? 'Löschen angefordert …' : 'Lesen angefordert …' }];",
+                      "        { payload: msg.payload === 'clear_dtc' ? 'Löschen …' : 'Lesen …' }];",
                       2, [["w906_dtc_mqtt_out"], ["w906_dtc_ui_state"]], 800, 160))
 nodes.append({"id": "w906_dtc_mqtt_out", "type": "mqtt out", "z": TAB, "name": "Befehl", "topic": "", "qos": "0",
               "retain": "false", "respTopic": "", "contentType": "", "userProps": "", "correl": "", "expiry": "",
@@ -165,10 +172,10 @@ const p = msg.payload || {};
 const texts = msg.texts || {};
 const action = p.action === 'clear' ? 'Löschen' : 'Lesen';
 if (p.state === 'running') {
-    return [{ payload: action + ' läuft … ' + (p.ecu || 0) + '/' + (p.total || '?') }, null, null];
+    return [{ payload: action + ' ' + (p.ecu || 0) + '/' + (p.total || '?') }, null, null];
 }
 if (p.state === 'error') {
-    const reason = p.reason === 'ecu_offline' ? 'keine Antwort – Zündung einschalten' : (p.reason || 'Fehler');
+    const reason = p.reason === 'ecu_offline' ? 'Zündung aus?' : (p.reason || 'Fehler');
     return [{ payload: action + ': ' + reason }, null, null];
 }
 if (p.state !== 'done' || !Array.isArray(p.ecus)) return null;
@@ -187,10 +194,10 @@ for (const ecu of p.ecus) {
     }
 }
 const count = p.dtc_count || 0;
-const when = new Date().toLocaleString('de-DE');
-const summary = count === 0 ? 'keine Fehler gespeichert' : count + ' Fehler gespeichert';
-return [{ payload: action + ' fertig (' + Math.round((p.duration_ms || 0) / 1000) + ' s)' },
-        { payload: summary + (silent ? ', ' + silent + ' Steuergerät(e) ohne Antwort' : '') + ' – ' + when },
+const when = new Date().toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+const summary = count === 0 ? 'keine Fehler' : count + ' Fehler';
+return [{ payload: action + ' fertig, ' + Math.round((p.duration_ms || 0) / 1000) + ' s' },
+        { payload: summary + (silent ? ', ' + silent + ' ohne Antwort' : '') + ' (' + when + ')' },
         { payload: rows }];"""
 nodes.append(function("w906_dtc_texts", "Klartexte (lokal)", texts_code % json.dumps(texts, indent=4, ensure_ascii=False), 1,
                       [["w906_dtc_evaluate"]], 330, 360))
@@ -205,7 +212,10 @@ nodes.append({"id": "w906_dtc_ui_table", "type": "ui_table", "z": TAB, "group": 
                           {"field": "text", "title": "Klartext (lokal)", "width": "", "align": "left", "formatter": "textarea", "formatterParams": {"target": "_blank"}},
                           {"field": "info", "title": "Einordnung", "width": "260", "align": "left", "formatter": "textarea", "formatterParams": {"target": "_blank"}},
                           {"field": "status", "title": "Status", "width": "160", "align": "left", "formatter": "plaintext", "formatterParams": {"target": "_blank"}}],
-              "outputs": 0, "cts": False, "x": 620, "y": 360, "wires": []})
+              "outputs": 0, "cts": False, "className": "w906-small", "x": 620, "y": 360, "wires": []})
+nodes.append({"id": "w906_dtc_css", "type": "ui_template", "z": TAB, "group": "", "name": "Schriftgröße", "order": 0,
+              "width": 0, "height": 0, "format": CSS, "storeOutMessages": True, "fwdInMessages": True,
+              "resendOnRefresh": True, "templateScope": "global", "className": "", "x": 150, "y": 440, "wires": [[]]})
 
 ids = [n["id"] for n in nodes]
 assert len(ids) == len(set(ids))

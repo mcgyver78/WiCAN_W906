@@ -1,4 +1,11 @@
 {
+  "ACCEL_PEDAL": {
+    "description": "Accelerator pedal position",
+    "settings": {
+      "unit": "%",
+      "class": "none"
+    }
+  },
   "AC_COMP": {
     "description": "AC Compressor (ON/OFF)",
     "settings": {
@@ -46,11 +53,25 @@
       "max": "100"
     }
   },
+  "AIR_MASS_PER_STROKE": {
+    "description": "Air mass per cylinder stroke",
+    "settings": {
+      "unit": "mg",
+      "class": "none"
+    }
+  },
   "ALT_DUTY": {
     "description": "Alternator Duty Cycle",
     "settings": {
       "unit": "%",
       "class": "none"
+    }
+  },
+  "BARO_PRESSURE": {
+    "description": "Atmospheric pressure",
+    "settings": {
+      "unit": "hPa",
+      "class": "pressure"
     }
   },
   "BATT_CAPACITY": {
@@ -67,6 +88,20 @@
       "class": "temperature",
       "min": "-40",
       "max": "80"
+    }
+  },
+  "BOOST_PRESSURE": {
+    "description": "Boost pressure (absolute)",
+    "settings": {
+      "unit": "hPa",
+      "class": "pressure"
+    }
+  },
+  "BOOST_PRESSURE_LP": {
+    "description": "Boost pressure after low pressure turbocharger (absolute)",
+    "settings": {
+      "unit": "hPa",
+      "class": "pressure"
     }
   },
   "CABIN_TEMPERATURE": {
@@ -99,6 +134,20 @@
     "settings": {
       "unit": "kW",
       "class": "power"
+    }
+  },
+  "CHARGE_AIR_TEMP_POST_IC": {
+    "description": "Charge air temperature after intercooler",
+    "settings": {
+      "unit": "°C",
+      "class": "temperature"
+    }
+  },
+  "CHARGE_AIR_TEMP_PRE_IC": {
+    "description": "Charge air temperature before intercooler",
+    "settings": {
+      "unit": "°C",
+      "class": "temperature"
     }
   },
   "CHARGING": {
@@ -166,11 +215,95 @@
       "max": "10100"
     }
   },
+  "DPF_ASH": {
+    "description": "Diesel particulate filter ash content",
+    "settings": {
+      "unit": "g",
+      "class": "weight"
+    }
+  },
+  "DPF_DIFF_PRESSURE": {
+    "description": "Diesel particulate filter differential pressure",
+    "settings": {
+      "unit": "hPa",
+      "class": "pressure"
+    }
+  },
+  "DPF_KM_SINCE_REGEN": {
+    "description": "Distance since last diesel particulate filter regeneration",
+    "settings": {
+      "unit": "km",
+      "class": "distance"
+    }
+  },
+  "DPF_REGEN_STATUS": {
+    "description": "Diesel particulate filter regeneration status (raw code, 1 = not active)",
+    "settings": {
+      "unit": "",
+      "class": "none"
+    }
+  },
   "DRIVE_MODE": {
     "description": "Drive Mode",
     "settings": {
       "unit": "",
       "class": "none"
+    }
+  },
+  "ECU_DISTANCE": {
+    "description": "Total distance recorded by the engine ECU",
+    "settings": {
+      "unit": "km",
+      "class": "distance"
+    }
+  },
+  "EGR_RATE": {
+    "description": "Exhaust gas recirculation rate",
+    "settings": {
+      "unit": "%",
+      "class": "none"
+    }
+  },
+  "EGR_VALVE": {
+    "description": "Exhaust gas recirculation valve position",
+    "settings": {
+      "unit": "%",
+      "class": "none"
+    }
+  },
+  "EGT_POST_EGR_COOLER": {
+    "description": "Exhaust gas temperature after EGR cooler",
+    "settings": {
+      "unit": "°C",
+      "class": "temperature"
+    }
+  },
+  "EGT_PRE_CAT": {
+    "description": "Exhaust gas temperature before catalytic converter",
+    "settings": {
+      "unit": "°C",
+      "class": "temperature"
+    }
+  },
+  "EGT_PRE_DPF": {
+    "description": "Exhaust gas temperature before diesel particulate filter",
+    "settings": {
+      "unit": "°C",
+      "class": "temperature"
+    }
+  },
+  "EGT_PRE_SCR": {
+    "description": "Exhaust gas temperature before SCR catalytic converter",
+    "settings": {
+      "unit": "°C",
+      "class": "temperature"
+    }
+  },
+  "EGT_PRE_TURBO": {
+    "description": "Exhaust gas temperature before turbocharger",
+    "settings": {
+      "unit": "°C",
+      "class": "temperature"
     }
   },
   "ENGINE_OIL_PRES": {
@@ -192,6 +325,13 @@
     "settings": {
       "unit": "RPM",
       "class": "frequency"
+    }
+  },
+  "EXHAUST_BACK_PRESSURE": {
+    "description": "Exhaust back pressure (absolute)",
+    "settings": {
+      "unit": "hPa",
+      "class": "pressure"
     }
   },
   "FUEL": {
@@ -242,6 +382,13 @@
     "settings": {
       "unit": "",
       "class": "none"
+    }
+  },
+  "FUEL_TEMP": {
+    "description": "Fuel temperature",
+    "settings": {
+      "unit": "°C",
+      "class": "temperature"
     }
   },
   "GEAR": {
@@ -2491,6 +2638,20 @@
       "max": "1"
     }
   },
+  "INJECTION_QUANTITY": {
+    "description": "Injection quantity per stroke",
+    "settings": {
+      "unit": "mg",
+      "class": "none"
+    }
+  },
+  "INTAKE_AIR_PRESSURE": {
+    "description": "Intake air pressure (absolute)",
+    "settings": {
+      "unit": "hPa",
+      "class": "pressure"
+    }
+  },
   "INTAKE_AIR_TEMP_2": {
     "description": "Air Intake Temperature 2",
     "settings": {
@@ -2521,6 +2682,13 @@
       "class": "energy",
       "min": "0",
       "max": "1000000"
+    }
+  },
+  "LAMBDA": {
+    "description": "Lambda value",
+    "settings": {
+      "unit": "",
+      "class": "none"
     }
   },
   "LV_A": {
@@ -2580,6 +2748,13 @@
     "description": "Distance till next oil change",
     "settings": {
       "unit": "km",
+      "class": "distance"
+    }
+  },
+  "OIL_LEVEL": {
+    "description": "Engine oil level",
+    "settings": {
+      "unit": "mm",
       "class": "distance"
     }
   },
@@ -2692,6 +2867,13 @@
     "settings": {
       "unit": "kW",
       "class": "power"
+    }
+  },
+  "RAIL_PRESSURE": {
+    "description": "Common rail fuel pressure",
+    "settings": {
+      "unit": "bar",
+      "class": "pressure"
     }
   },
   "RANGE": {

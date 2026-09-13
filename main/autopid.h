@@ -129,4 +129,5 @@ bool autopid_get_ecu_status(void);
 char* autopid_get_config(void);
 esp_err_t autopid_find_standard_pid(uint8_t protocol, char *available_pids, uint32_t available_pids_size) ;
 void autopid_request_data(void);
+void autopid_request_dtc(bool clear);
 #endif

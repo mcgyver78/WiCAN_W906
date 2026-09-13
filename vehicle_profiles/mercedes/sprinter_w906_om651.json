@@ -1,7 +1,7 @@
 {
   "car_model": "Mercedes-Benz: Sprinter W906 OM651 (EU)",
   "note": "Experimental, EU vehicles only (US Sprinter NCV3 profiles are not compatible). Needs a firmware with the ATWU wake-up commands, see W906.md in github.com/mcgyver78/WiCAN_W906.",
-  "comment": "Engine ECU Delphi CRD3 on 7E0/7E8 (UDS). DIDs and scaling were matched against the Xentry actual values page 'Eingaenge - Sensoren' of a 2016 316 CDI (max. deviation within Xentry display rounding). CAN captures show the diagnostic bus starting its traffic right after the first tester frame to 7E0, so a physical TesterPresent (padded with 55 like Xentry) is used as wake-up frame.",
+  "comment": "Engine ECU Delphi CRD3 on 7E0/7E8 (UDS). DIDs and scaling were matched against Xentry actual values pages ('Eingaenge - Sensoren', 'Pruefung der Sensoren', 'Hochdruckregelung', 'Ladedruckregelung', 'Elektronisches Fahrpedal', 'Steuergeraet') of a 2016 316 CDI (max. deviation within Xentry display rounding). CAN captures show the diagnostic bus starting its traffic right after the first tester frame to 7E0, so a physical TesterPresent (padded with 55 like Xentry) is used as wake-up frame.",
   "init": "ATSP6;ATST96;ATSH7E0;ATCRA7E8;ATFCSH7E0;ATFCSD300000;ATFCSM1;ATWUC;ATWUA7E0,023E005555555555;ATWUD32;ATWUI04;",
   "pids": [
     {
@@ -86,6 +86,90 @@
       "pid": "2220121",
       "parameters": {
         "DPF_DIFF_PRESSURE": "[B4:B5]-1024"
+      }
+    },
+    {
+      "pid": "2220161",
+      "parameters": {
+        "RAIL_PRESSURE": "[B4:B5]"
+      }
+    },
+    {
+      "pid": "2220091",
+      "parameters": {
+        "BOOST_PRESSURE": "[B4:B5]*0.9766"
+      }
+    },
+    {
+      "pid": "2240191",
+      "parameters": {
+        "BOOST_PRESSURE_LP": "[B4:B5]*0.9766"
+      }
+    },
+    {
+      "pid": "2220001",
+      "parameters": {
+        "EXHAUST_BACK_PRESSURE": "[B4:B5]"
+      }
+    },
+    {
+      "pid": "2220051",
+      "parameters": {
+        "BARO_PRESSURE": "[B4:B5]*0.9766"
+      }
+    },
+    {
+      "pid": "2220031",
+      "parameters": {
+        "INTAKE_AIR_PRESSURE": "[B4:B5]+488"
+      }
+    },
+    {
+      "pid": "2220041",
+      "parameters": {
+        "INTAKE_AIR_TMP": "[B4:B5]*0.25-50"
+      }
+    },
+    {
+      "pid": "2260001",
+      "parameters": {
+        "INJECTION_QUANTITY": "[B4:B5]/128"
+      }
+    },
+    {
+      "pid": "22200E1",
+      "parameters": {
+        "AIR_MASS_PER_STROKE": "[B4:B5]/8"
+      }
+    },
+    {
+      "pid": "2220201",
+      "parameters": {
+        "EGR_RATE": "([B4:B5]-10000)/100"
+      }
+    },
+    {
+      "pid": "2220131",
+      "parameters": {
+        "ACCEL_PEDAL": "[B4:B5]/128"
+      }
+    },
+    {
+      "pid": "2220211",
+      "parameters": {
+        "WASTEGATE": "[B4:B5]/128"
+      }
+    },
+    {
+      "pid": "2260381",
+      "parameters": {
+        "FUEL_L": "B4"
+      }
+    },
+    {
+      "pid": "22601F1",
+      "parameters": {
+        "ECU_DISTANCE": "[B4:B5]*2"
       }
     }
   ]

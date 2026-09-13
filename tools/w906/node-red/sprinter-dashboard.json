@@ -66,9 +66,9 @@
     "className": ""
   },
   {
-    "id": "w906_grp_exhaust",
+    "id": "w906_grp_fuel",
     "type": "ui_group",
-    "name": "Abgas",
+    "name": "Kraftstoff",
     "tab": "w906_ui_tab",
     "order": 3,
     "disp": true,
@@ -79,9 +79,20 @@
   {
     "id": "w906_grp_air",
     "type": "ui_group",
-    "name": "Luft & Kraftstoff",
+    "name": "Ladeluft",
     "tab": "w906_ui_tab",
     "order": 4,
+    "disp": true,
+    "width": "6",
+    "collapse": false,
+    "className": ""
+  },
+  {
+    "id": "w906_grp_exhaust",
+    "type": "ui_group",
+    "name": "Abgas",
+    "tab": "w906_ui_tab",
+    "order": 5,
     "disp": true,
     "width": "6",
     "collapse": false,
@@ -92,7 +103,7 @@
     "type": "ui_group",
     "name": "Verlauf",
     "tab": "w906_ui_tab",
-    "order": 5,
+    "order": 6,
     "disp": true,
     "width": "12",
     "collapse": false,
@@ -150,12 +161,40 @@
     "wires": []
   },
   {
+    "id": "w906_ui_accel_pedal",
+    "type": "ui_gauge",
+    "z": "w906_flow_tab",
+    "name": "Fahrpedal",
+    "group": "w906_grp_engine",
+    "order": 2,
+    "width": 3,
+    "height": 3,
+    "gtype": "gage",
+    "title": "Fahrpedal",
+    "label": "%",
+    "format": "{{value | number:0}}",
+    "min": 0,
+    "max": 100,
+    "colors": [
+      "#00b500",
+      "#e6e600",
+      "#ca3838"
+    ],
+    "seg1": "80",
+    "seg2": "95",
+    "diff": false,
+    "className": "",
+    "x": 620,
+    "y": 80,
+    "wires": []
+  },
+  {
     "id": "w906_ui_coolant_tmp",
     "type": "ui_gauge",
     "z": "w906_flow_tab",
     "name": "Kühlmittel",
     "group": "w906_grp_engine",
-    "order": 2,
+    "order": 3,
     "width": 3,
     "height": 3,
     "gtype": "gage",
@@ -174,7 +213,7 @@
     "diff": false,
     "className": "",
     "x": 620,
-    "y": 80,
+    "y": 120,
     "wires": []
   },
   {
@@ -183,7 +222,7 @@
     "z": "w906_flow_tab",
     "name": "Motoröl",
     "group": "w906_grp_engine",
-    "order": 3,
+    "order": 4,
     "width": 3,
     "height": 3,
     "gtype": "gage",
@@ -202,7 +241,7 @@
     "diff": false,
     "className": "",
     "x": 620,
-    "y": 120,
+    "y": 160,
     "wires": []
   },
   {
@@ -210,7 +249,7 @@
     "type": "ui_text",
     "z": "w906_flow_tab",
     "group": "w906_grp_engine",
-    "order": 4,
+    "order": 5,
     "width": 6,
     "height": 1,
     "name": "Ölstand",
@@ -223,19 +262,19 @@
     "fontSize": 16,
     "color": "#000000",
     "x": 620,
-    "y": 160,
+    "y": 200,
     "wires": []
   },
   {
-    "id": "w906_ui_lambda",
+    "id": "w906_ui_ecu_distance",
     "type": "ui_text",
     "z": "w906_flow_tab",
     "group": "w906_grp_engine",
-    "order": 5,
+    "order": 6,
     "width": 6,
     "height": 1,
-    "name": "Lambda",
-    "label": "Lambda",
+    "name": "Laufleistung (ECU)",
+    "label": "Laufleistung (ECU)",
     "format": "{{msg.payload}}",
     "layout": "row-spread",
     "className": "",
@@ -244,7 +283,315 @@
     "fontSize": 16,
     "color": "#000000",
     "x": 620,
-    "y": 200,
+    "y": 240,
+    "wires": []
+  },
+  {
+    "id": "w906_ui_rail_pressure",
+    "type": "ui_gauge",
+    "z": "w906_flow_tab",
+    "name": "Raildruck",
+    "group": "w906_grp_fuel",
+    "order": 1,
+    "width": 3,
+    "height": 3,
+    "gtype": "gage",
+    "title": "Raildruck",
+    "label": "bar",
+    "format": "{{value | number:0}}",
+    "min": 0,
+    "max": 2000,
+    "colors": [
+      "#00b500",
+      "#e6e600",
+      "#ca3838"
+    ],
+    "seg1": "1600",
+    "seg2": "1850",
+    "diff": false,
+    "className": "",
+    "x": 620,
+    "y": 280,
+    "wires": []
+  },
+  {
+    "id": "w906_ui_injection_quantity",
+    "type": "ui_text",
+    "z": "w906_flow_tab",
+    "group": "w906_grp_fuel",
+    "order": 2,
+    "width": 6,
+    "height": 1,
+    "name": "Einspritzmenge",
+    "label": "Einspritzmenge",
+    "format": "{{msg.payload}}",
+    "layout": "row-spread",
+    "className": "",
+    "style": false,
+    "font": "",
+    "fontSize": 16,
+    "color": "#000000",
+    "x": 620,
+    "y": 320,
+    "wires": []
+  },
+  {
+    "id": "w906_ui_fuel_l",
+    "type": "ui_text",
+    "z": "w906_flow_tab",
+    "group": "w906_grp_fuel",
+    "order": 3,
+    "width": 6,
+    "height": 1,
+    "name": "Tankinhalt",
+    "label": "Tankinhalt",
+    "format": "{{msg.payload}}",
+    "layout": "row-spread",
+    "className": "",
+    "style": false,
+    "font": "",
+    "fontSize": 16,
+    "color": "#000000",
+    "x": 620,
+    "y": 360,
+    "wires": []
+  },
+  {
+    "id": "w906_ui_fuel_temp",
+    "type": "ui_text",
+    "z": "w906_flow_tab",
+    "group": "w906_grp_fuel",
+    "order": 4,
+    "width": 6,
+    "height": 1,
+    "name": "Kraftstoff",
+    "label": "Kraftstoff",
+    "format": "{{msg.payload}}",
+    "layout": "row-spread",
+    "className": "",
+    "style": false,
+    "font": "",
+    "fontSize": 16,
+    "color": "#000000",
+    "x": 620,
+    "y": 400,
+    "wires": []
+  },
+  {
+    "id": "w906_ui_boost_pressure",
+    "type": "ui_gauge",
+    "z": "w906_flow_tab",
+    "name": "Ladedruck",
+    "group": "w906_grp_air",
+    "order": 1,
+    "width": 3,
+    "height": 3,
+    "gtype": "gage",
+    "title": "Ladedruck",
+    "label": "hPa",
+    "format": "{{value | number:0}}",
+    "min": 900,
+    "max": 3000,
+    "colors": [
+      "#00b500",
+      "#e6e600",
+      "#ca3838"
+    ],
+    "seg1": "2500",
+    "seg2": "2800",
+    "diff": false,
+    "className": "",
+    "x": 620,
+    "y": 440,
+    "wires": []
+  },
+  {
+    "id": "w906_ui_boost_pressure_lp",
+    "type": "ui_text",
+    "z": "w906_flow_tab",
+    "group": "w906_grp_air",
+    "order": 2,
+    "width": 6,
+    "height": 1,
+    "name": "Ladedruck nach ND-Lader",
+    "label": "Ladedruck nach ND-Lader",
+    "format": "{{msg.payload}}",
+    "layout": "row-spread",
+    "className": "",
+    "style": false,
+    "font": "",
+    "fontSize": 16,
+    "color": "#000000",
+    "x": 620,
+    "y": 480,
+    "wires": []
+  },
+  {
+    "id": "w906_ui_air_mass_per_stroke",
+    "type": "ui_text",
+    "z": "w906_flow_tab",
+    "group": "w906_grp_air",
+    "order": 3,
+    "width": 6,
+    "height": 1,
+    "name": "Luftmasse",
+    "label": "Luftmasse",
+    "format": "{{msg.payload}}",
+    "layout": "row-spread",
+    "className": "",
+    "style": false,
+    "font": "",
+    "fontSize": 16,
+    "color": "#000000",
+    "x": 620,
+    "y": 520,
+    "wires": []
+  },
+  {
+    "id": "w906_ui_egr_rate",
+    "type": "ui_text",
+    "z": "w906_flow_tab",
+    "group": "w906_grp_air",
+    "order": 4,
+    "width": 6,
+    "height": 1,
+    "name": "AGR-Rate",
+    "label": "AGR-Rate",
+    "format": "{{msg.payload}}",
+    "layout": "row-spread",
+    "className": "",
+    "style": false,
+    "font": "",
+    "fontSize": 16,
+    "color": "#000000",
+    "x": 620,
+    "y": 560,
+    "wires": []
+  },
+  {
+    "id": "w906_ui_wastegate",
+    "type": "ui_text",
+    "z": "w906_flow_tab",
+    "group": "w906_grp_air",
+    "order": 5,
+    "width": 6,
+    "height": 1,
+    "name": "Wastegate",
+    "label": "Wastegate",
+    "format": "{{msg.payload}}",
+    "layout": "row-spread",
+    "className": "",
+    "style": false,
+    "font": "",
+    "fontSize": 16,
+    "color": "#000000",
+    "x": 620,
+    "y": 600,
+    "wires": []
+  },
+  {
+    "id": "w906_ui_intake_air_tmp",
+    "type": "ui_text",
+    "z": "w906_flow_tab",
+    "group": "w906_grp_air",
+    "order": 6,
+    "width": 6,
+    "height": 1,
+    "name": "Ansaugluft",
+    "label": "Ansaugluft",
+    "format": "{{msg.payload}}",
+    "layout": "row-spread",
+    "className": "",
+    "style": false,
+    "font": "",
+    "fontSize": 16,
+    "color": "#000000",
+    "x": 620,
+    "y": 640,
+    "wires": []
+  },
+  {
+    "id": "w906_ui_intake_air_pressure",
+    "type": "ui_text",
+    "z": "w906_flow_tab",
+    "group": "w906_grp_air",
+    "order": 7,
+    "width": 6,
+    "height": 1,
+    "name": "Ansaugluftdruck",
+    "label": "Ansaugluftdruck",
+    "format": "{{msg.payload}}",
+    "layout": "row-spread",
+    "className": "",
+    "style": false,
+    "font": "",
+    "fontSize": 16,
+    "color": "#000000",
+    "x": 620,
+    "y": 680,
+    "wires": []
+  },
+  {
+    "id": "w906_ui_baro_pressure",
+    "type": "ui_text",
+    "z": "w906_flow_tab",
+    "group": "w906_grp_air",
+    "order": 8,
+    "width": 6,
+    "height": 1,
+    "name": "Atmosphärendruck",
+    "label": "Atmosphärendruck",
+    "format": "{{msg.payload}}",
+    "layout": "row-spread",
+    "className": "",
+    "style": false,
+    "font": "",
+    "fontSize": 16,
+    "color": "#000000",
+    "x": 620,
+    "y": 720,
+    "wires": []
+  },
+  {
+    "id": "w906_ui_charge_air_temp_pre_ic",
+    "type": "ui_text",
+    "z": "w906_flow_tab",
+    "group": "w906_grp_air",
+    "order": 9,
+    "width": 6,
+    "height": 1,
+    "name": "Ladeluft vor LLK",
+    "label": "Ladeluft vor LLK",
+    "format": "{{msg.payload}}",
+    "layout": "row-spread",
+    "className": "",
+    "style": false,
+    "font": "",
+    "fontSize": 16,
+    "color": "#000000",
+    "x": 620,
+    "y": 760,
+    "wires": []
+  },
+  {
+    "id": "w906_ui_charge_air_temp_post_ic",
+    "type": "ui_text",
+    "z": "w906_flow_tab",
+    "group": "w906_grp_air",
+    "order": 10,
+    "width": 6,
+    "height": 1,
+    "name": "Ladeluft nach LLK",
+    "label": "Ladeluft nach LLK",
+    "format": "{{msg.payload}}",
+    "layout": "row-spread",
+    "className": "",
+    "style": false,
+    "font": "",
+    "fontSize": 16,
+    "color": "#000000",
+    "x": 620,
+    "y": 800,
     "wires": []
   },
   {
@@ -272,7 +619,7 @@
     "diff": false,
     "className": "",
     "x": 620,
-    "y": 240,
+    "y": 840,
     "wires": []
   },
   {
@@ -300,7 +647,7 @@
     "diff": false,
     "className": "",
     "x": 620,
-    "y": 280,
+    "y": 880,
     "wires": []
   },
   {
@@ -328,7 +675,7 @@
     "diff": false,
     "className": "",
     "x": 620,
-    "y": 320,
+    "y": 920,
     "wires": []
   },
   {
@@ -356,7 +703,35 @@
     "diff": false,
     "className": "",
     "x": 620,
-    "y": 360,
+    "y": 960,
+    "wires": []
+  },
+  {
+    "id": "w906_ui_exhaust_back_pressure",
+    "type": "ui_gauge",
+    "z": "w906_flow_tab",
+    "name": "Abgasgegendruck",
+    "group": "w906_grp_exhaust",
+    "order": 5,
+    "width": 3,
+    "height": 3,
+    "gtype": "gage",
+    "title": "Abgasgegendruck",
+    "label": "hPa",
+    "format": "{{value | number:0}}",
+    "min": 900,
+    "max": 3000,
+    "colors": [
+      "#00b500",
+      "#e6e600",
+      "#ca3838"
+    ],
+    "seg1": "2200",
+    "seg2": "2600",
+    "diff": false,
+    "className": "",
+    "x": 620,
+    "y": 1000,
     "wires": []
   },
   {
@@ -365,7 +740,7 @@
     "z": "w906_flow_tab",
     "name": "DPF Differenzdruck",
     "group": "w906_grp_exhaust",
-    "order": 5,
+    "order": 6,
     "width": 3,
     "height": 3,
     "gtype": "gage",
@@ -384,7 +759,7 @@
     "diff": false,
     "className": "",
     "x": 620,
-    "y": 400,
+    "y": 1040,
     "wires": []
   },
   {
@@ -392,7 +767,7 @@
     "type": "ui_text",
     "z": "w906_flow_tab",
     "group": "w906_grp_exhaust",
-    "order": 6,
+    "order": 7,
     "width": 6,
     "height": 1,
     "name": "nach AGR-Kühler",
@@ -405,19 +780,19 @@
     "fontSize": 16,
     "color": "#000000",
     "x": 620,
-    "y": 440,
+    "y": 1080,
     "wires": []
   },
   {
-    "id": "w906_ui_charge_air_temp_pre_ic",
+    "id": "w906_ui_lambda",
     "type": "ui_text",
     "z": "w906_flow_tab",
-    "group": "w906_grp_air",
-    "order": 1,
+    "group": "w906_grp_exhaust",
+    "order": 8,
     "width": 6,
     "height": 1,
-    "name": "Ladeluft vor LLK",
-    "label": "Ladeluft vor LLK",
+    "name": "Lambda",
+    "label": "Lambda",
     "format": "{{msg.payload}}",
     "layout": "row-spread",
     "className": "",
@@ -426,49 +801,7 @@
     "fontSize": 16,
     "color": "#000000",
     "x": 620,
-    "y": 480,
-    "wires": []
-  },
-  {
-    "id": "w906_ui_charge_air_temp_post_ic",
-    "type": "ui_text",
-    "z": "w906_flow_tab",
-    "group": "w906_grp_air",
-    "order": 2,
-    "width": 6,
-    "height": 1,
-    "name": "Ladeluft nach LLK",
-    "label": "Ladeluft nach LLK",
-    "format": "{{msg.payload}}",
-    "layout": "row-spread",
-    "className": "",
-    "style": false,
-    "font": "",
-    "fontSize": 16,
-    "color": "#000000",
-    "x": 620,
-    "y": 520,
-    "wires": []
-  },
-  {
-    "id": "w906_ui_fuel_temp",
-    "type": "ui_text",
-    "z": "w906_flow_tab",
-    "group": "w906_grp_air",
-    "order": 3,
-    "width": 6,
-    "height": 1,
-    "name": "Kraftstoff",
-    "label": "Kraftstoff",
-    "format": "{{msg.payload}}",
-    "layout": "row-spread",
-    "className": "",
-    "style": false,
-    "font": "",
-    "fontSize": 16,
-    "color": "#000000",
-    "x": 620,
-    "y": 560,
+    "y": 1120,
     "wires": []
   },
   {
@@ -476,8 +809,8 @@
     "type": "function",
     "z": "w906_flow_tab",
     "name": "Werte verteilen",
-    "func": "// The WiCAN sends {\"ecu\":\"offline\"} instead of stale values while the vehicle is asleep\nconst meta = {\"ENGINE_RPM\": {\"kind\": \"gauge\", \"unit\": \"1/min\", \"digits\": 1}, \"COOLANT_TMP\": {\"kind\": \"gauge\", \"unit\": \"°C\", \"digits\": 1}, \"ENGINE_OIL_TEMP\": {\"kind\": \"gauge\", \"unit\": \"°C\", \"digits\": 1}, \"OIL_LEVEL\": {\"kind\": \"text\", \"unit\": \"mm\", \"digits\": 0}, \"LAMBDA\": {\"kind\": \"text\", \"unit\": \"\", \"digits\": 2}, \"EGT_PRE_TURBO\": {\"kind\": \"gauge\", \"unit\": \"°C\", \"digits\": 1}, \"EGT_PRE_CAT\": {\"kind\": \"gauge\", \"unit\": \"°C\", \"digits\": 1}, \"EGT_PRE_DPF\": {\"kind\": \"gauge\", \"unit\": \"°C\", \"digits\": 1}, \"EGT_PRE_SCR\": {\"kind\": \"gauge\", \"unit\": \"°C\", \"digits\": 1}, \"DPF_DIFF_PRESSURE\": {\"kind\": \"gauge\", \"unit\": \"hPa\", \"digits\": 1}, \"EGT_POST_EGR_COOLER\": {\"kind\": \"text\", \"unit\": \"°C\", \"digits\": 1}, \"CHARGE_AIR_TEMP_PRE_IC\": {\"kind\": \"text\", \"unit\": \"°C\", \"digits\": 1}, \"CHARGE_AIR_TEMP_POST_IC\": {\"kind\": \"text\", \"unit\": \"°C\", \"digits\": 1}, \"FUEL_TEMP\": {\"kind\": \"text\", \"unit\": \"°C\", \"digits\": 1}};\nconst keys = [\"ENGINE_RPM\", \"COOLANT_TMP\", \"ENGINE_OIL_TEMP\", \"OIL_LEVEL\", \"LAMBDA\", \"EGT_PRE_TURBO\", \"EGT_PRE_CAT\", \"EGT_PRE_DPF\", \"EGT_PRE_SCR\", \"DPF_DIFF_PRESSURE\", \"EGT_POST_EGR_COOLER\", \"CHARGE_AIR_TEMP_PRE_IC\", \"CHARGE_AIR_TEMP_POST_IC\", \"FUEL_TEMP\"];\nconst p = msg.payload || {};\nconst offline = p.ecu === 'offline';\nconst out = keys.map(k => {\n    const m = meta[k];\n    if (offline) return { topic: k, payload: m.kind === 'gauge' ? 0 : '–' };\n    if (typeof p[k] !== 'number') return null;\n    if (m.kind === 'gauge') return { topic: k, payload: p[k] };\n    return { topic: k, payload: (p[k].toFixed(m.digits) + ' ' + m.unit).trim() };\n});\nout.push({ payload: offline ? 'schläft (IGN aus)' : 'aktiv' });\nreturn out;",
-    "outputs": 15,
+    "func": "// The WiCAN sends {\"ecu\":\"offline\"} instead of stale values while the vehicle is asleep\nconst meta = {\"ENGINE_RPM\": {\"kind\": \"gauge\", \"unit\": \"1/min\", \"digits\": 1}, \"ACCEL_PEDAL\": {\"kind\": \"gauge\", \"unit\": \"%\", \"digits\": 1}, \"COOLANT_TMP\": {\"kind\": \"gauge\", \"unit\": \"°C\", \"digits\": 1}, \"ENGINE_OIL_TEMP\": {\"kind\": \"gauge\", \"unit\": \"°C\", \"digits\": 1}, \"OIL_LEVEL\": {\"kind\": \"text\", \"unit\": \"mm\", \"digits\": 0}, \"ECU_DISTANCE\": {\"kind\": \"text\", \"unit\": \"km\", \"digits\": 0}, \"RAIL_PRESSURE\": {\"kind\": \"gauge\", \"unit\": \"bar\", \"digits\": 1}, \"INJECTION_QUANTITY\": {\"kind\": \"text\", \"unit\": \"mg\", \"digits\": 1}, \"FUEL_L\": {\"kind\": \"text\", \"unit\": \"L\", \"digits\": 0}, \"FUEL_TEMP\": {\"kind\": \"text\", \"unit\": \"°C\", \"digits\": 1}, \"BOOST_PRESSURE\": {\"kind\": \"gauge\", \"unit\": \"hPa\", \"digits\": 1}, \"BOOST_PRESSURE_LP\": {\"kind\": \"text\", \"unit\": \"hPa\", \"digits\": 0}, \"AIR_MASS_PER_STROKE\": {\"kind\": \"text\", \"unit\": \"mg/Hub\", \"digits\": 0}, \"EGR_RATE\": {\"kind\": \"text\", \"unit\": \"%\", \"digits\": 1}, \"WASTEGATE\": {\"kind\": \"text\", \"unit\": \"%\", \"digits\": 1}, \"INTAKE_AIR_TMP\": {\"kind\": \"text\", \"unit\": \"°C\", \"digits\": 1}, \"INTAKE_AIR_PRESSURE\": {\"kind\": \"text\", \"unit\": \"hPa\", \"digits\": 0}, \"BARO_PRESSURE\": {\"kind\": \"text\", \"unit\": \"hPa\", \"digits\": 0}, \"CHARGE_AIR_TEMP_PRE_IC\": {\"kind\": \"text\", \"unit\": \"°C\", \"digits\": 1}, \"CHARGE_AIR_TEMP_POST_IC\": {\"kind\": \"text\", \"unit\": \"°C\", \"digits\": 1}, \"EGT_PRE_TURBO\": {\"kind\": \"gauge\", \"unit\": \"°C\", \"digits\": 1}, \"EGT_PRE_CAT\": {\"kind\": \"gauge\", \"unit\": \"°C\", \"digits\": 1}, \"EGT_PRE_DPF\": {\"kind\": \"gauge\", \"unit\": \"°C\", \"digits\": 1}, \"EGT_PRE_SCR\": {\"kind\": \"gauge\", \"unit\": \"°C\", \"digits\": 1}, \"EXHAUST_BACK_PRESSURE\": {\"kind\": \"gauge\", \"unit\": \"hPa\", \"digits\": 1}, \"DPF_DIFF_PRESSURE\": {\"kind\": \"gauge\", \"unit\": \"hPa\", \"digits\": 1}, \"EGT_POST_EGR_COOLER\": {\"kind\": \"text\", \"unit\": \"°C\", \"digits\": 1}, \"LAMBDA\": {\"kind\": \"text\", \"unit\": \"\", \"digits\": 2}};\nconst keys = [\"ENGINE_RPM\", \"ACCEL_PEDAL\", \"COOLANT_TMP\", \"ENGINE_OIL_TEMP\", \"OIL_LEVEL\", \"ECU_DISTANCE\", \"RAIL_PRESSURE\", \"INJECTION_QUANTITY\", \"FUEL_L\", \"FUEL_TEMP\", \"BOOST_PRESSURE\", \"BOOST_PRESSURE_LP\", \"AIR_MASS_PER_STROKE\", \"EGR_RATE\", \"WASTEGATE\", \"INTAKE_AIR_TMP\", \"INTAKE_AIR_PRESSURE\", \"BARO_PRESSURE\", \"CHARGE_AIR_TEMP_PRE_IC\", \"CHARGE_AIR_TEMP_POST_IC\", \"EGT_PRE_TURBO\", \"EGT_PRE_CAT\", \"EGT_PRE_DPF\", \"EGT_PRE_SCR\", \"EXHAUST_BACK_PRESSURE\", \"DPF_DIFF_PRESSURE\", \"EGT_POST_EGR_COOLER\", \"LAMBDA\"];\nconst p = msg.payload || {};\nconst offline = p.ecu === 'offline';\nconst out = keys.map(k => {\n    const m = meta[k];\n    if (offline) return { topic: k, payload: m.kind === 'gauge' ? 0 : '–' };\n    if (typeof p[k] !== 'number') return null;\n    if (m.kind === 'gauge') return { topic: k, payload: p[k] };\n    return { topic: k, payload: (p[k].toFixed(m.digits) + ' ' + m.unit).trim() };\n});\nout.push({ payload: offline ? 'schläft (IGN aus)' : 'aktiv' });\nreturn out;",
+    "outputs": 29,
     "timeout": 0,
     "noerr": 0,
     "initialize": "",
@@ -490,6 +823,9 @@
         "w906_ui_engine_rpm"
       ],
       [
+        "w906_ui_accel_pedal"
+      ],
+      [
         "w906_ui_coolant_tmp"
       ],
       [
@@ -499,7 +835,49 @@
         "w906_ui_oil_level"
       ],
       [
-        "w906_ui_lambda"
+        "w906_ui_ecu_distance"
+      ],
+      [
+        "w906_ui_rail_pressure"
+      ],
+      [
+        "w906_ui_injection_quantity"
+      ],
+      [
+        "w906_ui_fuel_l"
+      ],
+      [
+        "w906_ui_fuel_temp"
+      ],
+      [
+        "w906_ui_boost_pressure"
+      ],
+      [
+        "w906_ui_boost_pressure_lp"
+      ],
+      [
+        "w906_ui_air_mass_per_stroke"
+      ],
+      [
+        "w906_ui_egr_rate"
+      ],
+      [
+        "w906_ui_wastegate"
+      ],
+      [
+        "w906_ui_intake_air_tmp"
+      ],
+      [
+        "w906_ui_intake_air_pressure"
+      ],
+      [
+        "w906_ui_baro_pressure"
+      ],
+      [
+        "w906_ui_charge_air_temp_pre_ic"
+      ],
+      [
+        "w906_ui_charge_air_temp_post_ic"
       ],
       [
         "w906_ui_egt_pre_turbo"
@@ -514,19 +892,16 @@
         "w906_ui_egt_pre_scr"
       ],
       [
+        "w906_ui_exhaust_back_pressure"
+      ],
+      [
         "w906_ui_dpf_diff_pressure"
       ],
       [
         "w906_ui_egt_post_egr_cooler"
       ],
       [
-        "w906_ui_charge_air_temp_pre_ic"
-      ],
-      [
-        "w906_ui_charge_air_temp_post_ic"
-      ],
-      [
-        "w906_ui_fuel_temp"
+        "w906_ui_lambda"
       ],
       [
         "w906_ui_ecu"

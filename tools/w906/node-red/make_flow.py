@@ -16,8 +16,8 @@ args = parser.parse_args()
 BROKER = args.broker_id or "w906_mqtt_broker"
 TAB, UI_TAB = "w906_flow_tab", "w906_ui_tab"
 G = {"status": ("w906_grp_status", "Status", 6, 1), "engine": ("w906_grp_engine", "Motor", 6, 2),
-     "exhaust": ("w906_grp_exhaust", "Abgas", 6, 3), "air": ("w906_grp_air", "Luft & Kraftstoff", 6, 4),
-     "charts": ("w906_grp_charts", "Verlauf", 12, 5)}
+     "fuel": ("w906_grp_fuel", "Kraftstoff", 6, 3), "air": ("w906_grp_air", "Ladeluft", 6, 4),
+     "exhaust": ("w906_grp_exhaust", "Abgas", 6, 5), "charts": ("w906_grp_charts", "Verlauf", 12, 6)}
 
 nodes = [{"id": TAB, "type": "tab", "label": "Sprinter Motor", "disabled": False,
           "info": "Live-Daten WiCAN W906 via MQTT " + args.topic},
@@ -35,26 +35,40 @@ for gid, name, width, order in G.values():
 # name, label, unit, group, kind, min, max, sectors
 VALUES = [
     ("ENGINE_RPM", "Drehzahl", "1/min", "engine", "gauge", 0, 4500, (3500, 4200)),
+    ("ACCEL_PEDAL", "Fahrpedal", "%", "engine", "gauge", 0, 100, (80, 95)),
     ("COOLANT_TMP", "Kühlmittel", "°C", "engine", "gauge", 0, 120, (60, 105)),
     ("ENGINE_OIL_TEMP", "Motoröl", "°C", "engine", "gauge", 0, 140, (60, 120)),
     ("OIL_LEVEL", "Ölstand", "mm", "engine", "text", None, None, None),
-    ("LAMBDA", "Lambda", "", "engine", "text", None, None, None),
+    ("ECU_DISTANCE", "Laufleistung (ECU)", "km", "engine", "text", None, None, None),
+    ("RAIL_PRESSURE", "Raildruck", "bar", "fuel", "gauge", 0, 2000, (1600, 1850)),
+    ("INJECTION_QUANTITY", "Einspritzmenge", "mg", "fuel", "text", None, None, None),
+    ("FUEL_L", "Tankinhalt", "L", "fuel", "text", None, None, None),
+    ("FUEL_TEMP", "Kraftstoff", "°C", "fuel", "text", None, None, None),
+    ("BOOST_PRESSURE", "Ladedruck", "hPa", "air", "gauge", 900, 3000, (2500, 2800)),
+    ("BOOST_PRESSURE_LP", "Ladedruck nach ND-Lader", "hPa", "air", "text", None, None, None),
+    ("AIR_MASS_PER_STROKE", "Luftmasse", "mg/Hub", "air", "text", None, None, None),
+    ("EGR_RATE", "AGR-Rate", "%", "air", "text", None, None, None),
+    ("WASTEGATE", "Wastegate", "%", "air", "text", None, None, None),
+    ("INTAKE_AIR_TMP", "Ansaugluft", "°C", "air", "text", None, None, None),
+    ("INTAKE_AIR_PRESSURE", "Ansaugluftdruck", "hPa", "air", "text", None, None, None),
+    ("BARO_PRESSURE", "Atmosphärendruck", "hPa", "air", "text", None, None, None),
+    ("CHARGE_AIR_TEMP_PRE_IC", "Ladeluft vor LLK", "°C", "air", "text", None, None, None),
+    ("CHARGE_AIR_TEMP_POST_IC", "Ladeluft nach LLK", "°C", "air", "text", None, None, None),
     ("EGT_PRE_TURBO", "vor Turbo", "°C", "exhaust", "gauge", 0, 800, (600, 750)),
     ("EGT_PRE_CAT", "vor Kat", "°C", "exhaust", "gauge", 0, 700, (550, 650)),
     ("EGT_PRE_DPF", "vor DPF", "°C", "exhaust", "gauge", 0, 700, (550, 650)),
     ("EGT_PRE_SCR", "vor SCR", "°C", "exhaust", "gauge", 0, 600, (450, 550)),
+    ("EXHAUST_BACK_PRESSURE", "Abgasgegendruck", "hPa", "exhaust", "gauge", 900, 3000, (2200, 2600)),
     ("DPF_DIFF_PRESSURE", "DPF Differenzdruck", "hPa", "exhaust", "gauge", 0, 200, (100, 160)),
     ("EGT_POST_EGR_COOLER", "nach AGR-Kühler", "°C", "exhaust", "text", None, None, None),
-    ("CHARGE_AIR_TEMP_PRE_IC", "Ladeluft vor LLK", "°C", "air", "text", None, None, None),
-    ("CHARGE_AIR_TEMP_POST_IC", "Ladeluft nach LLK", "°C", "air", "text", None, None, None),
-    ("FUEL_TEMP", "Kraftstoff", "°C", "air", "text", None, None, None),
+    ("LAMBDA", "Lambda", "", "exhaust", "text", None, None, None),
 ]
 
 nodes.append({"id": "w906_mqtt_engine", "type": "mqtt in", "z": TAB, "name": "WiCAN Motordaten", "topic": args.topic,
               "qos": "0", "datatype": "json", "broker": BROKER, "nl": False, "rap": True, "rh": 0, "inputs": 0,
               "x": 150, "y": 100, "wires": [["w906_split", "w906_charts_fn", "w906_live_trigger"]]})
 
-meta = {v[0]: {"kind": v[4], "unit": v[2], "digits": 2 if v[0] == "LAMBDA" else (0 if v[0] == "OIL_LEVEL" else 1)} for v in VALUES}
+meta = {v[0]: {"kind": v[4], "unit": v[2], "digits": 2 if v[0] == "LAMBDA" else (0 if v[0] in ("OIL_LEVEL", "ECU_DISTANCE", "FUEL_L", "BOOST_PRESSURE_LP", "INTAKE_AIR_PRESSURE", "BARO_PRESSURE", "AIR_MASS_PER_STROKE") else 1)} for v in VALUES}
 split_code = (
     "// The WiCAN sends {\"ecu\":\"offline\"} instead of stale values while the vehicle is asleep\n"
     "const meta = %s;\n"

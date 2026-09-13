@@ -52,6 +52,7 @@
 #include "lwip/netdb.h"
 #include "lwip/err.h"
 #include <errno.h>
+#include "dtc_decode.h"
 
 #define TAG "AUTOPID"
 
@@ -74,6 +75,8 @@ static bool autopid_ecu_asleep(void)
 #define ECU_CONNECTED_BIT			        BIT0
 #define AUTOPID_POLLING_DISABLED_BIT	    BIT1
 #define AUTOPID_REQUEST_BIT			        BIT2
+#define AUTOPID_DTC_READ_BIT			    BIT3
+#define AUTOPID_DTC_CLEAR_BIT			    BIT4
 
 static char auto_pid_buf[BUFFER_SIZE];
 static QueueHandle_t autopidQueue;
@@ -938,6 +941,23 @@ void autopid_request_data(void)
 }
 
 
+void autopid_request_dtc(bool clear)
+{
+    if (xautopid_event_group == NULL)
+    {
+        return;
+    }
+
+    EventBits_t bits = clear ? AUTOPID_DTC_CLEAR_BIT : AUTOPID_DTC_READ_BIT;
+
+    // The task only runs on request while polling is disabled
+    if (xEventGroupGetBits(xautopid_event_group) & AUTOPID_POLLING_DISABLED_BIT)
+    {
+        bits |= AUTOPID_REQUEST_BIT;
+    }
+    xEventGroupSetBits(xautopid_event_group, bits);
+}
+
 char *autopid_data_read(void)
 {
     static char *json_str = NULL;
@@ -1542,6 +1562,236 @@ static void publish_parameter_mqtt(parameter_t *param) {
 }
 
 
+// Trouble codes of the Mercedes-Benz Sprinter W906 control units, read and cleared on the MQTT
+// commands read_dtc / clear_dtc. Addresses, services and status masks as used by Xentry.
+typedef enum
+{
+    DTC_UDS = 0,
+    DTC_KWP,
+} dtc_protocol_t;
+
+typedef struct
+{
+    const char *name;
+    uint16_t tx_id;
+    uint16_t rx_id;
+    dtc_protocol_t protocol;
+    uint8_t status_mask;
+} dtc_ecu_t;
+
+static const dtc_ecu_t dtc_ecus[] = {
+    {"N73 Elektronisches Zündschloss (EZS)",        0x4E0, 0x5FF, DTC_KWP, 0x00},
+    {"N3/28 Motorelektronik (CDID3)",               0x7E0, 0x7E8, DTC_UDS, 0x2D},
+    {"Y3/8n4 Getriebesteuerung (NAG2)",             0x7E1, 0x7E9, DTC_KWP, 0x00},
+    {"N15/5 Wählhebelmodul (EWM)",                  0x788, 0x789, DTC_KWP, 0x00},
+    {"N30/4 ESP",                                   0x784, 0x785, DTC_UDS, 0x0C},
+    {"N10 SAM",                                     0x662, 0x4E2, DTC_KWP, 0x00},
+    {"N118/5 Kraftstoffpumpe (FSCU)",               0x778, 0x779, DTC_UDS, 0x0C},
+    {"N28/4 Anhängererkennung (AHE)",               0x730, 0x4F0, DTC_UDS, 0x0D},
+    {"N80 Mantelrohrmodul (MRM)",                   0x792, 0x793, DTC_KWP, 0x00},
+    {"N70 Dachbedieneinheit (DBE)",                 0x667, 0x4E7, DTC_KWP, 0x00},
+    {"N72/1 Oberes Bedienfeld (OBF)",               0x6A5, 0x4E5, DTC_UDS, 0x0D},
+    {"B162 Collision Prevention Assist",            0x65E, 0x48B, DTC_UDS, 0x0D},
+    {"N87/8 Radio",                                 0x5D6, 0x4F6, DTC_UDS, 0x0C},
+    {"A2/30 Navigationsmodul",                      0x633, 0x4C6, DTC_UDS, 0x0C},
+    {"A1 Kombiinstrument",                          0x796, 0x797, DTC_KWP, 0x00},
+    {"S98 Klimaanlage",                             0x791, 0x4F1, DTC_KWP, 0x00},
+    {"N2/14 Rückhaltesystem (SRS)",                 0x6BC, 0x4FC, DTC_KWP, 0x00},
+    {"N69/1 Fahrertür (TSG)",                       0x6C8, 0x4E8, DTC_KWP, 0x00},
+};
+
+#define DTC_ECU_COUNT       (sizeof(dtc_ecus) / sizeof(dtc_ecus[0]))
+#define DTC_MSG_SIZE        512
+
+// Returns the length of the positive response, 0 without response or -NRC
+static int dtc_request(const char *request, uint8_t response_sid, uint8_t *msg)
+{
+    char cmd[24];
+    twai_message_t tx_msg;
+
+    snprintf(cmd, sizeof(cmd), "%s\r", request);
+    while (xQueueReceive(autopidQueue, &elm327_response, 0) == pdPASS);
+
+    elm327_process_cmd((uint8_t*)cmd, strlen(cmd), &tx_msg, &autopidQueue);
+
+    if (xQueueReceive(autopidQueue, &elm327_response, pdMS_TO_TICKS(1000)) != pdPASS ||
+        (elm327_response.length == 5 && memcmp(elm327_response.data, "error", 5) == 0))
+    {
+        return 0;
+    }
+    return dtc_find_response(elm327_response.data, elm327_response.length, response_sid, msg, DTC_MSG_SIZE);
+}
+
+static int dtc_read(const dtc_ecu_t *ecu, uint8_t *msg, cJSON *dtcs, int *count)
+{
+    char request[16];
+    char code[16];
+    char status[4];
+    int length;
+
+    *count = 0;
+
+    if (ecu->protocol == DTC_UDS)
+    {
+        // 59 02 <availability mask> [DTC high, middle, low, status] ...
+        snprintf(request, sizeof(request), "1902%02X", ecu->status_mask);
+        length = dtc_request(request, 0x59, msg);
+
+        for (int i = 3; length > 0 && i + 4 <= length; i += 4)
+        {
+            cJSON *dtc = cJSON_CreateObject();
+            dtc_format_uds(&msg[i], code, sizeof(code));
+            snprintf(status, sizeof(status), "%02X", msg[i + 3]);
+            cJSON_AddStringToObject(dtc, "code", code);
+            cJSON_AddStringToObject(dtc, "status", status);
+            cJSON_AddBoolToObject(dtc, "active", msg[i + 3] & 0x01);
+            cJSON_AddItemToArray(dtcs, dtc);
+            (*count)++;
+        }
+    }
+    else
+    {
+        // 58 <count> [DTC high, low, status] ...
+        length = dtc_request("1802FF00", 0x58, msg);
+
+        for (int i = 2; length > 0 && i + 3 <= length; i += 3)
+        {
+            cJSON *dtc = cJSON_CreateObject();
+            dtc_format_kwp(&msg[i], code, sizeof(code));
+            snprintf(status, sizeof(status), "%02X", msg[i + 2]);
+            cJSON_AddStringToObject(dtc, "code", code);
+            cJSON_AddStringToObject(dtc, "status", status);
+            cJSON_AddItemToArray(dtcs, dtc);
+            (*count)++;
+        }
+    }
+    return length;
+}
+
+static void dtc_publish(const char *topic, cJSON *root, int retain)
+{
+    char *json = cJSON_PrintUnformatted(root);
+
+    if (json)
+    {
+        mqtt_publish((char*)topic, json, 0, 0, retain);
+        free(json);
+    }
+    cJSON_Delete(root);
+}
+
+static void autopid_dtc_scan(bool clear)
+{
+    const char *action = clear ? "clear" : "read";
+    const char *base = (all_pids->group_destination && strlen(all_pids->group_destination) > 0) ?
+                        all_pids->group_destination : config_server_get_mqtt_rx_topic();
+    char topic[128];
+    int64_t start = esp_timer_get_time();
+    int dtc_count = 0;
+
+    snprintf(topic, sizeof(topic), "%s/dtc", base);
+
+    if (autopid_ecu_asleep())
+    {
+        cJSON *error = cJSON_CreateObject();
+        cJSON_AddStringToObject(error, "state", "error");
+        cJSON_AddStringToObject(error, "action", action);
+        cJSON_AddStringToObject(error, "reason", "ecu_offline");
+        dtc_publish(topic, error, 0);
+        return;
+    }
+
+    uint8_t *msg = malloc(DTC_MSG_SIZE);
+    cJSON *root = cJSON_CreateObject();
+    cJSON *ecus = cJSON_CreateArray();
+
+    if (msg == NULL || root == NULL || ecus == NULL)
+    {
+        ESP_LOGE(TAG, "DTC scan: out of memory");
+        free(msg);
+        cJSON_Delete(root);
+        cJSON_Delete(ecus);
+        return;
+    }
+
+    ESP_LOGI(TAG, "DTC scan started (%s)", action);
+
+    for (size_t i = 0; i < DTC_ECU_COUNT; i++)
+    {
+        const dtc_ecu_t *ecu = &dtc_ecus[i];
+        char init[96];
+        char id[8];
+        int count = 0;
+
+        cJSON *progress = cJSON_CreateObject();
+        cJSON_AddStringToObject(progress, "state", "running");
+        cJSON_AddStringToObject(progress, "action", action);
+        cJSON_AddNumberToObject(progress, "ecu", i + 1);
+        cJSON_AddNumberToObject(progress, "total", DTC_ECU_COUNT);
+        dtc_publish(topic, progress, 0);
+
+        snprintf(init, sizeof(init), "ATSH%03X\rATCRA%03X\rATFCSH%03X\rATFCSD300000\rATFCSM1\r",
+                    ecu->tx_id, ecu->rx_id, ecu->tx_id);
+        send_commands(init, 2);
+
+        cJSON *item = cJSON_CreateObject();
+        cJSON *dtcs = cJSON_CreateArray();
+        snprintf(id, sizeof(id), "%03X", ecu->tx_id);
+        cJSON_AddStringToObject(item, "name", ecu->name);
+        cJSON_AddStringToObject(item, "id", id);
+        cJSON_AddStringToObject(item, "protocol", ecu->protocol == DTC_UDS ? "UDS" : "KWP");
+
+        // Same session handling as Xentry: extended/Mercedes session, request, default session
+        int length = dtc_request(ecu->protocol == DTC_UDS ? "1003" : "1092", 0x50, msg);
+
+        if (length > 0)
+        {
+            length = dtc_read(ecu, msg, dtcs, &count);
+
+            if (clear && length > 0 && count > 0)
+            {
+                int cleared = dtc_request(ecu->protocol == DTC_UDS ? "14FFFFFF" : "14FF00", 0x54, msg);
+                cJSON_AddBoolToObject(item, "cleared", cleared > 0);
+
+                cJSON_Delete(dtcs);
+                dtcs = cJSON_CreateArray();
+                length = dtc_read(ecu, msg, dtcs, &count);
+            }
+
+            dtc_request(ecu->protocol == DTC_UDS ? "1001" : "1081", 0x50, msg);
+        }
+
+        if (length > 0)
+        {
+            cJSON_AddStringToObject(item, "status", "ok");
+            dtc_count += count;
+        }
+        else if (length == 0)
+        {
+            cJSON_AddStringToObject(item, "status", "no_response");
+        }
+        else
+        {
+            char status[16];
+            snprintf(status, sizeof(status), "nrc_%02X", -length);
+            cJSON_AddStringToObject(item, "status", status);
+        }
+
+        cJSON_AddItemToObject(item, "dtcs", dtcs);
+        cJSON_AddItemToArray(ecus, item);
+    }
+
+    cJSON_AddStringToObject(root, "state", "done");
+    cJSON_AddStringToObject(root, "action", action);
+    cJSON_AddNumberToObject(root, "duration_ms", (double)((esp_timer_get_time() - start) / 1000));
+    cJSON_AddNumberToObject(root, "dtc_count", dtc_count);
+    cJSON_AddItemToObject(root, "ecus", ecus);
+    dtc_publish(topic, root, 1);
+
+    ESP_LOGI(TAG, "DTC scan done, %d DTCs", dtc_count);
+    free(msg);
+}
+
 static void autopid_task(void *pvParameters)
 {
     static char default_init[] = "ati\rate0\rath1\ratl0\rats1\ratsp6\ratst96\r";
@@ -1607,6 +1857,18 @@ static void autopid_task(void *pvParameters)
         if (xEventGroupGetBits(xautopid_event_group) & AUTOPID_POLLING_DISABLED_BIT) 
         {
             xEventGroupWaitBits(xautopid_event_group, AUTOPID_REQUEST_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+        }
+
+        EventBits_t dtc_request_bits = xEventGroupGetBits(xautopid_event_group) & (AUTOPID_DTC_READ_BIT | AUTOPID_DTC_CLEAR_BIT);
+
+        if (dtc_request_bits)
+        {
+            xEventGroupClearBits(xautopid_event_group, dtc_request_bits);
+            elm327_lock();
+            autopid_dtc_scan((dtc_request_bits & AUTOPID_DTC_CLEAR_BIT) != 0);
+            elm327_unlock();
+            // The scan changed header and filters, send the vehicle init again
+            previous_pid_type = PID_MAX;
         }
 
         bool ecu_probe = false;

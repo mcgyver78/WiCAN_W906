@@ -55,3 +55,6 @@ jobs:
           python-version: '3.11'
       - run: python -m unittest -v
         working-directory: tools/w906
+      - name: DTC decoder host test
+        run: cc -Wall -Wextra -Werror -I../../main ../../main/dtc_decode.c dtc_decode_test.c -o dtc_decode_test && ./dtc_decode_test
+        working-directory: tools/w906

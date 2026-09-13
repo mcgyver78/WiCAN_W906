@@ -298,6 +298,11 @@ static void mqtt_parse_data(void *handler_args, esp_event_base_t base, int32_t e
         {
             autopid_request_data();
         }
+        else if(strcmp(cmd->valuestring, "read_dtc") == 0 || strcmp(cmd->valuestring, "clear_dtc") == 0)
+        {
+            // Result is published by the AutoPID task on <group topic>/dtc
+            autopid_request_dtc(strcmp(cmd->valuestring, "clear_dtc") == 0);
+        }
         else
         {
             ESP_LOGW(TAG, "Unknown command received: %s", cmd->valuestring);

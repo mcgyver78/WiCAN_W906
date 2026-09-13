@@ -101,6 +101,20 @@
       "class": "power"
     }
   },
+  "CHARGE_AIR_TEMP_POST_IC": {
+    "description": "Charge air temperature after intercooler",
+    "settings": {
+      "unit": "°C",
+      "class": "temperature"
+    }
+  },
+  "CHARGE_AIR_TEMP_PRE_IC": {
+    "description": "Charge air temperature before intercooler",
+    "settings": {
+      "unit": "°C",
+      "class": "temperature"
+    }
+  },
   "CHARGING": {
     "description": "Is EV Charging",
     "settings": {
@@ -166,11 +180,53 @@
       "max": "10100"
     }
   },
+  "DPF_DIFF_PRESSURE": {
+    "description": "Diesel particulate filter differential pressure",
+    "settings": {
+      "unit": "hPa",
+      "class": "pressure"
+    }
+  },
   "DRIVE_MODE": {
     "description": "Drive Mode",
     "settings": {
       "unit": "",
       "class": "none"
+    }
+  },
+  "EGT_POST_EGR_COOLER": {
+    "description": "Exhaust gas temperature after EGR cooler",
+    "settings": {
+      "unit": "°C",
+      "class": "temperature"
+    }
+  },
+  "EGT_PRE_CAT": {
+    "description": "Exhaust gas temperature before catalytic converter",
+    "settings": {
+      "unit": "°C",
+      "class": "temperature"
+    }
+  },
+  "EGT_PRE_DPF": {
+    "description": "Exhaust gas temperature before diesel particulate filter",
+    "settings": {
+      "unit": "°C",
+      "class": "temperature"
+    }
+  },
+  "EGT_PRE_SCR": {
+    "description": "Exhaust gas temperature before SCR catalytic converter",
+    "settings": {
+      "unit": "°C",
+      "class": "temperature"
+    }
+  },
+  "EGT_PRE_TURBO": {
+    "description": "Exhaust gas temperature before turbocharger",
+    "settings": {
+      "unit": "°C",
+      "class": "temperature"
     }
   },
   "ENGINE_OIL_PRES": {
@@ -242,6 +298,13 @@
     "settings": {
       "unit": "",
       "class": "none"
+    }
+  },
+  "FUEL_TEMP": {
+    "description": "Fuel temperature",
+    "settings": {
+      "unit": "°C",
+      "class": "temperature"
     }
   },
   "GEAR": {
@@ -2523,6 +2586,13 @@
       "max": "1000000"
     }
   },
+  "LAMBDA": {
+    "description": "Lambda value",
+    "settings": {
+      "unit": "",
+      "class": "none"
+    }
+  },
   "LV_A": {
     "description": "12v Battery Current",
     "settings": {
@@ -2580,6 +2650,13 @@
     "description": "Distance till next oil change",
     "settings": {
       "unit": "km",
+      "class": "distance"
+    }
+  },
+  "OIL_LEVEL": {
+    "description": "Engine oil level",
+    "settings": {
+      "unit": "mm",
       "class": "distance"
     }
   },

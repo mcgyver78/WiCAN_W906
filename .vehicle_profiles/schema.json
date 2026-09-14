@@ -75,6 +75,8 @@
                 "DPF_DIFF_PRESSURE",
                 "DPF_KM_SINCE_REGEN",
                 "DPF_REGEN_STATUS",
+                "DPF_SOOT_MASS",
+                "DPF_SOOT_SIM",
                 "DRIVE_MODE",
                 "ECU_DISTANCE",
                 "EGR_RATE",

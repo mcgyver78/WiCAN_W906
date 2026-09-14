@@ -65,6 +65,8 @@ VALUES = [
     ("LAMBDA", "Lambda", "", "exhaust", "text", None, None, None),
     ("THROTTLE", "Drosselklappe", "%", "air", "text", None, None, None),
     ("EGR_VALVE", "AGR-Ventil", "%", "dpf", "text", None, None, None),
+    ("DPF_SOOT_MASS", "Rußmasse (gemessen)", "g", "dpf", "gauge", 0, 8, (6, 7.5)),
+    ("DPF_SOOT_SIM", "Rußmasse (simuliert)", "g", "dpf", "text", None, None, None),
     ("DPF_KM_SINCE_REGEN", "km seit Regeneration", "km", "dpf", "text", None, None, None),
     ("DPF_ASH", "Aschegehalt DPF", "g", "dpf", "text", None, None, None),
     ("DPF_REGEN_STATUS", "Regeneration", "", "dpf", "text", None, None, None),

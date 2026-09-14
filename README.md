@@ -2,7 +2,7 @@
 
 [www.meatpi.com](https://www.meatpi.com)
 ---
-> **WiCAN_W906 fork:** Mercedes-Benz Sprinter W906 (EU) support for the WiCAN OBD – CAN wake-up, 33 engine values via MQTT, idle mode, reading trouble codes of 18 control units (clearing not yet tested on the vehicle) and a Node-RED dashboard. Documentation: [English](W906.en.md) | [Deutsch](W906.md). Firmware: [Releases](https://github.com/mcgyver78/WiCAN_W906/releases).
+> **WiCAN_W906 fork:** Mercedes-Benz Sprinter W906 (EU) support for the WiCAN OBD – CAN wake-up, 33 engine values via MQTT, idle mode, reading/clearing trouble codes of 18 control units and a Node-RED dashboard. Documentation: [English](W906.en.md) | [Deutsch](W906.md). Firmware: [Releases](https://github.com/mcgyver78/WiCAN_W906/releases).
 
 
 ### [Documentation](https://meatpihq.github.io/wican-fw/) | [Supported Vehicles](https://meatpihq.github.io/wican-fw/config/automate/supported_vehicles) | [Firmware updates](https://github.com/meatpiHQ/wican-fw/releases/) | [Discord server](https://discord.com/invite/2hpHVDmyfw) | [Reddit](https://www.reddit.com/r/wican/)

@@ -262,6 +262,14 @@ static void mqtt_parse_data(void *handler_args, esp_event_base_t base, int32_t e
     {
         static char cmd_response[32] = {0};
 
+        // Commands are one-off actions. A retained one would run again after every reconnect and
+        // wake-up, e.g. clear_dtc.
+        if (event->retain)
+        {
+            ESP_LOGW(TAG, "Retained command ignored");
+            goto end;
+        }
+
         root = cJSON_Parse(event->data);
 
         if (root == NULL)

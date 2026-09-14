@@ -25,7 +25,7 @@ int dtc_isotp_next(const uint8_t *data, size_t len, size_t *pos, uint8_t *msg, s
 			{
 				size_t length = pci & 0x0F;
 
-				if(length == 0 || *pos + 1 + length > len || length > msg_size) return -1;
+				if(length == 0 || length >= ISOTP_FRAME_BYTES || *pos + 1 + length > len || length > msg_size) return -1;
 
 				memcpy(msg, &data[*pos + 1], length);
 				*pos += 1 + length;
@@ -37,8 +37,12 @@ int dtc_isotp_next(const uint8_t *data, size_t len, size_t *pos, uint8_t *msg, s
 
 				size_t total = ((size_t)(pci & 0x0F) << 8) | data[*pos + 1];
 				size_t copied = 0;
+				uint8_t sequence = 1;
 
-				for(size_t i = 2; i < ISOTP_FRAME_BYTES && copied < total && copied < msg_size; i++)
+				// Shorter messages are single frames, and the whole message has to fit into msg
+				if(total < ISOTP_FRAME_BYTES || total > msg_size) return -1;
+
+				for(size_t i = 2; i < ISOTP_FRAME_BYTES && copied < total; i++)
 				{
 					msg[copied++] = data[*pos + i];
 				}
@@ -46,13 +50,18 @@ int dtc_isotp_next(const uint8_t *data, size_t len, size_t *pos, uint8_t *msg, s
 
 				while(copied < total && *pos + ISOTP_FRAME_BYTES <= len && (data[*pos] & 0xF0) == 0x20)
 				{
-					for(size_t i = 1; i < ISOTP_FRAME_BYTES && copied < total && copied < msg_size; i++)
+					// Missing, repeated or reordered consecutive frame
+					if((data[*pos] & 0x0F) != sequence) return -1;
+
+					for(size_t i = 1; i < ISOTP_FRAME_BYTES && copied < total; i++)
 					{
 						msg[copied++] = data[*pos + i];
 					}
+					sequence = (sequence + 1) & 0x0F;
 					*pos += ISOTP_FRAME_BYTES;
 				}
-				return (int)copied;
+				// Consecutive frames cut off, e.g. by the response timeout or a full receive buffer
+				return copied == total ? (int)copied : -1;
 			}
 			default:
 				// Stray consecutive or flow control frame
@@ -67,18 +76,28 @@ int dtc_find_response(const uint8_t *data, size_t len, uint8_t sid, uint8_t *msg
 {
 	size_t pos = 0;
 	int length;
+	int result = 0;
 
-	while((length = dtc_isotp_next(data, len, &pos, msg, msg_size)) > 0)
+	while((length = dtc_isotp_next(data, len, &pos, msg, msg_size)) != 0)
 	{
+		if(length < 0) return DTC_RESPONSE_INCOMPLETE;
+
 		if(msg[0] == 0x7F && length >= 3)
 		{
+			// A negative response to another service belongs to an earlier request
+			if(msg[1] != (uint8_t)(sid - 0x40)) continue;
+
 			// 0x78: response pending, the real response follows
-			if(msg[2] == 0x78) continue;
+			if(msg[2] == 0x78)
+			{
+				result = DTC_RESPONSE_PENDING;
+				continue;
+			}
 			return -(int)msg[2];
 		}
 		if(msg[0] == sid) return length;
 	}
-	return 0;
+	return result;
 }
 
 void dtc_format_uds(const uint8_t *code, char *out, size_t out_size)

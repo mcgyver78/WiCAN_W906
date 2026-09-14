@@ -20,11 +20,16 @@
  * diagnostic messages from that byte stream and decode trouble codes.
  */
 
-// Next reassembled message from the byte stream. Returns its length, 0 at the end, -1 on malformed data.
+// Next reassembled message from the byte stream. Returns its length, 0 at the end, -1 on malformed or
+// incomplete data (missing, repeated or reordered consecutive frame, message larger than msg_size).
 int dtc_isotp_next(const uint8_t *data, size_t len, size_t *pos, uint8_t *msg, size_t msg_size);
 
-// Positive response with service id `sid`. Returns its length, 0 if none (response pending only)
-// or -NRC for a negative response.
+#define DTC_RESPONSE_INCOMPLETE     (-256)
+#define DTC_RESPONSE_PENDING        (-257)
+
+// Positive response with service id `sid`. Returns its length, 0 without response, -NRC for a negative
+// response to this service, DTC_RESPONSE_PENDING if the control unit only answered "response pending"
+// (7F xx 78) or DTC_RESPONSE_INCOMPLETE if the response could not be reassembled completely.
 int dtc_find_response(const uint8_t *data, size_t len, uint8_t sid, uint8_t *msg, size_t msg_size);
 
 // UDS 3 byte DTC, e.g. 24 2F FA -> "P242F-FA"

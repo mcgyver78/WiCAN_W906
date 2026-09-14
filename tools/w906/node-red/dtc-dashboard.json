@@ -91,7 +91,7 @@
     "type": "function",
     "z": "w906_dtc_flow_tab",
     "name": "WiCAN merken",
-    "func": "const id = msg.topic.split('/')[1];\nflow.set('wican_id', id);\nmsg.payload = id + ' (' + ((msg.payload && msg.payload.status) || '?') + ')';\nreturn msg;",
+    "func": "// Commands go to the WiCAN given with --device-id, otherwise to the only one online\nconst FIXED_ID = null;\nconst devices = flow.get('wican_devices') || {};\ndevices[msg.topic.split('/')[1]] = (msg.payload && msg.payload.status) || '?';\nflow.set('wican_devices', devices);\nconst online = Object.keys(devices).filter(id => devices[id] === 'online');\nif (FIXED_ID) {\n    flow.set('wican_id', FIXED_ID);\n    msg.payload = FIXED_ID + ' (' + (devices[FIXED_ID] || '?') + ')';\n} else if (online.length === 1) {\n    flow.set('wican_id', online[0]);\n    msg.payload = online[0] + ' (online)';\n} else {\n    flow.set('wican_id', null);\n    msg.payload = online.length ? online.length + ' WiCANs online, Flow mit --device-id erzeugen'\n                                : 'kein WiCAN online';\n}\nreturn msg;",
     "outputs": 1,
     "timeout": 0,
     "noerr": 0,
@@ -179,6 +179,26 @@
     "y": 200,
     "wires": [
       [
+        "w906_dtc_confirm_text"
+      ]
+    ]
+  },
+  {
+    "id": "w906_dtc_confirm_text",
+    "type": "function",
+    "z": "w906_dtc_flow_tab",
+    "name": "Sicherheitsabfrage",
+    "func": "msg.payload = 'Löscht die Fehlerspeicher aller Steuergeräte mit Einträgen, auch Motor, Getriebe, ESP '\n    + 'und Airbag (WiCAN ' + (flow.get('wican_id') || '–') + '). Freeze-Frame-Daten und Readiness '\n    + 'gehen verloren, die Codes deshalb vorher lesen und notieren. Nur bei Zündung an, Motor aus '\n    + 'und Fahrzeug im Stand.';\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 360,
+    "y": 200,
+    "wires": [
+      [
         "w906_dtc_confirm"
       ]
     ]
@@ -198,7 +218,7 @@
     "className": "",
     "topic": "Fehlerspeicher löschen?",
     "name": "Bestätigung",
-    "x": 370,
+    "x": 570,
     "y": 200,
     "wires": [
       [
@@ -218,7 +238,7 @@
     "initialize": "",
     "finalize": "",
     "libs": [],
-    "x": 560,
+    "x": 760,
     "y": 200,
     "wires": [
       [
@@ -231,14 +251,14 @@
     "type": "function",
     "z": "w906_dtc_flow_tab",
     "name": "Befehl an WiCAN",
-    "func": "const id = flow.get('wican_id');\nif (!id) return [null, { payload: 'WiCAN nicht gefunden' }];\nreturn [{ topic: 'wican/' + id + '/cmd', payload: JSON.stringify({ cmd: msg.payload }) },\n        { payload: msg.payload === 'clear_dtc' ? 'Löschen …' : 'Lesen …' }];",
-    "outputs": 2,
+    "func": "const action = msg.payload === 'clear_dtc' ? 'Löschen' : 'Lesen';\nconst id = flow.get('wican_id');\nif (!id) return [null, { payload: action + ': kein WiCAN ausgewählt' }, null];\nflow.set('dtc_action', action);\nreturn [{ topic: 'wican/' + id + '/cmd', payload: JSON.stringify({ cmd: msg.payload }) },\n        { payload: action + ' …' },\n        { payload: 'start' }];",
+    "outputs": 3,
     "timeout": 0,
     "noerr": 0,
     "initialize": "",
     "finalize": "",
     "libs": [],
-    "x": 800,
+    "x": 980,
     "y": 160,
     "wires": [
       [
@@ -246,6 +266,9 @@
       ],
       [
         "w906_dtc_ui_state"
+      ],
+      [
+        "w906_dtc_watchdog"
       ]
     ]
   },
@@ -263,9 +286,34 @@
     "correl": "",
     "expiry": "",
     "broker": "w906_mqtt_broker",
-    "x": 1010,
-    "y": 140,
+    "x": 1190,
+    "y": 120,
     "wires": []
+  },
+  {
+    "id": "w906_dtc_watchdog",
+    "type": "trigger",
+    "z": "w906_dtc_flow_tab",
+    "name": "keine Antwort?",
+    "op1": "",
+    "op2": "keine Antwort vom WiCAN",
+    "op1type": "nul",
+    "op2type": "str",
+    "duration": "60",
+    "extend": true,
+    "overrideDelay": false,
+    "units": "s",
+    "reset": "",
+    "bytopic": "all",
+    "topic": "topic",
+    "outputs": 1,
+    "x": 1000,
+    "y": 300,
+    "wires": [
+      [
+        "w906_dtc_ui_state"
+      ]
+    ]
   },
   {
     "id": "w906_dtc_result_in",
@@ -277,7 +325,7 @@
     "datatype": "json",
     "broker": "w906_mqtt_broker",
     "nl": false,
-    "rap": true,
+    "rap": false,
     "rh": 0,
     "inputs": 0,
     "x": 140,
@@ -313,14 +361,14 @@
     "type": "function",
     "z": "w906_dtc_flow_tab",
     "name": "Ergebnis auswerten",
-    "func": "// Einordnung nach SAE J2012 (Nummernbereich) und ISO 14229 / SAE J2012 (Fehlertyp, Statusbits)\nconst AREA = { P: 'Antrieb', C: 'Fahrwerk', B: 'Karosserie', U: 'Netzwerk' };\nconst FTB_GROUP = { 0: 'allgemein', 1: 'elektrischer Fehler', 2: 'Signalfehler', 3: 'FM/PWM-Signalfehler',\n    4: 'interner Fehler', 5: 'Programmierfehler', 6: 'Algorithmusfehler', 7: 'mechanischer Fehler',\n    8: 'Bus-/Botschaftsfehler', 9: 'Bauteilfehler' };\nconst FTB = {\n    0x00: 'keine Zusatzinformation', 0x01: 'allgemeiner elektrischer Fehler', 0x02: 'allgemeiner Signalfehler',\n    0x03: 'FM/PWM-Fehler', 0x04: 'interner Fehler', 0x05: 'Programmierfehler', 0x06: 'Algorithmusfehler',\n    0x07: 'mechanischer Fehler', 0x08: 'Bus-/Botschaftsfehler', 0x09: 'Bauteilfehler',\n    0x11: 'Kurzschluss nach Masse', 0x12: 'Kurzschluss nach Plus', 0x13: 'Leitungsunterbrechung',\n    0x14: 'Kurzschluss nach Masse oder Unterbrechung', 0x15: 'Kurzschluss nach Plus oder Unterbrechung',\n    0x16: 'Spannung unter Schwellwert', 0x17: 'Spannung über Schwellwert', 0x18: 'Strom unter Schwellwert',\n    0x19: 'Strom über Schwellwert', 0x1A: 'Widerstand unter Schwellwert', 0x1B: 'Widerstand über Schwellwert',\n    0x1C: 'Spannung außerhalb des Bereichs', 0x1D: 'Strom außerhalb des Bereichs',\n    0x1E: 'Widerstand außerhalb des Bereichs', 0x1F: 'Leitung zeitweise unterbrochen',\n    0x21: 'Signalamplitude zu klein', 0x22: 'Signalamplitude zu groß', 0x23: 'Signal hängt auf Low',\n    0x24: 'Signal hängt auf High', 0x25: 'ungültige Signalform', 0x26: 'Änderungsrate zu klein',\n    0x27: 'Änderungsrate zu groß', 0x28: 'Signal-Offset außerhalb des Bereichs', 0x29: 'Signal ungültig',\n    0x2F: 'Signal sprunghaft',\n    0x31: 'kein Signal', 0x32: 'Low-Zeit zu kurz', 0x33: 'Low-Zeit zu lang', 0x34: 'High-Zeit zu kurz',\n    0x35: 'High-Zeit zu lang', 0x36: 'Frequenz zu niedrig', 0x37: 'Frequenz zu hoch', 0x38: 'falsche Frequenz',\n    0x39: 'zu wenige Impulse', 0x3A: 'zu viele Impulse',\n    0x41: 'Prüfsummenfehler', 0x42: 'Speicherfehler', 0x43: 'Spezialspeicherfehler', 0x44: 'Datenspeicherfehler',\n    0x45: 'Programmspeicherfehler', 0x46: 'Kalibrier-/Parameterspeicherfehler', 0x47: 'Watchdog-/Sicherheitsrechnerfehler',\n    0x48: 'Überwachungssoftwarefehler', 0x49: 'interner Elektronikfehler', 0x4A: 'falsches Bauteil verbaut',\n    0x4B: 'Übertemperatur',\n    0x51: 'nicht programmiert', 0x52: 'nicht aktiviert', 0x53: 'deaktiviert', 0x54: 'Kalibrierung fehlt',\n    0x55: 'nicht konfiguriert',\n    0x61: 'Signalberechnung fehlerhaft', 0x62: 'Signalvergleich fehlerhaft', 0x63: 'Schutzzeit überschritten',\n    0x64: 'Signal unplausibel', 0x65: 'zu wenige Signalwechsel', 0x66: 'zu viele Signalwechsel',\n    0x67: 'Signal nach Ereignis falsch', 0x68: 'Ereignisinformation',\n    0x71: 'Stellglied blockiert', 0x72: 'Stellglied hängt offen', 0x73: 'Stellglied hängt geschlossen',\n    0x74: 'Stellglied rutscht', 0x75: 'Notlaufposition nicht erreichbar', 0x76: 'falsche Einbaulage',\n    0x77: 'Sollposition nicht erreichbar', 0x78: 'Einstellung falsch', 0x79: 'mechanische Verbindung defekt',\n    0x7A: 'Undichtigkeit', 0x7B: 'Flüssigkeitsstand zu niedrig',\n    0x81: 'ungültige Daten empfangen', 0x82: 'Botschaftszähler falsch', 0x83: 'Signalschutz-Prüfwert falsch',\n    0x84: 'Signal unter zulässigem Bereich', 0x85: 'Signal über zulässigem Bereich', 0x86: 'Signal ungültig',\n    0x87: 'Botschaft fehlt', 0x88: 'Bus-Off', 0x8F: 'Botschaft sprunghaft',\n    0x91: 'Parameterfehler', 0x92: 'Funktion fehlerhaft', 0x93: 'keine Funktion', 0x94: 'unerwartete Funktion',\n    0x95: 'falsch montiert', 0x96: 'Bauteil intern defekt', 0x97: 'Funktion blockiert', 0x98: 'Übertemperatur'\n};\nfunction origin(letter, digit, nibble) {\n    if (letter === 'P') {\n        if (digit === 1) return 'herstellerspezifisch';\n        if (digit === 3) return nibble <= 3 ? 'herstellerspezifisch' : 'genormt (SAE)';\n        return 'genormt (SAE)';\n    }\n    return (digit === 1 || digit === 2) ? 'herstellerspezifisch' : 'genormt (SAE)';\n}\nfunction classify(dtc, protocol) {\n    const m = /^([PCBU])([0-3])([0-9A-F])([0-9A-F]{2})-([0-9A-F]{2})$/.exec(dtc.code || '');\n    if (!m) return protocol === 'KWP' ? 'Mercedes KWP-Code (herstellerspezifisch)' : '';\n    const ftb = parseInt(m[5], 16);\n    let type = FTB[ftb];\n    if (!type) type = ftb >= 0xF0 ? 'herstellerspezifischer Fehlertyp' : (FTB_GROUP[ftb >> 4] || 'reserviert') + ' (0x' + m[5] + ')';\n    return AREA[m[1]] + ' · ' + origin(m[1], parseInt(m[2]), parseInt(m[3], 16)) + ' · ' + type;\n}\nfunction statusText(dtc) {\n    const s = parseInt(dtc.status || '0', 16);\n    if (dtc.active === undefined) return 'gespeichert (0x' + dtc.status + ')';\n    const parts = [];\n    parts.push(s & 0x01 ? 'aktiv' : (s & 0x08 ? 'gespeichert' : (s & 0x04 ? 'sporadisch' : 'eingetragen')));\n    if (s & 0x80) parts.push('Warnleuchte');\n    return parts.join(', ') + ' (0x' + dtc.status + ')';\n}\nfunction plainText(texts, code) {\n    return texts[code] || texts[code.split('-')[0]] || '–';\n}\n\nconst p = msg.payload || {};\nconst texts = msg.texts || {};\nconst action = p.action === 'clear' ? 'Löschen' : 'Lesen';\nif (p.state === 'running') {\n    return [{ payload: action + ' ' + (p.ecu || 0) + '/' + (p.total || '?') }, null, null];\n}\nif (p.state === 'error') {\n    const reason = p.reason === 'ecu_offline' ? 'Zündung aus?' : (p.reason || 'Fehler');\n    return [{ payload: action + ': ' + reason }, null, null];\n}\nif (p.state !== 'done' || !Array.isArray(p.ecus)) return null;\nconst rows = [];\nlet silent = 0;\nfor (const ecu of p.ecus) {\n    for (const dtc of ecu.dtcs || []) {\n        rows.push({ ecu: ecu.name, code: dtc.code, text: plainText(texts, dtc.code),\n                    info: classify(dtc, ecu.protocol), status: statusText(dtc) });\n    }\n    if (ecu.status !== 'ok') {\n        silent++;\n        const status = ecu.status === 'no_response' ? 'keine Antwort'\n            : (ecu.status === 'nrc_33' ? 'Zugriff verweigert (nrc_33)' : ecu.status);\n        rows.push({ ecu: ecu.name, code: '–', text: '–', info: '', status: status });\n    }\n}\nconst count = p.dtc_count || 0;\n// Without any trouble code list every control unit, so the check is visible\nif (count === 0 && silent === 0) {\n    for (const ecu of p.ecus) rows.push({ ecu: ecu.name, code: '–', text: '–', info: '', status: 'i.O.' });\n}\nconst when = new Date().toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });\nconst summary = count === 0 ? 'keine Fehler' : count + ' Fehler';\nreturn [{ payload: action + ' fertig, ' + Math.round((p.duration_ms || 0) / 1000) + ' s' },\n        { payload: summary + (silent ? ', ' + silent + ' ohne Antwort' : '') + ' (' + when + ')' },\n        { payload: rows }];",
-    "outputs": 3,
+    "func": "// Einordnung nach SAE J2012 (Nummernbereich) und ISO 14229 / SAE J2012 (Fehlertyp, Statusbits)\nconst AREA = { P: 'Antrieb', C: 'Fahrwerk', B: 'Karosserie', U: 'Netzwerk' };\nconst FTB_GROUP = { 0: 'allgemein', 1: 'elektrischer Fehler', 2: 'Signalfehler', 3: 'FM/PWM-Signalfehler',\n    4: 'interner Fehler', 5: 'Programmierfehler', 6: 'Algorithmusfehler', 7: 'mechanischer Fehler',\n    8: 'Bus-/Botschaftsfehler', 9: 'Bauteilfehler' };\nconst FTB = {\n    0x00: 'keine Zusatzinformation', 0x01: 'allgemeiner elektrischer Fehler', 0x02: 'allgemeiner Signalfehler',\n    0x03: 'FM/PWM-Fehler', 0x04: 'interner Fehler', 0x05: 'Programmierfehler', 0x06: 'Algorithmusfehler',\n    0x07: 'mechanischer Fehler', 0x08: 'Bus-/Botschaftsfehler', 0x09: 'Bauteilfehler',\n    0x11: 'Kurzschluss nach Masse', 0x12: 'Kurzschluss nach Plus', 0x13: 'Leitungsunterbrechung',\n    0x14: 'Kurzschluss nach Masse oder Unterbrechung', 0x15: 'Kurzschluss nach Plus oder Unterbrechung',\n    0x16: 'Spannung unter Schwellwert', 0x17: 'Spannung über Schwellwert', 0x18: 'Strom unter Schwellwert',\n    0x19: 'Strom über Schwellwert', 0x1A: 'Widerstand unter Schwellwert', 0x1B: 'Widerstand über Schwellwert',\n    0x1C: 'Spannung außerhalb des Bereichs', 0x1D: 'Strom außerhalb des Bereichs',\n    0x1E: 'Widerstand außerhalb des Bereichs', 0x1F: 'Leitung zeitweise unterbrochen',\n    0x21: 'Signalamplitude zu klein', 0x22: 'Signalamplitude zu groß', 0x23: 'Signal hängt auf Low',\n    0x24: 'Signal hängt auf High', 0x25: 'ungültige Signalform', 0x26: 'Änderungsrate zu klein',\n    0x27: 'Änderungsrate zu groß', 0x28: 'Signal-Offset außerhalb des Bereichs', 0x29: 'Signal ungültig',\n    0x2F: 'Signal sprunghaft',\n    0x31: 'kein Signal', 0x32: 'Low-Zeit zu kurz', 0x33: 'Low-Zeit zu lang', 0x34: 'High-Zeit zu kurz',\n    0x35: 'High-Zeit zu lang', 0x36: 'Frequenz zu niedrig', 0x37: 'Frequenz zu hoch', 0x38: 'falsche Frequenz',\n    0x39: 'zu wenige Impulse', 0x3A: 'zu viele Impulse',\n    0x41: 'Prüfsummenfehler', 0x42: 'Speicherfehler', 0x43: 'Spezialspeicherfehler', 0x44: 'Datenspeicherfehler',\n    0x45: 'Programmspeicherfehler', 0x46: 'Kalibrier-/Parameterspeicherfehler', 0x47: 'Watchdog-/Sicherheitsrechnerfehler',\n    0x48: 'Überwachungssoftwarefehler', 0x49: 'interner Elektronikfehler', 0x4A: 'falsches Bauteil verbaut',\n    0x4B: 'Übertemperatur',\n    0x51: 'nicht programmiert', 0x52: 'nicht aktiviert', 0x53: 'deaktiviert', 0x54: 'Kalibrierung fehlt',\n    0x55: 'nicht konfiguriert',\n    0x61: 'Signalberechnung fehlerhaft', 0x62: 'Signalvergleich fehlerhaft', 0x63: 'Schutzzeit überschritten',\n    0x64: 'Signal unplausibel', 0x65: 'zu wenige Signalwechsel', 0x66: 'zu viele Signalwechsel',\n    0x67: 'Signal nach Ereignis falsch', 0x68: 'Ereignisinformation',\n    0x71: 'Stellglied blockiert', 0x72: 'Stellglied hängt offen', 0x73: 'Stellglied hängt geschlossen',\n    0x74: 'Stellglied rutscht', 0x75: 'Notlaufposition nicht erreichbar', 0x76: 'falsche Einbaulage',\n    0x77: 'Sollposition nicht erreichbar', 0x78: 'Einstellung falsch', 0x79: 'mechanische Verbindung defekt',\n    0x7A: 'Undichtigkeit', 0x7B: 'Flüssigkeitsstand zu niedrig',\n    0x81: 'ungültige Daten empfangen', 0x82: 'Botschaftszähler falsch', 0x83: 'Signalschutz-Prüfwert falsch',\n    0x84: 'Signal unter zulässigem Bereich', 0x85: 'Signal über zulässigem Bereich', 0x86: 'Signal ungültig',\n    0x87: 'Botschaft fehlt', 0x88: 'Bus-Off', 0x8F: 'Botschaft sprunghaft',\n    0x91: 'Parameterfehler', 0x92: 'Funktion fehlerhaft', 0x93: 'keine Funktion', 0x94: 'unerwartete Funktion',\n    0x95: 'falsch montiert', 0x96: 'Bauteil intern defekt', 0x97: 'Funktion blockiert', 0x98: 'Übertemperatur'\n};\nconst NRC = { '11': 'Dienst nicht unterstützt', '12': 'Unterfunktion nicht unterstützt', '21': 'beschäftigt',\n    '22': 'Bedingungen nicht erfüllt', '31': 'außerhalb des Bereichs', '33': 'Zugriff verweigert' };\nconst REASON = { ecu_offline: 'keine Antwort vom Motorsteuergerät, Zündung an?',\n    engine_running: 'Motor läuft, Löschen nur bei Motor aus', engine_state_unknown: 'Drehzahl nicht lesbar, nichts gelöscht',\n    busy: 'läuft bereits', out_of_memory: 'zu wenig Speicher im WiCAN' };\nfunction origin(letter, digit, nibble) {\n    if (letter === 'P') {\n        if (digit === 1) return 'herstellerspezifisch';\n        if (digit === 3) return nibble <= 3 ? 'herstellerspezifisch' : 'genormt (SAE)';\n        return 'genormt (SAE)';\n    }\n    return (digit === 1 || digit === 2) ? 'herstellerspezifisch' : 'genormt (SAE)';\n}\nfunction classify(dtc, protocol) {\n    const m = /^([PCBU])([0-3])([0-9A-F])([0-9A-F]{2})-([0-9A-F]{2})$/.exec(dtc.code || '');\n    if (!m) return protocol === 'KWP' ? 'Mercedes KWP-Code (herstellerspezifisch)' : '';\n    const ftb = parseInt(m[5], 16);\n    let type = FTB[ftb];\n    if (!type) type = ftb >= 0xF0 ? 'herstellerspezifischer Fehlertyp' : (FTB_GROUP[ftb >> 4] || 'reserviert') + ' (0x' + m[5] + ')';\n    return AREA[m[1]] + ' · ' + origin(m[1], parseInt(m[2]), parseInt(m[3], 16)) + ' · ' + type;\n}\nfunction statusText(dtc) {\n    const s = parseInt(dtc.status || '0', 16);\n    if (dtc.active === undefined) return 'gespeichert (0x' + dtc.status + ')';\n    const parts = [];\n    parts.push(s & 0x01 ? 'aktiv' : (s & 0x08 ? 'gespeichert' : (s & 0x04 ? 'sporadisch' : 'eingetragen')));\n    if (s & 0x80) parts.push('Warnleuchte');\n    return parts.join(', ') + ' (0x' + dtc.status + ')';\n}\nfunction ecuStatus(status) {\n    if (status === 'no_response') return 'keine Antwort';\n    if (status === 'pending_timeout') return 'Antwort ausstehend (Zeitüberschreitung)';\n    if (status === 'incomplete') return 'Antwort unvollständig';\n    const m = /^nrc_([0-9A-F]{2})$/.exec(status || '');\n    if (m) return (NRC[m[1]] || 'negative Antwort') + ' (' + status + ')';\n    return status || '?';\n}\nfunction plainText(texts, code) {\n    return texts[code] || texts[code.split('-')[0]] || '–';\n}\n\nconst p = msg.payload || {};\nconst texts = msg.texts || {};\nconst action = p.action === 'clear' ? 'Löschen' : (p.action === 'read' ? 'Lesen' : (flow.get('dtc_action') || 'Befehl'));\nif (p.state === 'running') {\n    flow.set('dtc_seen_running', true);\n    return [{ payload: action + ' ' + (p.ecu || 0) + '/' + (p.total || '?') }, null, null, { payload: 'running' }];\n}\nif (p.state === 'error' || p.error) {\n    flow.set('dtc_seen_running', false);\n    const reason = p.error ? 'Ergebnis zu groß für MQTT' : (REASON[p.reason] || p.reason || 'Fehler');\n    return [{ payload: action + ': ' + reason }, null, null, { reset: true }];\n}\nif (p.state !== 'done' || !Array.isArray(p.ecus)) return null;\n// A result without progress messages before it is the retained one of an earlier scan\nconst fresh = flow.get('dtc_seen_running') === true && msg.retain !== true;\nflow.set('dtc_seen_running', false);\nconst rows = [];\nlet silent = 0, refused = 0, incomplete = 0, notCleared = 0, omitted = 0;\nfor (const ecu of p.ecus) {\n    const dtcs = ecu.dtcs || [];\n    const unconfirmed = p.action === 'clear' && ecu.cleared === false && dtcs.length > 0;\n    if (unconfirmed) notCleared++;\n    for (const dtc of dtcs) {\n        rows.push({ ecu: ecu.name, code: dtc.code, text: plainText(texts, dtc.code), info: classify(dtc, ecu.protocol),\n                    status: statusText(dtc) + (unconfirmed ? ', Löschen nicht bestätigt' : '') });\n    }\n    if (ecu.dtcs_omitted) {\n        omitted++;\n        rows.push({ ecu: ecu.name, code: '…', text: ecu.dtcs_omitted + ' Codes nicht übertragen (Liste zu lang für MQTT)',\n                    info: '', status: 'mit Diagnosegerät lesen' });\n    }\n    if (ecu.status !== 'ok') {\n        if (ecu.status === 'incomplete') incomplete++;\n        else if (/^nrc_/.test(ecu.status || '')) refused++;\n        else silent++;\n        rows.push({ ecu: ecu.name, code: '–', text: '–', info: '', status: ecuStatus(ecu.status) });\n    }\n}\nconst count = p.dtc_count || 0;\n// Without any trouble code or problem list every control unit, so the check is visible\nif (count === 0 && rows.length === 0) {\n    for (const ecu of p.ecus) rows.push({ ecu: ecu.name, code: '–', text: '–', info: '', status: 'i.O.' });\n}\nconst notes = [];\nif (silent) notes.push(silent + ' ohne Antwort');\nif (refused) notes.push(refused + ' verweigert');\nif (incomplete) notes.push(incomplete + ' unvollständig');\nif (notCleared) notes.push(notCleared + ' nicht gelöscht');\nif (omitted) notes.push('Liste gekürzt');\nconst summary = (count === 0 ? 'keine Fehler' : count + ' Fehler') + (notes.length ? ', ' + notes.join(', ') : '');\nif (!fresh) {\n    return [{ payload: 'gespeichertes Ergebnis (' + action + '), Zeitpunkt unbekannt' }, { payload: summary },\n            { payload: rows }, { reset: true }];\n}\nconst when = new Date().toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });\nreturn [{ payload: action + ' fertig, ' + Math.round((p.duration_ms || 0) / 1000) + ' s' },\n        { payload: summary + ' (' + when + ')' },\n        { payload: rows },\n        { reset: true }];",
+    "outputs": 4,
     "timeout": 0,
     "noerr": 0,
     "initialize": "",
     "finalize": "",
     "libs": [],
-    "x": 380,
+    "x": 560,
     "y": 300,
     "wires": [
       [
@@ -331,6 +379,9 @@
       ],
       [
         "w906_dtc_ui_table"
+      ],
+      [
+        "w906_dtc_watchdog"
       ]
     ]
   },
@@ -351,7 +402,7 @@
     "font": "",
     "fontSize": 16,
     "color": "#000000",
-    "x": 1010,
+    "x": 1230,
     "y": 260,
     "wires": []
   },
@@ -372,7 +423,7 @@
     "font": "",
     "fontSize": 16,
     "color": "#000000",
-    "x": 620,
+    "x": 800,
     "y": 320,
     "wires": []
   },
@@ -440,8 +491,8 @@
     "outputs": 0,
     "cts": false,
     "className": "w906-small",
-    "x": 620,
-    "y": 360,
+    "x": 800,
+    "y": 380,
     "wires": []
   },
   {

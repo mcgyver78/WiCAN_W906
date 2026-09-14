@@ -3,6 +3,9 @@
 
   make_dtc_flow.py OUT.json                  with an own MQTT broker config node for localhost:1883
   make_dtc_flow.py OUT.json --broker-id ID   use an existing broker config node of your Node-RED instead
+  make_dtc_flow.py OUT.json --device-id ID   always use this WiCAN (needed with several WiCANs on one broker)
+
+Needs the Node-RED palettes node-red-dashboard and node-red-node-ui-table.
 
 The firmware reads/clears the trouble codes on the MQTT commands {"cmd":"read_dtc"} and
 {"cmd":"clear_dtc"} (topic wican/<device id>/cmd) and publishes the result on <topic>/dtc.
@@ -14,6 +17,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("output")
 parser.add_argument("--broker-id", default="", help="id of an existing mqtt-broker config node")
 parser.add_argument("--topic", default="wican/sprinter/engine", help="AutoPID group topic of the WiCAN")
+parser.add_argument("--device-id", default="", help="device id of the WiCAN, otherwise the only one online is used")
 parser.add_argument("--texts", default="", help="JSON file {\"CODE\": \"text\"} for the local plain text table")
 args = parser.parse_args()
 texts = json.load(open(args.texts, encoding="utf-8")) if args.texts else {}
@@ -59,15 +63,29 @@ def function(nid, name, code, outputs, wires, x, y):
             "noerr": 0, "initialize": "", "finalize": "", "libs": [], "x": x, "y": y, "wires": wires}
 
 
-# The device id is needed for the command topic, it comes from the retained status message
+# The device id is needed for the command topic, it comes from the retained status messages
 nodes.append({"id": "w906_dtc_status_in", "type": "mqtt in", "z": TAB, "name": "WiCAN Status", "topic": "wican/+/can/status",
               "qos": "0", "datatype": "json", "broker": BROKER, "nl": False, "rap": True, "rh": 0, "inputs": 0,
               "x": 140, "y": 60, "wires": [["w906_dtc_remember"]]})
 nodes.append(function("w906_dtc_remember", "WiCAN merken",
-                      "const id = msg.topic.split('/')[1];\n"
-                      "flow.set('wican_id', id);\n"
-                      "msg.payload = id + ' (' + ((msg.payload && msg.payload.status) || '?') + ')';\n"
-                      "return msg;", 1, [["w906_dtc_ui_device"]], 360, 60))
+                      "// Commands go to the WiCAN given with --device-id, otherwise to the only one online\n"
+                      "const FIXED_ID = %s;\n"
+                      "const devices = flow.get('wican_devices') || {};\n"
+                      "devices[msg.topic.split('/')[1]] = (msg.payload && msg.payload.status) || '?';\n"
+                      "flow.set('wican_devices', devices);\n"
+                      "const online = Object.keys(devices).filter(id => devices[id] === 'online');\n"
+                      "if (FIXED_ID) {\n"
+                      "    flow.set('wican_id', FIXED_ID);\n"
+                      "    msg.payload = FIXED_ID + ' (' + (devices[FIXED_ID] || '?') + ')';\n"
+                      "} else if (online.length === 1) {\n"
+                      "    flow.set('wican_id', online[0]);\n"
+                      "    msg.payload = online[0] + ' (online)';\n"
+                      "} else {\n"
+                      "    flow.set('wican_id', null);\n"
+                      "    msg.payload = online.length ? online.length + ' WiCANs online, Flow mit --device-id erzeugen'\n"
+                      "                                : 'kein WiCAN online';\n"
+                      "}\n"
+                      "return msg;" % json.dumps(args.device_id or None), 1, [["w906_dtc_ui_device"]], 360, 60))
 nodes.append(text("w906_dtc_ui_device", "WiCAN", 1, 600, 60))
 
 nodes.append({"id": "w906_dtc_btn_read", "type": "ui_button", "z": TAB, "name": "Lesen", "group": GROUP_ACTIONS, "order": 4,
@@ -77,26 +95,40 @@ nodes.append({"id": "w906_dtc_btn_read", "type": "ui_button", "z": TAB, "name": 
 nodes.append({"id": "w906_dtc_btn_clear", "type": "ui_button", "z": TAB, "name": "Löschen", "group": GROUP_ACTIONS, "order": 5,
               "width": 3, "height": 1, "passthru": False, "label": "Löschen", "tooltip": "Fehlerspeicher löschen (mit Sicherheitsabfrage)",
               "color": "", "bgcolor": "#ca3838", "className": "w906-small", "icon": "fa-trash", "payload": "clear", "payloadType": "str",
-              "topic": "", "topicType": "str", "x": 150, "y": 200, "wires": [["w906_dtc_confirm"]]})
+              "topic": "", "topicType": "str", "x": 150, "y": 200, "wires": [["w906_dtc_confirm_text"]]})
+nodes.append(function("w906_dtc_confirm_text", "Sicherheitsabfrage",
+                      "msg.payload = 'Löscht die Fehlerspeicher aller Steuergeräte mit Einträgen, auch Motor, Getriebe, ESP '\n"
+                      "    + 'und Airbag (WiCAN ' + (flow.get('wican_id') || '–') + '). Freeze-Frame-Daten und Readiness '\n"
+                      "    + 'gehen verloren, die Codes deshalb vorher lesen und notieren. Nur bei Zündung an, Motor aus '\n"
+                      "    + 'und Fahrzeug im Stand.';\n"
+                      "return msg;", 1, [["w906_dtc_confirm"]], 360, 200))
 nodes.append({"id": "w906_dtc_confirm", "type": "ui_toast", "z": TAB, "position": "dialog", "displayTime": "3",
               "highlight": "", "sendall": False, "outputs": 1, "ok": "Löschen", "cancel": "Abbrechen", "raw": False,
-              "className": "", "topic": "Fehlerspeicher löschen?", "name": "Bestätigung", "x": 370, "y": 200,
+              "className": "", "topic": "Fehlerspeicher löschen?", "name": "Bestätigung", "x": 570, "y": 200,
               "wires": [["w906_dtc_confirmed"]]})
 nodes.append(function("w906_dtc_confirmed", "bestätigt?",
                       "if (msg.payload !== 'Löschen') return null;\nmsg.payload = 'clear_dtc';\nreturn msg;",
-                      1, [["w906_dtc_command"]], 560, 200))
+                      1, [["w906_dtc_command"]], 760, 200))
 nodes.append(function("w906_dtc_command", "Befehl an WiCAN",
+                      "const action = msg.payload === 'clear_dtc' ? 'Löschen' : 'Lesen';\n"
                       "const id = flow.get('wican_id');\n"
-                      "if (!id) return [null, { payload: 'WiCAN nicht gefunden' }];\n"
+                      "if (!id) return [null, { payload: action + ': kein WiCAN ausgewählt' }, null];\n"
+                      "flow.set('dtc_action', action);\n"
                       "return [{ topic: 'wican/' + id + '/cmd', payload: JSON.stringify({ cmd: msg.payload }) },\n"
-                      "        { payload: msg.payload === 'clear_dtc' ? 'Löschen …' : 'Lesen …' }];",
-                      2, [["w906_dtc_mqtt_out"], ["w906_dtc_ui_state"]], 800, 160))
+                      "        { payload: action + ' …' },\n"
+                      "        { payload: 'start' }];",
+                      3, [["w906_dtc_mqtt_out"], ["w906_dtc_ui_state"], ["w906_dtc_watchdog"]], 980, 160))
 nodes.append({"id": "w906_dtc_mqtt_out", "type": "mqtt out", "z": TAB, "name": "Befehl", "topic": "", "qos": "0",
               "retain": "false", "respTopic": "", "contentType": "", "userProps": "", "correl": "", "expiry": "",
-              "broker": BROKER, "x": 1010, "y": 140, "wires": []})
+              "broker": BROKER, "x": 1190, "y": 120, "wires": []})
+# Progress messages restart the timer, the result or an error stops it
+nodes.append({"id": "w906_dtc_watchdog", "type": "trigger", "z": TAB, "name": "keine Antwort?", "op1": "",
+              "op2": "keine Antwort vom WiCAN", "op1type": "nul", "op2type": "str", "duration": "60", "extend": True,
+              "overrideDelay": False, "units": "s", "reset": "", "bytopic": "all", "topic": "topic", "outputs": 1,
+              "x": 1000, "y": 300, "wires": [["w906_dtc_ui_state"]]})
 
 nodes.append({"id": "w906_dtc_result_in", "type": "mqtt in", "z": TAB, "name": "Fehlerspeicher", "topic": DTC_TOPIC,
-              "qos": "0", "datatype": "json", "broker": BROKER, "nl": False, "rap": True, "rh": 0, "inputs": 0,
+              "qos": "0", "datatype": "json", "broker": BROKER, "nl": False, "rap": False, "rh": 0, "inputs": 0,
               "x": 140, "y": 300, "wires": [["w906_dtc_texts"]]})
 texts_code = '// Eigene Klartexte, z. B. aus der Xentry-Anzeige des eigenen Fahrzeugs abgeschrieben.\n// Schlüssel: Fehlercode wie im Dashboard angezeigt ("P242F-FA", KWP z. B. "9301").\n// Tipp: für alle Fehlertypen eines Codes reicht der Code ohne Endung, z. B. "P242F".\nmsg.texts = %s;\nreturn msg;'
 evaluate = """// Einordnung nach SAE J2012 (Nummernbereich) und ISO 14229 / SAE J2012 (Fehlertyp, Statusbits)
@@ -140,6 +172,11 @@ const FTB = {
     0x91: 'Parameterfehler', 0x92: 'Funktion fehlerhaft', 0x93: 'keine Funktion', 0x94: 'unerwartete Funktion',
     0x95: 'falsch montiert', 0x96: 'Bauteil intern defekt', 0x97: 'Funktion blockiert', 0x98: 'Übertemperatur'
 };
+const NRC = { '11': 'Dienst nicht unterstützt', '12': 'Unterfunktion nicht unterstützt', '21': 'beschäftigt',
+    '22': 'Bedingungen nicht erfüllt', '31': 'außerhalb des Bereichs', '33': 'Zugriff verweigert' };
+const REASON = { ecu_offline: 'keine Antwort vom Motorsteuergerät, Zündung an?',
+    engine_running: 'Motor läuft, Löschen nur bei Motor aus', engine_state_unknown: 'Drehzahl nicht lesbar, nichts gelöscht',
+    busy: 'läuft bereits', out_of_memory: 'zu wenig Speicher im WiCAN' };
 function origin(letter, digit, nibble) {
     if (letter === 'P') {
         if (digit === 1) return 'herstellerspezifisch';
@@ -164,51 +201,83 @@ function statusText(dtc) {
     if (s & 0x80) parts.push('Warnleuchte');
     return parts.join(', ') + ' (0x' + dtc.status + ')';
 }
+function ecuStatus(status) {
+    if (status === 'no_response') return 'keine Antwort';
+    if (status === 'pending_timeout') return 'Antwort ausstehend (Zeitüberschreitung)';
+    if (status === 'incomplete') return 'Antwort unvollständig';
+    const m = /^nrc_([0-9A-F]{2})$/.exec(status || '');
+    if (m) return (NRC[m[1]] || 'negative Antwort') + ' (' + status + ')';
+    return status || '?';
+}
 function plainText(texts, code) {
     return texts[code] || texts[code.split('-')[0]] || '–';
 }
 
 const p = msg.payload || {};
 const texts = msg.texts || {};
-const action = p.action === 'clear' ? 'Löschen' : 'Lesen';
+const action = p.action === 'clear' ? 'Löschen' : (p.action === 'read' ? 'Lesen' : (flow.get('dtc_action') || 'Befehl'));
 if (p.state === 'running') {
-    return [{ payload: action + ' ' + (p.ecu || 0) + '/' + (p.total || '?') }, null, null];
+    flow.set('dtc_seen_running', true);
+    return [{ payload: action + ' ' + (p.ecu || 0) + '/' + (p.total || '?') }, null, null, { payload: 'running' }];
 }
-if (p.state === 'error') {
-    const reason = p.reason === 'ecu_offline' ? 'Zündung aus?' : (p.reason || 'Fehler');
-    return [{ payload: action + ': ' + reason }, null, null];
+if (p.state === 'error' || p.error) {
+    flow.set('dtc_seen_running', false);
+    const reason = p.error ? 'Ergebnis zu groß für MQTT' : (REASON[p.reason] || p.reason || 'Fehler');
+    return [{ payload: action + ': ' + reason }, null, null, { reset: true }];
 }
 if (p.state !== 'done' || !Array.isArray(p.ecus)) return null;
+// A result without progress messages before it is the retained one of an earlier scan
+const fresh = flow.get('dtc_seen_running') === true && msg.retain !== true;
+flow.set('dtc_seen_running', false);
 const rows = [];
-let silent = 0;
+let silent = 0, refused = 0, incomplete = 0, notCleared = 0, omitted = 0;
 for (const ecu of p.ecus) {
-    for (const dtc of ecu.dtcs || []) {
-        rows.push({ ecu: ecu.name, code: dtc.code, text: plainText(texts, dtc.code),
-                    info: classify(dtc, ecu.protocol), status: statusText(dtc) });
+    const dtcs = ecu.dtcs || [];
+    const unconfirmed = p.action === 'clear' && ecu.cleared === false && dtcs.length > 0;
+    if (unconfirmed) notCleared++;
+    for (const dtc of dtcs) {
+        rows.push({ ecu: ecu.name, code: dtc.code, text: plainText(texts, dtc.code), info: classify(dtc, ecu.protocol),
+                    status: statusText(dtc) + (unconfirmed ? ', Löschen nicht bestätigt' : '') });
+    }
+    if (ecu.dtcs_omitted) {
+        omitted++;
+        rows.push({ ecu: ecu.name, code: '…', text: ecu.dtcs_omitted + ' Codes nicht übertragen (Liste zu lang für MQTT)',
+                    info: '', status: 'mit Diagnosegerät lesen' });
     }
     if (ecu.status !== 'ok') {
-        silent++;
-        const status = ecu.status === 'no_response' ? 'keine Antwort'
-            : (ecu.status === 'nrc_33' ? 'Zugriff verweigert (nrc_33)' : ecu.status);
-        rows.push({ ecu: ecu.name, code: '–', text: '–', info: '', status: status });
+        if (ecu.status === 'incomplete') incomplete++;
+        else if (/^nrc_/.test(ecu.status || '')) refused++;
+        else silent++;
+        rows.push({ ecu: ecu.name, code: '–', text: '–', info: '', status: ecuStatus(ecu.status) });
     }
 }
 const count = p.dtc_count || 0;
-// Without any trouble code list every control unit, so the check is visible
-if (count === 0 && silent === 0) {
+// Without any trouble code or problem list every control unit, so the check is visible
+if (count === 0 && rows.length === 0) {
     for (const ecu of p.ecus) rows.push({ ecu: ecu.name, code: '–', text: '–', info: '', status: 'i.O.' });
 }
+const notes = [];
+if (silent) notes.push(silent + ' ohne Antwort');
+if (refused) notes.push(refused + ' verweigert');
+if (incomplete) notes.push(incomplete + ' unvollständig');
+if (notCleared) notes.push(notCleared + ' nicht gelöscht');
+if (omitted) notes.push('Liste gekürzt');
+const summary = (count === 0 ? 'keine Fehler' : count + ' Fehler') + (notes.length ? ', ' + notes.join(', ') : '');
+if (!fresh) {
+    return [{ payload: 'gespeichertes Ergebnis (' + action + '), Zeitpunkt unbekannt' }, { payload: summary },
+            { payload: rows }, { reset: true }];
+}
 const when = new Date().toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
-const summary = count === 0 ? 'keine Fehler' : count + ' Fehler';
 return [{ payload: action + ' fertig, ' + Math.round((p.duration_ms || 0) / 1000) + ' s' },
-        { payload: summary + (silent ? ', ' + silent + ' ohne Antwort' : '') + ' (' + when + ')' },
-        { payload: rows }];"""
+        { payload: summary + ' (' + when + ')' },
+        { payload: rows },
+        { reset: true }];"""
 nodes.append(function("w906_dtc_texts", "Klartexte (lokal)", texts_code % json.dumps(texts, indent=4, ensure_ascii=False), 1,
                       [["w906_dtc_evaluate"]], 330, 360))
-nodes.append(function("w906_dtc_evaluate", "Ergebnis auswerten", evaluate, 3,
-                      [["w906_dtc_ui_state"], ["w906_dtc_ui_summary"], ["w906_dtc_ui_table"]], 380, 300))
-nodes.append(text("w906_dtc_ui_state", "Status", 2, 1010, 260))
-nodes.append(text("w906_dtc_ui_summary", "Ergebnis", 3, 620, 320))
+nodes.append(function("w906_dtc_evaluate", "Ergebnis auswerten", evaluate, 4,
+                      [["w906_dtc_ui_state"], ["w906_dtc_ui_summary"], ["w906_dtc_ui_table"], ["w906_dtc_watchdog"]], 560, 300))
+nodes.append(text("w906_dtc_ui_state", "Status", 2, 1230, 260))
+nodes.append(text("w906_dtc_ui_summary", "Ergebnis", 3, 800, 320))
 nodes.append({"id": "w906_dtc_ui_table", "type": "ui_table", "z": TAB, "group": GROUP_RESULT, "name": "Fehlerliste",
               "order": 1, "width": 24, "height": 10,
               "columns": [{"field": "ecu", "title": "Steuergerät", "width": "210", "align": "left", "formatter": "plaintext", "formatterParams": {"target": "_blank"}},
@@ -216,7 +285,7 @@ nodes.append({"id": "w906_dtc_ui_table", "type": "ui_table", "z": TAB, "group": 
                           {"field": "text", "title": "Klartext (lokal)", "width": "", "align": "left", "formatter": "textarea", "formatterParams": {"target": "_blank"}},
                           {"field": "info", "title": "Einordnung", "width": "260", "align": "left", "formatter": "textarea", "formatterParams": {"target": "_blank"}},
                           {"field": "status", "title": "Status", "width": "160", "align": "left", "formatter": "plaintext", "formatterParams": {"target": "_blank"}}],
-              "outputs": 0, "cts": False, "className": "w906-small", "x": 620, "y": 360, "wires": []})
+              "outputs": 0, "cts": False, "className": "w906-small", "x": 800, "y": 380, "wires": []})
 nodes.append({"id": "w906_dtc_css", "type": "ui_template", "z": TAB, "group": "", "name": "Schriftgröße", "order": 0,
               "width": 0, "height": 0, "format": CSS, "storeOutMessages": True, "fwdInMessages": True,
               "resendOnRefresh": True, "templateScope": "global", "className": "", "x": 150, "y": 440, "wires": [[]]})

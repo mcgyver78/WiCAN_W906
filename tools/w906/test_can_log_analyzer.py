@@ -109,5 +109,123 @@ class AnalyzerTest(unittest.TestCase):
         self.assertIn("NRC 12 x1", text)
 
 
+# SLCAN: t<3 hex id><dlc><data>, optionally + 4 digit ms timestamp
+SLCAN_LOG = "t7E080322F19000000000\rt7E8505148001122\r"
+
+
+class ParserRobustnessTest(unittest.TestCase):
+    def setUp(self):
+        self.path = write_tmp(SAVVYCAN_LOG)
+
+    def tearDown(self):
+        os.unlink(self.path)
+
+    def parse(self, content):
+        path = write_tmp(content)
+        try:
+            return cla.parse_log(path)
+        finally:
+            os.unlink(path)
+
+    def test_slcan(self):
+        frames = self.parse(SLCAN_LOG)
+        self.assertEqual([f.can_id for f in frames], [0x7E0, 0x7E8])
+        self.assertFalse(frames[0].extended)
+        self.assertEqual(frames[0].data, bytes.fromhex("0322F19000000000"))
+        self.assertEqual(len(frames[1].data), 5)
+
+    def test_slcan_timestamp_rollover(self):
+        # two frames near the 60000 ms (0xEA60) wrap must stay in order
+        frames = self.parse("t7E0201AAE900\rt7E0201BB0010\r")
+        self.assertEqual(len(frames), 2)
+        self.assertLess(frames[0].ts, frames[1].ts)
+
+    def test_first_frame_length_zero(self):
+        # 10 00 .. then 21 .. must not produce an empty ISO-TP message or crash
+        frames = self.parse("(1.0) can0 3E9#1000AABBCCDDEEFF\n(1.1) can0 3E9#2111223344556677\n")
+        messages = cla.reassemble_isotp(frames)
+        self.assertEqual(messages, [])
+        # the whole CLI must still run and report
+        out = io.StringIO()
+        cla.report(frames, gap=1.0, burst_len=3, out=out)
+        self.assertIn("Summary", out.getvalue())
+
+    def test_nrc_78_keeps_request_open(self):
+        log = (
+            "(1.000000) can0 7E0#0322803200000000\n"
+            "(1.010000) can0 7E8#037F227800000000\n"   # response pending
+            "(1.400000) can0 7E8#056280320BB80000\n"   # final answer 400 ms later
+        )
+        exchanges = cla.match_exchanges(cla.reassemble_isotp(self.parse(log)))
+        key = (0x7E0, 0x7E8, bytes.fromhex("228032"))
+        self.assertIn(key, exchanges)
+        self.assertEqual(exchanges[key].negative, {0x78: 1})
+        self.assertEqual(exchanges[key].responses[-1], bytes.fromhex("6280320BB8"))
+
+    def test_multiframe_byte_numbering(self):
+        # 21 01 block: first frame + one consecutive frame, tester FC on 7E1
+        log = (
+            "(1.0) can0 7E1#0221010000000000\n"
+            "(1.01) can0 7E9#100C610111223345\n"
+            "(1.02) can0 7E1#3000000000000000\n"
+            "(1.03) can0 7E9#2155667788990000\n"
+        )
+        exchanges = cla.match_exchanges(cla.reassemble_isotp(self.parse(log)))
+        profile = cla.build_profile_skeleton(exchanges)
+        pid = profile["pids"][0]
+        # payload 61 01 11 22 33 45 55 66 77 88 99; value bytes start at payload index 2 -> B4
+        self.assertEqual(pid["parameters"], {"TODO_2101": "B4"})
+        self.assertIn("multi-frame", pid["comment"])
+
+    def test_pairing_prefers_matching_id(self):
+        # two ECUs answer the same DID with overlapping requests; ids must not be crossed
+        log = (
+            "(1.000) can0 7E0#03228032AA\n"
+            "(1.001) can0 7E1#03228032AA\n"
+            "(1.010) can0 7E8#0562803201AA\n"
+            "(1.011) can0 7E9#0562803202AA\n"
+        )
+        exchanges = cla.match_exchanges(cla.reassemble_isotp(self.parse(log)))
+        self.assertIn((0x7E0, 0x7E8, bytes.fromhex("228032")), exchanges)
+        self.assertIn((0x7E1, 0x7E9, bytes.fromhex("228032")), exchanges)
+
+    def test_wake_suggestion_filters_dangerous(self):
+        clear = cla.Frame(0.0, 0x7E0, False, bytes.fromhex("0414FFFFFF000000"), "Tx")
+        self.assertEqual(cla._wake_suggestion(clear)[0], None)
+        reset = cla.Frame(0.0, 0x7E0, False, bytes.fromhex("0211010000000000"), "Tx")
+        self.assertEqual(cla._wake_suggestion(reset)[0], None)
+        answer = cla.Frame(0.0, 0x7E8, False, bytes.fromhex("0562803201020000"), "Rx")
+        self.assertEqual(cla._wake_suggestion(answer)[0], None)
+        tester = cla.Frame(0.0, 0x7E0, False, bytes.fromhex("023E000000000000"), "Tx")
+        self.assertEqual(cla._wake_suggestion(tester)[0], "ATWUA7E0,023E805555555555;")
+        read = cla.Frame(0.0, 0x7E0, False, bytes.fromhex("0322803200000000"), "Tx")
+        self.assertEqual(cla._wake_suggestion(read)[0], "ATWUA7E0,0322803200000000;")
+
+    def test_truncated_lines_are_skipped(self):
+        frames = self.parse(
+            "Time Stamp,ID,Extended,Dir,Bus,LEN,D1,D2,D3,D4,D5,D6,D7,D8\n"
+            "1000000,000007E0,false,Tx,0,3,03,22,80\n"
+            "1010000,000007E8,false,Rx,0,\n"   # truncated, must be skipped not crash
+        )
+        self.assertEqual(len(frames), 1)
+
+    def test_candump_rtr_and_fd_ignored(self):
+        # RTR and CAN FD lines must not become zero-data frames
+        frames = self.parse("(1.0) can0 7E0#R\n(1.1) can0 7E0##155\n(1.2) can0 7E0#0322803200000000\n")
+        self.assertEqual([f.can_id for f in frames], [0x7E0])
+        self.assertEqual(len(frames[0].data), 8)
+
+    def test_no_frames_exit_code(self):
+        path = write_tmp("nothing to see here\n")
+        try:
+            self.assertEqual(cla.main([path]), 1)
+        finally:
+            os.unlink(path)
+
+    def test_burst_must_be_positive(self):
+        with self.assertRaises(SystemExit):
+            cla.main([self.path, "--burst", "0"])
+
+
 if __name__ == "__main__":
     unittest.main()

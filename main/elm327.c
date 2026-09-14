@@ -88,6 +88,7 @@ typedef struct __xelm327_config
 
 
 static _xelm327_config_t elm327_config;
+static _xelm327_config_t elm327_saved_config;
 static SemaphoreHandle_t elm327_mutex = NULL;
 
 #define ELM327_WAKE_MAX_FRAMES			4
@@ -520,14 +521,13 @@ static char* elm327_wake_add_frame(const char* command_str)
 	return (char*)ok_str;
 }
 
-// ATWUC: clear all wake-up frames
+// ATWUC: clear all wake-up frames. The wake timers are kept, so re-sending a
+// profile init (e.g. on every PID type change) does not force another wake-up.
 static char* elm327_wake_clear(const char* command_str)
 {
 	if(strlen(command_str+3) != 0) return 0;
 
 	elm327_wake.count = 0;
-	elm327_wake.last_wake_time = 0;
-	elm327_wake.last_rsp_time = 0;
 
 	return (char*)ok_str;
 }
@@ -582,6 +582,22 @@ static char* elm327_wake_send_now(const char* command_str)
 	elm327_wake_send();
 
 	return (char*)ok_str;
+}
+
+// Only read-only or idempotent requests are retried after a wake-up. Retrying a
+// state changing request (ECU reset, clear DTCs, routine, write) or one sent with
+// the suppress-positive-response bit would run it twice or wait in vain.
+static bool elm327_wake_retry_allowed(const twai_message_t *txframe)
+{
+	uint8_t sid = txframe->data[1];
+	uint8_t subfunction = txframe->data[2];
+
+	// TesterPresent and other sub-function services with the suppress bit never answer
+	if((sid == 0x3E || sid == 0x10 || sid == 0x28 || sid == 0x85) && (subfunction & 0x80)) return false;
+
+	// OBD-II modes 01-0A and the read-only diagnostic services
+	return (sid >= 0x01 && sid <= 0x0A) || sid == 0x18 || sid == 0x19 ||
+	        sid == 0x1A || sid == 0x21 || sid == 0x22 || sid == 0x3E;
 }
 
 static bool elm327_wake_due(bool after_no_response)
@@ -662,6 +678,20 @@ static char* elm327_set_protocol(const char* command_str)
 char elm327_get_current_protocol(void)
 {
 	return elm327_config.protocol;
+}
+
+// Save/restore the full ELM327 configuration (header, receive filter, flow control,
+// timeout, ...). Used around the DTC scan, which repoints these at 18 control units,
+// so AutoPID polling continues with the header and filter of the vehicle profile.
+// The caller must hold elm327_lock; there is one save slot.
+void elm327_save_config(void)
+{
+	elm327_saved_config = elm327_config;
+}
+
+void elm327_restore_config(void)
+{
+	elm327_config = elm327_saved_config;
 }
 
 static char* elm327_set_timeout(const char* command_str)
@@ -987,7 +1017,7 @@ static int8_t elm327_request(char *cmd, char *rsp, QueueHandle_t *queue)
 
 	rsp_found = elm327_transceive(&txframe, req_expected_rsp, rsp, queue);
 
-	if(rsp_found == 0 && elm327_wake_due(true))
+	if(rsp_found == 0 && elm327_wake_retry_allowed(&txframe) && elm327_wake_due(true))
 	{
 		// Nothing answered, the bus may have gone back to sleep.
 		// Wake it up and retry the request once.

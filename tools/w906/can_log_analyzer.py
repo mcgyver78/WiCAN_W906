@@ -10,6 +10,8 @@ Supported log formats (auto detected):
   * SavvyCAN / GVRET CSV  (Time Stamp,ID,Extended,Dir,Bus,LEN,D1..D8)
   * candump -l            ((1694600000.123456) can0 7E0#0322F19000000000)
   * candump (console)     (can0  7E0   [8]  03 22 F1 90 00 00 00 00)
+  * SLCAN / Lawicel       (t7E80322F190...  or with a 4 digit ms timestamp)
+    as sent on the WiCAN TCP port 3333 (SLCAN C, S6, L)
 
 Only the Python standard library is used.
 """
@@ -88,13 +90,28 @@ class Exchange:
 
 # --------------------------------------------------------------------------- parsing
 
-CANDUMP_LOG_RE = re.compile(r"^\((?P<ts>[\d.]+)\)\s+\S+\s+(?P<id>[0-9A-Fa-f]+)#(?P<data>[0-9A-Fa-f]*)")
+# The data field is anchored to an even number of hex digits so RTR ("#R..."), CAN FD
+# ("##...") and truncated lines don't parse as a frame with bogus data.
+CANDUMP_LOG_RE = re.compile(r"^\((?P<ts>[\d.]+)\)\s+\S+\s+(?P<id>[0-9A-Fa-f]+)#(?P<data>(?:[0-9A-Fa-f]{2})*)\s*$")
 CANDUMP_CONSOLE_RE = re.compile(
     r"^\s*(?:\((?P<ts>[\d.]+)\)\s+)?\S+\s+(?P<id>[0-9A-Fa-f]{3,8})\s+\[(?P<len>\d)\]\s*(?P<data>(?:[0-9A-Fa-f]{2}\s*)*)$")
+# SLCAN / Lawicel: t<3 hex id><dlc><data>, T<8 hex id><dlc><data>, r/R remote frames,
+# optionally followed by a 4 digit millisecond timestamp (rolls over every 60000 ms).
+SLCAN_RE = re.compile(r"^(?P<kind>[tTrR])(?P<id>[0-9A-Fa-f]+)(?P<rest>[0-9A-Fa-f]*)$")
+
+
+class ParseError(Exception):
+    pass
+
+
+def _skipped(skipped: int) -> None:
+    if skipped:
+        print("warning: skipped %d unparseable line(s)" % skipped, file=sys.stderr)
 
 
 def _parse_savvycan(lines: List[str]) -> List[Frame]:
     frames = []
+    skipped = 0
     # Files re-saved with a spreadsheet program may contain stray ';'
     reader = csv.reader(line.replace(";", " ") for line in lines)
     header = [h.strip().lower() for h in next(reader)]
@@ -112,46 +129,108 @@ def _parse_savvycan(lines: List[str]) -> List[Frame]:
     i_len = col("len", "length", "dlc")
     i_d1 = col("d1")
     if i_ts is None or i_id is None or i_len is None or i_d1 is None:
-        raise ValueError("Unknown CSV header: %s" % ",".join(header))
+        raise ParseError("Unknown CSV header: %s" % ",".join(header))
 
     for row in reader:
-        if len(row) <= i_len or not row[i_id].strip():
-            continue
-        length = int(row[i_len])
-        data = bytes(int(v, 16) for v in row[i_d1:i_d1 + length] if v.strip())
-        can_id = int(row[i_id], 16)
-        extended = row[i_ext].strip().lower() in ("true", "1", "yes") if i_ext is not None else can_id > 0x7FF
-        # SavvyCAN stores microseconds
-        ts = float(row[i_ts]) / 1e6
-        direction = row[i_dir].strip() if i_dir is not None and len(row) > i_dir else None
-        frames.append(Frame(ts, can_id, extended, data, direction))
+        try:
+            if len(row) <= i_len or not row[i_id].strip():
+                continue
+            length = int(row[i_len])
+            data = bytes(int(v, 16) for v in row[i_d1:i_d1 + length] if v.strip())
+            can_id = int(row[i_id], 16)
+            extended = row[i_ext].strip().lower() in ("true", "1", "yes") if i_ext is not None else can_id > 0x7FF
+            # SavvyCAN stores microseconds
+            ts = float(row[i_ts]) / 1e6
+            direction = row[i_dir].strip() if i_dir is not None and len(row) > i_dir else None
+            frames.append(Frame(ts, can_id, extended, data, direction))
+        except (ValueError, IndexError):
+            skipped += 1
+    _skipped(skipped)
     return frames
 
 
 def _parse_candump(lines: Iterable[str]) -> List[Frame]:
     frames = []
+    skipped = 0
     fallback_ts = 0.0
+    have_ts = False
     for line in lines:
         match = CANDUMP_LOG_RE.match(line) or CANDUMP_CONSOLE_RE.match(line)
         if not match:
+            skipped += 1
             continue
-        id_text = match.group("id")
-        data_text = re.sub(r"\s", "", match.group("data"))
-        ts = match.group("ts")
-        if ts is None:
-            fallback_ts += 0.001
-        frames.append(Frame(float(ts) if ts else fallback_ts, int(id_text, 16), len(id_text) > 3,
-                            bytes.fromhex(data_text)))
+        try:
+            id_text = match.group("id")
+            data_text = re.sub(r"\s", "", match.group("data"))
+            ts = match.group("ts")
+            if ts is not None:
+                have_ts = True
+            else:
+                fallback_ts += 0.001
+            frames.append(Frame(float(ts) if ts else fallback_ts, int(id_text, 16), len(id_text) > 3,
+                                bytes.fromhex(data_text)))
+        except ValueError:
+            skipped += 1
+    _skipped(skipped)
+    if frames and not have_ts:
+        print("warning: no timestamps in the log, cycle times and wake-up gaps are meaningless",
+              file=sys.stderr)
+    return frames
+
+
+def _parse_slcan(lines: Iterable[str]) -> List[Frame]:
+    frames = []
+    skipped = 0
+    last_raw = None
+    offset = 0.0
+    have_ts = False
+    for line in lines:
+        match = SLCAN_RE.match(line.strip())
+        if not match:
+            skipped += 1
+            continue
+        try:
+            kind = match.group("kind")
+            extended = kind in ("T", "R")
+            remote = kind in ("r", "R")
+            id_len = 8 if extended else 3
+            body = match.group("id") + match.group("rest")
+            if len(body) < id_len + 1:
+                raise ValueError("short frame")
+            can_id = int(body[:id_len], 16)
+            dlc = int(body[id_len], 16)
+            after = body[id_len + 1:]
+            data = b"" if remote else bytes.fromhex(after[:2 * dlc])
+            stamp = after[2 * dlc if not remote else 0:]
+            if len(stamp) == 4:
+                have_ts = True
+                raw = int(stamp, 16)
+                if last_raw is not None and raw < last_raw:
+                    offset += 60.0  # the 4 digit ms timestamp wraps every 60000 ms
+                last_raw = raw
+                ts = offset + raw / 1000.0
+            else:
+                ts = len(frames) * 0.001
+            frames.append(Frame(ts, can_id, extended, data))
+        except ValueError:
+            skipped += 1
+    _skipped(skipped)
+    if frames and not have_ts:
+        print("warning: SLCAN log has no timestamps, cycle times and wake-up gaps are meaningless",
+              file=sys.stderr)
     return frames
 
 
 def parse_log(path: str) -> List[Frame]:
-    with open(path, "r", encoding="utf-8", errors="replace") as handle:
+    with open(path, "r", encoding="utf-8-sig", errors="replace") as handle:
         lines = [line.rstrip("\r\n") for line in handle if line.strip()]
     if not lines:
         return []
-    if "," in lines[0] and "id" in lines[0].lower():
+    first = lines[0]
+    if "," in first and "id" in first.lower():
         frames = _parse_savvycan(lines)
+    elif SLCAN_RE.match(first.strip()) and "#" not in first and "[" not in first:
+        frames = _parse_slcan(lines)
     else:
         frames = _parse_candump(lines)
     frames.sort(key=lambda f: f.ts)
@@ -187,6 +266,10 @@ def reassemble_isotp(frames: List[Frame]) -> List[Message]:
                 messages.append(Message(frame.ts, frame.can_id, frame.extended, data[1:1 + length], frame.direction))
         elif pci == 0x1 and len(data) >= 2:
             length = ((data[0] & 0x0F) << 8) | data[1]
+            # A classic-CAN first frame always announces more than 7 bytes; anything
+            # shorter (or the length-0 escape form) is not a diagnostic multi-frame.
+            if length < 8:
+                continue
             pending[key] = {"ts": frame.ts, "length": length, "payload": bytearray(data[2:]), "seq": 1,
                             "direction": frame.direction}
         elif pci == 0x2 and key in pending:
@@ -204,12 +287,44 @@ def reassemble_isotp(frames: List[Frame]) -> List[Message]:
     return messages
 
 
+def _response_matches_request(request_id: int, response_id: int, functional: bool) -> bool:
+    """True if a response id plausibly belongs to a request id (ISO 15765 addressing)."""
+    if functional:
+        return True
+    if not (request_id > 0x7FF):  # 11 bit
+        return response_id == request_id + 8 or response_id > 0x7FF or response_id < 0x700
+    # 29 bit physical: 18DA<tester><ecu> request -> 18DA<ecu><tester> response
+    return ((request_id ^ response_id) & 0xFFFF) != 0
+
+
 def match_exchanges(messages: List[Message]) -> "OrderedDict[Tuple, Exchange]":
-    """Pair diagnostic requests with the responses that follow them."""
+    """Pair diagnostic requests with the responses that follow them.
+
+    A response is paired with an open request from a different id, preferring one whose
+    id is the physical/functional peer of the response id, so overlapping requests to
+    two ECUs are not crossed. Functional requests (7DF, 18DB33F1) stay open for several
+    responders. A "response pending" (NRC 78) keeps the request open until the final
+    answer or the timeout.
+    """
     exchanges: "OrderedDict[Tuple, Exchange]" = OrderedDict()
     open_requests: List[Message] = []
+    functional_ids = {0x7DF, 0x18DB33F1}
+
+    def record(request: Message, msg: Message, is_negative: bool, id_len: int) -> None:
+        key = (request.can_id, msg.can_id, request.payload[:1 + id_len])
+        exchange = exchanges.get(key)
+        if exchange is None:
+            exchange = exchanges[key] = Exchange(request.can_id, msg.can_id, request.extended,
+                                                 request.payload[:1 + id_len])
+        exchange.count += 1
+        if is_negative:
+            exchange.negative[msg.payload[2]] = exchange.negative.get(msg.payload[2], 0) + 1
+        else:
+            exchange.responses.append(msg.payload)
 
     for msg in messages:
+        if not msg.payload:
+            continue
         service = msg.payload[0]
         if service in REQUEST_SERVICES:
             open_requests = [r for r in open_requests if msg.ts - r.ts <= RESPONSE_TIMEOUT and r.can_id != msg.can_id]
@@ -218,27 +333,29 @@ def match_exchanges(messages: List[Message]) -> "OrderedDict[Tuple, Exchange]":
 
         is_negative = service == 0x7F and len(msg.payload) >= 3
         requested_service = msg.payload[1] if is_negative else service - 0x40
-        for request in reversed(open_requests):
-            if request.can_id == msg.can_id or msg.ts - request.ts > RESPONSE_TIMEOUT:
-                continue
-            if request.payload[0] != requested_service:
-                continue
-            id_len = IDENTIFIER_LENGTH.get(requested_service, 0)
-            if not is_negative and msg.payload[1:1 + id_len] != request.payload[1:1 + id_len]:
-                continue
-            key = (request.can_id, msg.can_id, request.payload[:1 + id_len])
-            exchange = exchanges.get(key)
-            if exchange is None:
-                exchange = exchanges[key] = Exchange(request.can_id, msg.can_id, request.extended,
-                                                     request.payload[:1 + id_len])
-            exchange.count += 1
-            if is_negative:
-                exchange.negative[msg.payload[2]] = exchange.negative.get(msg.payload[2], 0) + 1
-            else:
-                exchange.responses.append(msg.payload)
-            open_requests.remove(request)
+        id_len = IDENTIFIER_LENGTH.get(requested_service, 0)
+
+        # Prefer requests whose id is the peer of the response id, newest first
+        candidates = [r for r in reversed(open_requests)
+                      if r.can_id != msg.can_id and msg.ts - r.ts <= RESPONSE_TIMEOUT
+                      and r.payload[0] == requested_service
+                      and (is_negative or msg.payload[1:1 + id_len] == request_ident(r, id_len))]
+        candidates.sort(key=lambda r: not _response_matches_request(r.can_id, msg.can_id, r.can_id in functional_ids))
+
+        for request in candidates:
+            record(request, msg, is_negative, IDENTIFIER_LENGTH.get(request.payload[0], 0))
+            nrc = msg.payload[2] if is_negative else None
+            if nrc == 0x78:
+                # response pending: keep the request open and extend its deadline
+                request.ts = msg.ts
+            elif request.can_id not in functional_ids:
+                open_requests.remove(request)
             break
     return exchanges
+
+
+def request_ident(request: Message, id_len: int) -> bytes:
+    return request.payload[1:1 + id_len]
 
 
 def value_series(messages: List[Message]) -> "OrderedDict[Tuple[int, str], List[Tuple[float, int]]]":
@@ -281,12 +398,24 @@ def response_frame_count(payload_length: int) -> int:
     return 1 + -(-(payload_length - 6) // 7)
 
 
+def wican_byte_index(payload_index: int, payload_length: int) -> int:
+    """Map an index into the reassembled ISO-TP payload to the byte number the WiCAN
+    expression parser uses (B0 = PCI byte). Single frame: B(p+1). Multi frame: the first
+    frame carries 6 payload bytes after its 2 PCI bytes, every consecutive frame adds a
+    PCI byte, so bytes across a frame boundary get their own offset."""
+    if response_frame_count(payload_length) == 1:
+        return payload_index + 1
+    if payload_index < 6:
+        return payload_index + 2
+    return 9 + 8 * ((payload_index - 6) // 7) + (payload_index - 6) % 7
+
+
 def build_profile_skeleton(exchanges: "OrderedDict[Tuple, Exchange]") -> dict:
     """WiCAN vehicle profile skeleton for all positive 21xx/22xxxx exchanges.
 
     Parameter names and expressions are placeholders and must be edited.
     Byte numbering follows the WiCAN expression parser with headers on:
-    B0 is the ISO-TP PCI byte, B1 the response service id.
+    B0 is the ISO-TP PCI byte, B1 the response service id (single frame).
     """
     pids = []
     read_exchanges = [e for e in exchanges.values() if e.request[0] in READ_SERVICES and e.responses]
@@ -294,23 +423,32 @@ def build_profile_skeleton(exchanges: "OrderedDict[Tuple, Exchange]") -> dict:
     for exchange in read_exchanges:
         headers[(exchange.request_id, exchange.response_id, exchange.extended)] += exchange.count
     main_header = max(headers, key=headers.get) if headers else None
+    # With more than one header every PID needs its own init, because the firmware only
+    # re-sends an init on a PID type change, not per PID (a leaked header gives NO DATA).
+    per_pid_init = len(headers) > 1
 
     for exchange in read_exchanges:
         request_hex = exchange.request.hex().upper()
-        frames = response_frame_count(len(exchange.responses[0]))
+        response = exchange.responses[0]
+        frames = response_frame_count(len(response))
         pid = {"pid": request_hex + (str(frames) if frames <= 9 else "")}
         header = (exchange.request_id, exchange.response_id, exchange.extended)
-        if header != main_header:
+        if per_pid_init or header != main_header:
             pid["pid_init"] = _header_init(*header)
-        first_value_byte = len(exchange.request) + 1
-        changing = [i + 1 for i, (lo, hi) in enumerate(byte_ranges(exchange.responses)) if lo != hi]
+        first_value_byte = wican_byte_index(len(exchange.request), len(response))
+        changing = [wican_byte_index(i, len(response))
+                    for i, (lo, hi) in enumerate(byte_ranges(exchange.responses)) if lo != hi]
         pid["parameters"] = {"TODO_%s" % request_hex: "B%d" % first_value_byte}
-        pid["comment"] = "response %s, changing bytes: %s" % (
-            exchange.responses[-1].hex(" ").upper(), ",".join("B%d" % b for b in changing) or "none")
+        note = "response %s, changing bytes: %s" % (
+            response.hex(" ").upper(), ",".join("B%d" % b for b in changing) or "none")
+        if frames > 1:
+            note += " (multi-frame: a value must stay within one [Bx:By] run, not cross a PCI byte)"
+        pid["comment"] = note
         pids.append(pid)
 
-    init = "ATSP6;ATST96;" if not main_header or not main_header[2] else "ATSP7;ATST96;"
-    if main_header:
+    extended = main_header[2] if main_header else False
+    init = "ATSP7;ATST96;" if extended else "ATSP6;ATST96;"
+    if main_header and not per_pid_init:
         init += _header_init(*main_header)
     return {"car_model": "Mercedes-Benz: Sprinter W906 (generated, edit me)", "init": init, "pids": pids}
 
@@ -333,6 +471,33 @@ def _atwua(frame: Frame) -> str:
     return "ATWUA%s,%s;" % (frame.id_str(), frame.data.hex().upper())
 
 
+# Read-only services that are safe to replay as a wake-up frame over and over. A wake
+# candidate that is an ECU response or a state-changing request (clear, reset, write,
+# routine, session, ...) is shown with a warning instead of a ready command.
+_WAKE_SAFE_SERVICES = {0x18, 0x19, 0x1A, 0x21, 0x22}
+
+
+def _wake_suggestion(frame: Frame):
+    """Return (atwua_string, None) for a safe wake candidate, or (None, warning)."""
+    data = frame.data
+    if not data:
+        return None, "empty frame, not a usable wake-up frame"
+    if frame.direction and frame.direction.lower() not in ("tx", "t"):
+        return None, "received frame (an ECU response), do not replay it"
+    pci = data[0] >> 4
+    sid = data[1] if pci == 0x0 and len(data) >= 2 else (data[2] if pci == 0x1 and len(data) >= 3 else None)
+    if sid is None:
+        return _atwua(frame), None  # not ISO-TP, leave it to the user
+    if sid >= 0x40:
+        return None, "looks like an ECU response (service 0x%02X), do not replay it" % sid
+    if sid == 0x3E:
+        # Prefer TesterPresent with the suppress-response bit so it needs no reply
+        return "ATWUA%s,%s;" % (frame.id_str(), ("023E80" + "55" * 5)), None
+    if sid in _WAKE_SAFE_SERVICES:
+        return _atwua(frame), None
+    return None, ("service 0x%02X changes ECU state, do not use it as a repeated wake-up frame" % sid)
+
+
 def report(frames: List[Frame], gap: float, burst_len: int, out=sys.stdout) -> "OrderedDict[Tuple, Exchange]":
     if not frames:
         print("No frames found.", file=out)
@@ -350,11 +515,14 @@ def report(frames: List[Frame], gap: float, burst_len: int, out=sys.stdout) -> "
 
     print("\n== Wake-up candidates (first frames after >= %.1f s of silence)" % gap, file=out)
     for silence, burst in find_wake_candidates(frames, gap, burst_len):
+        if not burst:
+            continue
         label = "log start" if silence == float("inf") else "after %.1f s silence" % silence
         print("-- %s" % label, file=out)
         for frame in burst:
             print("   " + _fmt_frame(frame), file=out)
-        print("   try: " + _atwua(burst[0]), file=out)
+        command, warning = _wake_suggestion(burst[0])
+        print("   try: " + command if command else "   skip: " + warning, file=out)
 
     exchanges = match_exchanges(reassemble_isotp(frames))
     print("\n== Diagnostic exchanges", file=out)
@@ -372,7 +540,9 @@ def report(frames: List[Frame], gap: float, burst_len: int, out=sys.stdout) -> "
             print("    last: %s" % exchange.responses[-1].hex(" ").upper(), file=out)
             if len(exchange.responses) > 1:
                 ranges = byte_ranges(exchange.responses)
-                changing = ["B%d %02X..%02X" % (i + 1, lo, hi) for i, (lo, hi) in enumerate(ranges) if lo != hi]
+                length = len(exchange.responses[0])
+                changing = ["B%d %02X..%02X" % (wican_byte_index(i, length), lo, hi)
+                            for i, (lo, hi) in enumerate(ranges) if lo != hi]
                 if changing:
                     print("    changing: %s" % ", ".join(changing), file=out)
     return exchanges
@@ -380,14 +550,25 @@ def report(frames: List[Frame], gap: float, burst_len: int, out=sys.stdout) -> "
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("log", help="SavvyCAN CSV or candump log")
+    def positive_int(value):
+        number = int(value)
+        if number < 1:
+            raise argparse.ArgumentTypeError("must be >= 1")
+        return number
+
+    parser.add_argument("log", help="SavvyCAN CSV, candump or SLCAN log")
     parser.add_argument("--gap", type=float, default=1.0, help="silence in seconds that marks a wake-up (default 1.0)")
-    parser.add_argument("--burst", type=int, default=10, help="frames to show after each silence (default 10)")
+    parser.add_argument("--burst", type=positive_int, default=10, help="frames to show after each silence (default 10)")
     parser.add_argument("--profile", metavar="FILE", help="write a WiCAN vehicle profile skeleton for 21xx/22xxxx reads")
     parser.add_argument("--series", action="store_true", help="print value statistics of all 21xx/22xxxx responses")
     args = parser.parse_args(argv)
 
-    frames = parse_log(args.log)
+    try:
+        frames = parse_log(args.log)
+    except ParseError as error:
+        print("error: %s" % error, file=sys.stderr)
+        print("supported formats: SavvyCAN GVRET CSV, candump -l, candump console, SLCAN", file=sys.stderr)
+        return 2
     exchanges = report(frames, args.gap, args.burst)
     if args.series:
         print_series(value_series(reassemble_isotp(frames)))
@@ -396,7 +577,7 @@ def main(argv=None) -> int:
             json.dump(build_profile_skeleton(exchanges), handle, indent=2)
             handle.write("\n")
         print("\nprofile skeleton written to %s" % args.profile)
-    return 0
+    return 0 if frames else 1
 
 
 if __name__ == "__main__":

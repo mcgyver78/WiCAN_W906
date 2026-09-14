@@ -30,6 +30,8 @@ int8_t elm327_process_cmd(uint8_t *buf, uint8_t len, twai_message_t *frame, Queu
 char elm327_get_current_protocol(void);
 void elm327_lock(void);
 void elm327_unlock(void);
+void elm327_save_config(void);
+void elm327_restore_config(void);
 uint32_t elm327_get_identifier(void);
 uint32_t elm327_get_rx_address(void);
 uint8_t elm327_ready_to_receive(void);

@@ -103,6 +103,7 @@ typedef struct
     char* std_ecu_protocol;
     char* vehicle_model;
     bool ha_discovery_en;
+    bool idle_mode_en;
     uint32_t cycle;     //To be removed when std pid gets its own period
     SemaphoreHandle_t mutex;
 }all_pids_t;

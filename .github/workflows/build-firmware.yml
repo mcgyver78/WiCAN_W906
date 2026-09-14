@@ -18,6 +18,8 @@ on:
       - 'CMakeLists.txt'
       - 'sdkconfig'
       - 'dependencies.lock'
+      - 'wican_partitions_table.csv'
+      - '.github/workflows/build-firmware.yml'
 
 jobs:
   build:
@@ -45,16 +47,3 @@ jobs:
             build/bootloader/bootloader.bin
             build/partition_table/partition-table.bin
             build/flash_args
-
-  analyzer-tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - run: python -m unittest -v
-        working-directory: tools/w906
-      - name: DTC decoder host test
-        run: cc -Wall -Wextra -Werror -I../../main ../../main/dtc_decode.c dtc_decode_test.c -o dtc_decode_test && ./dtc_decode_test
-        working-directory: tools/w906

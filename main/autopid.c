@@ -941,12 +941,26 @@ void autopid_request_data(void)
 }
 
 
+// Set when a read_dtc / clear_dtc command was accepted, cleared when the scan is done
+static volatile bool dtc_scan_pending = false;
+
+static void dtc_publish_error(const char *action, const char *reason);
+
 void autopid_request_dtc(bool clear)
 {
     if (xautopid_event_group == NULL)
     {
         return;
     }
+
+    // Commands during a scan are rejected instead of queued, a queued clear could run much later
+    if (dtc_scan_pending)
+    {
+        ESP_LOGW(TAG, "DTC scan already running, %s rejected", clear ? "clear_dtc" : "read_dtc");
+        dtc_publish_error(clear ? "clear" : "read", "busy");
+        return;
+    }
+    dtc_scan_pending = true;
 
     EventBits_t bits = clear ? AUTOPID_DTC_CLEAR_BIT : AUTOPID_DTC_READ_BIT;
 
@@ -1601,9 +1615,15 @@ static const dtc_ecu_t dtc_ecus[] = {
 };
 
 #define DTC_ECU_COUNT       (sizeof(dtc_ecus) / sizeof(dtc_ecus[0]))
+#define DTC_ENGINE          (&dtc_ecus[1])
 #define DTC_MSG_SIZE        512
+// mqtt_publish() replaces payloads of 5120 bytes and more with an error message
+#define DTC_JSON_MAX_LEN    (1024 * 5 - 1)
+// Clearing is refused from this engine speed on
+#define DTC_CLEAR_MAX_RPM   50
 
-// Returns the length of the positive response, 0 without response or -NRC
+// Returns the length of the positive response, 0 without response, -NRC, DTC_RESPONSE_PENDING or
+// DTC_RESPONSE_INCOMPLETE
 static int dtc_request(const char *request, uint8_t response_sid, uint8_t *msg)
 {
     char cmd[24];
@@ -1622,6 +1642,15 @@ static int dtc_request(const char *request, uint8_t response_sid, uint8_t *msg)
     return dtc_find_response(elm327_response.data, elm327_response.length, response_sid, msg, DTC_MSG_SIZE);
 }
 
+static void dtc_select_ecu(const dtc_ecu_t *ecu)
+{
+    char init[96];
+
+    snprintf(init, sizeof(init), "ATSH%03X\rATCRA%03X\rATFCSH%03X\rATFCSD300000\rATFCSM1\r",
+                ecu->tx_id, ecu->rx_id, ecu->tx_id);
+    send_commands(init, 2);
+}
+
 static int dtc_read(const dtc_ecu_t *ecu, uint8_t *msg, cJSON *dtcs, int *count)
 {
     char request[16];
@@ -1636,6 +1665,12 @@ static int dtc_read(const dtc_ecu_t *ecu, uint8_t *msg, cJSON *dtcs, int *count)
         // 59 02 <availability mask> [DTC high, middle, low, status] ...
         snprintf(request, sizeof(request), "1902%02X", ecu->status_mask);
         length = dtc_request(request, 0x59, msg);
+
+        // Only whole records, anything else is a damaged response
+        if (length > 0 && (length < 3 || (length - 3) % 4 != 0))
+        {
+            return DTC_RESPONSE_INCOMPLETE;
+        }
 
         for (int i = 3; length > 0 && i + 4 <= length; i += 4)
         {
@@ -1654,6 +1689,12 @@ static int dtc_read(const dtc_ecu_t *ecu, uint8_t *msg, cJSON *dtcs, int *count)
         // 58 <count> [DTC high, low, status] ...
         length = dtc_request("1802FF00", 0x58, msg);
 
+        // Only whole records, and as many as the control unit announces
+        if (length > 0 && (length < 2 || (length - 2) % 3 != 0 || (length - 2) / 3 != msg[1]))
+        {
+            return DTC_RESPONSE_INCOMPLETE;
+        }
+
         for (int i = 2; length > 0 && i + 3 <= length; i += 3)
         {
             cJSON *dtc = cJSON_CreateObject();
@@ -1668,6 +1709,14 @@ static int dtc_read(const dtc_ecu_t *ecu, uint8_t *msg, cJSON *dtcs, int *count)
     return length;
 }
 
+static void dtc_topic(char *topic, size_t size)
+{
+    const char *base = (all_pids != NULL && all_pids->group_destination && strlen(all_pids->group_destination) > 0) ?
+                        all_pids->group_destination : config_server_get_mqtt_rx_topic();
+
+    snprintf(topic, size, "%s/dtc", base);
+}
+
 static void dtc_publish(const char *topic, cJSON *root, int retain)
 {
     char *json = cJSON_PrintUnformatted(root);
@@ -1680,32 +1729,126 @@ static void dtc_publish(const char *topic, cJSON *root, int retain)
     cJSON_Delete(root);
 }
 
-static void autopid_dtc_scan(bool clear)
+static void dtc_publish_error(const char *action, const char *reason)
+{
+    char topic[128];
+    cJSON *error = cJSON_CreateObject();
+
+    if (error == NULL)
+    {
+        return;
+    }
+    dtc_topic(topic, sizeof(topic));
+    cJSON_AddStringToObject(error, "state", "error");
+    cJSON_AddStringToObject(error, "action", action);
+    cJSON_AddStringToObject(error, "reason", reason);
+    dtc_publish(topic, error, 0);
+}
+
+// The final result is one retained message. If it is too large for MQTT, the code lists of the control
+// units with the most entries are replaced by their number ("dtcs_omitted") until it fits.
+static void dtc_publish_result(const char *topic, cJSON *root)
+{
+    cJSON *ecus = cJSON_GetObjectItem(root, "ecus");
+    char *json = cJSON_PrintUnformatted(root);
+
+    while (json != NULL && strlen(json) > DTC_JSON_MAX_LEN)
+    {
+        cJSON *item = NULL;
+        cJSON *largest = NULL;
+        int largest_count = 0;
+
+        free(json);
+        json = NULL;
+
+        cJSON_ArrayForEach(item, ecus)
+        {
+            int n = cJSON_GetArraySize(cJSON_GetObjectItem(item, "dtcs"));
+
+            if (n > largest_count)
+            {
+                largest = item;
+                largest_count = n;
+            }
+        }
+
+        if (largest == NULL)
+        {
+            ESP_LOGE(TAG, "DTC result too large");
+            break;
+        }
+        cJSON_ReplaceItemInObject(largest, "dtcs", cJSON_CreateArray());
+        cJSON_AddNumberToObject(largest, "dtcs_omitted", largest_count);
+        json = cJSON_PrintUnformatted(root);
+    }
+
+    if (json != NULL)
+    {
+        mqtt_publish((char*)topic, json, 0, 0, 1);
+        free(json);
+    }
+    cJSON_Delete(root);
+}
+
+// The engine control unit has to answer first (ignition on), and clearing needs the engine to be off.
+// Returns NULL or the reason for refusing the scan.
+static const char *dtc_check_engine(bool clear, uint8_t *msg)
+{
+    dtc_select_ecu(DTC_ENGINE);
+
+    // 22 5017: engine speed * 4, answered in the default session
+    int length = dtc_request("225017", 0x62, msg);
+
+    if (length == 0 || length == DTC_RESPONSE_PENDING)
+    {
+        return "ecu_offline";
+    }
+    if (!clear)
+    {
+        return NULL;
+    }
+    if (length < 5 || msg[1] != 0x50 || msg[2] != 0x17)
+    {
+        return "engine_state_unknown";
+    }
+    if (((msg[3] << 8) | msg[4]) / 4 >= DTC_CLEAR_MAX_RPM)
+    {
+        return "engine_running";
+    }
+    return NULL;
+}
+
+static void dtc_scan(bool clear)
 {
     const char *action = clear ? "clear" : "read";
-    const char *base = (all_pids->group_destination && strlen(all_pids->group_destination) > 0) ?
-                        all_pids->group_destination : config_server_get_mqtt_rx_topic();
     char topic[128];
     int64_t start = esp_timer_get_time();
     int dtc_count = 0;
 
-    snprintf(topic, sizeof(topic), "%s/dtc", base);
+    dtc_topic(topic, sizeof(topic));
 
-    if (autopid_ecu_asleep())
+    uint8_t *msg = malloc(DTC_MSG_SIZE);
+
+    if (msg == NULL)
     {
-        cJSON *error = cJSON_CreateObject();
-        cJSON_AddStringToObject(error, "state", "error");
-        cJSON_AddStringToObject(error, "action", action);
-        cJSON_AddStringToObject(error, "reason", "ecu_offline");
-        dtc_publish(topic, error, 0);
+        ESP_LOGE(TAG, "DTC scan: out of memory");
         return;
     }
 
-    uint8_t *msg = malloc(DTC_MSG_SIZE);
+    const char *reason = dtc_check_engine(clear, msg);
+
+    if (reason != NULL)
+    {
+        ESP_LOGW(TAG, "DTC scan (%s) refused: %s", action, reason);
+        dtc_publish_error(action, reason);
+        free(msg);
+        return;
+    }
+
     cJSON *root = cJSON_CreateObject();
     cJSON *ecus = cJSON_CreateArray();
 
-    if (msg == NULL || root == NULL || ecus == NULL)
+    if (root == NULL || ecus == NULL)
     {
         ESP_LOGE(TAG, "DTC scan: out of memory");
         free(msg);
@@ -1719,7 +1862,6 @@ static void autopid_dtc_scan(bool clear)
     for (size_t i = 0; i < DTC_ECU_COUNT; i++)
     {
         const dtc_ecu_t *ecu = &dtc_ecus[i];
-        char init[96];
         char id[8];
         int count = 0;
 
@@ -1730,9 +1872,7 @@ static void autopid_dtc_scan(bool clear)
         cJSON_AddNumberToObject(progress, "total", DTC_ECU_COUNT);
         dtc_publish(topic, progress, 0);
 
-        snprintf(init, sizeof(init), "ATSH%03X\rATCRA%03X\rATFCSH%03X\rATFCSD300000\rATFCSM1\r",
-                    ecu->tx_id, ecu->rx_id, ecu->tx_id);
-        send_commands(init, 2);
+        dtc_select_ecu(ecu);
 
         cJSON *item = cJSON_CreateObject();
         cJSON *dtcs = cJSON_CreateArray();
@@ -1748,6 +1888,7 @@ static void autopid_dtc_scan(bool clear)
         {
             length = dtc_read(ecu, msg, dtcs, &count);
 
+            // Only complete lists with entries are cleared
             if (clear && length > 0 && count > 0)
             {
                 int cleared = dtc_request(ecu->protocol == DTC_UDS ? "14FFFFFF" : "14FF00", 0x54, msg);
@@ -1770,6 +1911,15 @@ static void autopid_dtc_scan(bool clear)
         {
             cJSON_AddStringToObject(item, "status", "no_response");
         }
+        else if (length == DTC_RESPONSE_PENDING)
+        {
+            // Only "response pending" arrived within the response time
+            cJSON_AddStringToObject(item, "status", "pending_timeout");
+        }
+        else if (length == DTC_RESPONSE_INCOMPLETE)
+        {
+            cJSON_AddStringToObject(item, "status", "incomplete");
+        }
         else
         {
             char status[16];
@@ -1786,10 +1936,18 @@ static void autopid_dtc_scan(bool clear)
     cJSON_AddNumberToObject(root, "duration_ms", (double)((esp_timer_get_time() - start) / 1000));
     cJSON_AddNumberToObject(root, "dtc_count", dtc_count);
     cJSON_AddItemToObject(root, "ecus", ecus);
-    dtc_publish(topic, root, 1);
+    dtc_publish_result(topic, root);
 
     ESP_LOGI(TAG, "DTC scan done, %d DTCs", dtc_count);
     free(msg);
+}
+
+static void autopid_dtc_scan(bool clear)
+{
+    dtc_scan(clear);
+
+    // Accept the next read_dtc / clear_dtc command
+    dtc_scan_pending = false;
 }
 
 static void autopid_task(void *pvParameters)

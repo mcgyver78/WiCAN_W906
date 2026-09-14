@@ -1,0 +1,38 @@
+name: W906 tools and decoder tests
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'tools/w906/**'
+      - 'main/dtc_decode.c'
+      - 'main/dtc_decode.h'
+      - '.github/workflows/w906-tools.yml'
+  pull_request:
+    paths:
+      - 'tools/w906/**'
+      - 'main/dtc_decode.c'
+      - 'main/dtc_decode.h'
+      - '.github/workflows/w906-tools.yml'
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: CAN log analyzer tests
+        run: python -m unittest -v
+        working-directory: tools/w906
+      - name: DTC decoder host test
+        run: cc -Wall -Wextra -Werror -fsanitize=address,undefined -I../../main ../../main/dtc_decode.c dtc_decode_test.c -o dtc_decode_test && ./dtc_decode_test
+        working-directory: tools/w906
+      - name: Node-RED flows match their generators
+        run: |
+          python node-red/make_flow.py "$RUNNER_TEMP/sprinter-dashboard.json"
+          cmp "$RUNNER_TEMP/sprinter-dashboard.json" node-red/sprinter-dashboard.json
+          python node-red/make_dtc_flow.py "$RUNNER_TEMP/dtc-dashboard.json"
+          cmp "$RUNNER_TEMP/dtc-dashboard.json" node-red/dtc-dashboard.json
+        working-directory: tools/w906

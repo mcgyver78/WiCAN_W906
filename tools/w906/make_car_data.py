@@ -31,6 +31,8 @@ def auto_pid_settings(car_model: str, topic: str, cycle_ms: int) -> dict:
         "cycle": str(cycle_ms),
         "car_specific": "enable",
         "ha_discovery": "disable",
+        # W906 diagnostic CAN sleeps with the ignition off: probe instead of flooding it
+        "idle_mode": "enable",
         "car_model": car_model,
         "pids": [],
         "std_pids": [],

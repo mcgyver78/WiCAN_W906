@@ -56,20 +56,20 @@
 
 #define TAG "AUTOPID"
 
-// When no parameter got a response for this long the vehicle is considered asleep:
-// only one request (including the ELM327 wake-up frames) is sent per probe interval
-// and an offline status is published instead of stale values.
-#define AUTOPID_ECU_ASLEEP_TIMEOUT_US       (10 * 1000 * 1000)
+// Idle mode (opt-in per profile, "idle_mode" in the AutoPID settings). A vehicle
+// whose ECUs stopped answering (ignition off) is probed once per interval instead of
+// polled continuously, and an offline status is published instead of stale values.
+// It is entered only after AUTOPID_ASLEEP_FAILS requests in a row went unanswered, so
+// a vehicle that still answers (e.g. with long polling periods) is never treated as
+// asleep, and it is inactive while polling is disabled (every pass is then a request).
+#define AUTOPID_ASLEEP_FAILS                6
 #define AUTOPID_ECU_PROBE_INTERVAL_MS       30000
 #define AUTOPID_ECU_ASLEEP_PUBLISH_MS       10000
 
-static int64_t last_ecu_response_time = 0;
 static wc_timer_t ecu_probe_timer = 0;
-
-static bool autopid_ecu_asleep(void)
-{
-    return (esp_timer_get_time() - last_ecu_response_time) > AUTOPID_ECU_ASLEEP_TIMEOUT_US;
-}
+static uint32_t ecu_fail_count = 0;
+static uint32_t ecu_probe_index = 0;
+static bool ecu_asleep_state = false;
 
 #define TEMP_BUFFER_LENGTH  32
 #define ECU_CONNECTED_BIT			        BIT0
@@ -1818,6 +1818,14 @@ static const char *dtc_check_engine(bool clear, uint8_t *msg)
     return NULL;
 }
 
+// The control unit table is specific to the W906. Only run the scan when that
+// profile is loaded, so the Mercedes sessions and clear requests are never sent to
+// the fixed 11-bit ids of another vehicle.
+static bool dtc_profile_supported(void)
+{
+    return all_pids != NULL && all_pids->vehicle_model != NULL && strstr(all_pids->vehicle_model, "W906") != NULL;
+}
+
 static void dtc_scan(bool clear)
 {
     const char *action = clear ? "clear" : "read";
@@ -1827,30 +1835,45 @@ static void dtc_scan(bool clear)
 
     dtc_topic(topic, sizeof(topic));
 
+    if (!dtc_profile_supported())
+    {
+        ESP_LOGW(TAG, "DTC scan (%s) refused: profile has no DTC table", action);
+        dtc_publish_error(action, "not_supported");
+        return;
+    }
+
     uint8_t *msg = malloc(DTC_MSG_SIZE);
 
     if (msg == NULL)
     {
         ESP_LOGE(TAG, "DTC scan: out of memory");
+        dtc_publish_error(action, "out_of_memory");
         return;
     }
 
-    const char *reason = dtc_check_engine(clear, msg);
-
-    if (reason != NULL)
-    {
-        ESP_LOGW(TAG, "DTC scan (%s) refused: %s", action, reason);
-        dtc_publish_error(action, reason);
-        free(msg);
-        return;
-    }
-
+    // The scan repoints header, receive filter and flow control at each control unit
     cJSON *root = cJSON_CreateObject();
     cJSON *ecus = cJSON_CreateArray();
 
     if (root == NULL || ecus == NULL)
     {
         ESP_LOGE(TAG, "DTC scan: out of memory");
+        dtc_publish_error(action, "out_of_memory");
+        free(msg);
+        cJSON_Delete(root);
+        cJSON_Delete(ecus);
+        return;
+    }
+
+    elm327_save_config();
+
+    const char *reason = dtc_check_engine(clear, msg);
+
+    if (reason != NULL)
+    {
+        ESP_LOGW(TAG, "DTC scan (%s) refused: %s", action, reason);
+        elm327_restore_config();
+        dtc_publish_error(action, reason);
         free(msg);
         cJSON_Delete(root);
         cJSON_Delete(ecus);
@@ -1931,6 +1954,9 @@ static void dtc_scan(bool clear)
         cJSON_AddItemToArray(ecus, item);
     }
 
+    // Restore the vehicle profile's header, filter and flow control for AutoPID polling
+    elm327_restore_config();
+
     cJSON_AddStringToObject(root, "state", "done");
     cJSON_AddStringToObject(root, "action", action);
     cJSON_AddNumberToObject(root, "duration_ms", (double)((esp_timer_get_time() - start) / 1000));
@@ -1948,6 +1974,229 @@ static void autopid_dtc_scan(bool clear)
 
     // Accept the next read_dtc / clear_dtc command
     dtc_scan_pending = false;
+}
+
+// True if this PID type is enabled
+static bool autopid_pid_enabled(const pid_data2_t *curr_pid)
+{
+    return !((curr_pid->pid_type == PID_STD && !all_pids->pid_std_en) ||
+             (curr_pid->pid_type == PID_CUSTOM && !all_pids->pid_custom_en) ||
+             (curr_pid->pid_type == PID_SPECIFIC && !all_pids->pid_specific_en));
+}
+
+// A UDS/KWP negative response (7F ..) or one too short to hold the response id must
+// not be evaluated: the expression would read stale bytes of the previous request from
+// the shared response buffer. The service id is at data[1] for a single frame and at
+// data[2] for a multi-frame first frame.
+static bool autopid_response_usable(const response_t *response)
+{
+    if (response->length < 2) return false;
+
+    uint8_t pci = response->data[0] & 0xF0;
+    uint8_t sid = (pci == 0x10) ? (response->length >= 3 ? response->data[2] : 0x7F) : response->data[1];
+
+    return sid != 0x7F;
+}
+
+// Sends one parameter's request (with the per-PID-type init) and processes the response.
+// Returns true if the ECU answered with a usable response. previous_pid_type carries the
+// last init sent between calls.
+static bool autopid_query_parameter(pid_data2_t *curr_pid, parameter_t *param, pid_type_t *previous_pid_type)
+{
+    twai_message_t tx_msg;
+
+    if (curr_pid->pid_type != *previous_pid_type)
+    {
+        switch (curr_pid->pid_type)
+        {
+            case PID_CUSTOM:
+                if (all_pids->custom_init && strlen(all_pids->custom_init) > 0) send_commands(all_pids->custom_init, 2);
+                break;
+            case PID_STD:
+                if (all_pids->standard_init && strlen(all_pids->standard_init) > 0) send_commands(all_pids->standard_init, 2);
+                break;
+            case PID_SPECIFIC:
+                if (all_pids->specific_init && strlen(all_pids->specific_init) > 0) send_commands(all_pids->specific_init, 2);
+                break;
+            case PID_MAX:
+                break;
+        }
+        *previous_pid_type = curr_pid->pid_type;
+    }
+
+    wc_timer_set(&param->timer, param->period);
+
+    if (curr_pid->cmd == NULL || strlen(curr_pid->cmd) == 0)
+    {
+        ESP_LOGE(TAG, "Failed, cmd is NULL");
+        return false;
+    }
+
+    if ((curr_pid->pid_type == PID_CUSTOM || curr_pid->pid_type == PID_SPECIFIC) &&
+        curr_pid->init != NULL && strlen(curr_pid->init) > 0)
+    {
+        send_commands(curr_pid->init, 2);
+    }
+
+    if (elm327_process_cmd((uint8_t*)curr_pid->cmd, strlen(curr_pid->cmd), &tx_msg, &autopidQueue) != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to process command: %s", curr_pid->cmd);
+        return false;
+    }
+
+    if (xQueueReceive(autopidQueue, &elm327_response, pdMS_TO_TICKS(1000)) != pdPASS)
+    {
+        param->failed = true;
+        param->value = FLT_MAX;
+        ESP_LOGE(TAG, "Failed Queue Receive: curr_pid->cmd timeout");
+        return false;
+    }
+
+    if (strstr((char*)elm327_response.data, "error") != NULL)
+    {
+        param->failed = true;
+        param->value = FLT_MAX;
+        ESP_LOGE(TAG, "Failed to process command: %s", curr_pid->cmd);
+        return false;
+    }
+
+    param->failed = false;
+    xEventGroupSetBits(xautopid_event_group, ECU_CONNECTED_BIT);
+
+    if (curr_pid->pid_type == PID_CUSTOM || curr_pid->pid_type == PID_SPECIFIC)
+    {
+        double result;
+
+        if (!autopid_response_usable(&elm327_response))
+        {
+            param->value = FLT_MAX;
+            ESP_LOGW(TAG, "Negative or short response for %s - ignoring", param->name ? param->name : "?");
+        }
+        else if (param->expression &&
+                 evaluate_expression((uint8_t*)param->expression, elm327_response.data, 0, &result))
+        {
+            if (param->min != FLT_MAX && result < param->min)
+            {
+                ESP_LOGW(TAG, "Parameter %s value %.2f below min %.2f - ignoring", param->name, result, param->min);
+            }
+            else if (param->max != FLT_MAX && result > param->max)
+            {
+                ESP_LOGW(TAG, "Parameter %s value %.2f above max %.2f - ignoring", param->name, result, param->max);
+            }
+            else
+            {
+                param->value = round(result * 100.0) / 100.0;
+                publish_parameter_mqtt(param);
+            }
+        }
+    }
+    else if (curr_pid->pid_type == PID_STD)
+    {
+        const std_pid_t* pid_info = get_pid_from_string(param->name);
+        if (pid_info)
+        {
+            for (int p = 0; p < pid_info->num_params; p++)
+            {
+                const char* param_name = strchr(param->name, '-');
+                if (param_name && strcmp(param_name + 1, pid_info->params[p].name) == 0)
+                {
+                    esp_err_t err;
+                    if (elm327_response.priority_data != NULL)
+                    {
+                        err = extract_signal_value(elm327_response.priority_data, elm327_response.priority_data_len,
+                                                   &pid_info->params[p], &param->value);
+                    }
+                    else
+                    {
+                        err = extract_signal_value(elm327_response.data, elm327_response.length,
+                                                   &pid_info->params[p], &param->value);
+                    }
+                    if (err != ESP_OK)
+                    {
+                        ESP_LOGE(TAG, "Failed to extract signal: %s", esp_err_to_name(err));
+                        break;
+                    }
+                    param->value = roundf(param->value * 100.0) / 100.0;
+                    publish_parameter_mqtt(param);
+                    break;
+                }
+            }
+        }
+    }
+
+    return true;
+}
+
+// Picks the next enabled parameter with a command for a wake-up probe, rotating through
+// them so one control unit that never answers can't block the others.
+static bool autopid_select_probe(pid_data2_t **out_pid, parameter_t **out_param)
+{
+    uint32_t eligible = 0;
+
+    for (uint32_t i = 0; i < all_pids->pid_count; i++)
+    {
+        pid_data2_t *curr_pid = &all_pids->pids[i];
+        if (!autopid_pid_enabled(curr_pid) || curr_pid->cmd == NULL || strlen(curr_pid->cmd) == 0) continue;
+        eligible += curr_pid->parameters_count;
+    }
+
+    if (eligible == 0) return false;
+
+    uint32_t target = ecu_probe_index % eligible;
+    ecu_probe_index++;
+    uint32_t n = 0;
+
+    for (uint32_t i = 0; i < all_pids->pid_count; i++)
+    {
+        pid_data2_t *curr_pid = &all_pids->pids[i];
+        if (!autopid_pid_enabled(curr_pid) || curr_pid->cmd == NULL || strlen(curr_pid->cmd) == 0) continue;
+        for (uint32_t p = 0; p < curr_pid->parameters_count; p++)
+        {
+            if (n++ == target)
+            {
+                *out_pid = curr_pid;
+                *out_param = &curr_pid->parameters[p];
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Entering idle mode: invalidate every value so nothing stale is served over MQTT, the
+// HTTP endpoint or the webhook, and report the ECU as disconnected. Called with the
+// all_pids mutex held.
+static void autopid_enter_idle(void)
+{
+    ecu_asleep_state = true;
+    wc_timer_set(&ecu_probe_timer, AUTOPID_ECU_PROBE_INTERVAL_MS);
+
+    for (uint32_t i = 0; i < all_pids->pid_count; i++)
+    {
+        for (uint32_t p = 0; p < all_pids->pids[i].parameters_count; p++)
+        {
+            all_pids->pids[i].parameters[p].failed = true;
+            all_pids->pids[i].parameters[p].value = FLT_MAX;
+        }
+    }
+    xEventGroupClearBits(xautopid_event_group, ECU_CONNECTED_BIT);
+    ESP_LOGI(TAG, "ECU idle, probing every %d ms", AUTOPID_ECU_PROBE_INTERVAL_MS);
+}
+
+// Updates the idle state after a request. Enters idle after AUTOPID_ASLEEP_FAILS
+// unanswered requests in a row, leaves it on any answer.
+static void autopid_idle_update(bool answered)
+{
+    if (answered)
+    {
+        ecu_fail_count = 0;
+        ecu_asleep_state = false;
+    }
+    else
+    {
+        if (ecu_fail_count < AUTOPID_ASLEEP_FAILS) ecu_fail_count++;
+        if (!ecu_asleep_state && ecu_fail_count >= AUTOPID_ASLEEP_FAILS) autopid_enter_idle();
+    }
 }
 
 static void autopid_task(void *pvParameters)
@@ -2029,10 +2278,13 @@ static void autopid_task(void *pvParameters)
             previous_pid_type = PID_MAX;
         }
 
+        // Idle mode is opt-in and never active while polling is disabled, where each
+        // pass is an explicit request
+        bool polling_disabled = xEventGroupGetBits(xautopid_event_group) & AUTOPID_POLLING_DISABLED_BIT;
+        bool idle_mode = all_pids->idle_mode_en && !polling_disabled;
         bool ecu_probe = false;
-        bool ecu_asleep = autopid_ecu_asleep();
 
-        if(ecu_asleep && wc_timer_is_expired(&ecu_probe_timer))
+        if(idle_mode && ecu_asleep_state && wc_timer_is_expired(&ecu_probe_timer))
         {
             wc_timer_set(&ecu_probe_timer, AUTOPID_ECU_PROBE_INTERVAL_MS);
             ecu_probe = true;
@@ -2040,214 +2292,42 @@ static void autopid_task(void *pvParameters)
 
         elm327_lock();
         xSemaphoreTake(all_pids->mutex, portMAX_DELAY);
-        
-        // Loop through all PIDs
-        for(uint32_t i = 0; i < all_pids->pid_count && (!ecu_asleep || ecu_probe); i++) 
+
+        if(ecu_probe)
         {
-            pid_data2_t *curr_pid = &all_pids->pids[i];
-            // Skip if PID type not enabled
-            if((curr_pid->pid_type == PID_STD && !all_pids->pid_std_en) ||
-            (curr_pid->pid_type == PID_CUSTOM && !all_pids->pid_custom_en) ||
-            (curr_pid->pid_type == PID_SPECIFIC && !all_pids->pid_specific_en))
+            // While asleep send a single rotating probe request instead of polling
+            pid_data2_t *probe_pid;
+            parameter_t *probe_param;
+            if(autopid_select_probe(&probe_pid, &probe_param))
             {
-                continue;
+                bool answered = autopid_query_parameter(probe_pid, probe_param, &previous_pid_type);
+                autopid_idle_update(answered);
             }
-
-            // Loop through parameters
-            for(uint32_t p = 0; p < curr_pid->parameters_count && (!ecu_asleep || ecu_probe); p++) 
+        }
+        else if(!idle_mode || !ecu_asleep_state)
+        {
+            // Normal polling: request every parameter whose period elapsed
+            for(uint32_t i = 0; i < all_pids->pid_count && !ecu_asleep_state; i++)
             {
-                parameter_t *param = &curr_pid->parameters[p];
-                
-                // Check parameter timer
-                if(ecu_probe || wc_timer_is_expired(&param->timer)) 
+                pid_data2_t *curr_pid = &all_pids->pids[i];
+                if(!autopid_pid_enabled(curr_pid))
                 {
-                    // autopid_data_write
-                    if(curr_pid->pid_type != previous_pid_type) {
-                        // Send appropriate initialization based on new PID type
-                        switch(curr_pid->pid_type) {
-                            case PID_CUSTOM:
-                                if(all_pids->custom_init && strlen(all_pids->custom_init) > 0) {
-                                    ESP_LOGI(TAG, "Sending custom init: %s, length: %d", 
-                                            all_pids->custom_init, strlen(all_pids->custom_init));
-                    DEBUG_LOGI(TAG, "Sending custom init: %s, length: %d", 
-                        all_pids->custom_init, strlen(all_pids->custom_init));
-                                    send_commands(all_pids->custom_init, 2);
-                                }
-                                break;
-                                
-                            case PID_STD:
-                                if(all_pids->standard_init && strlen(all_pids->standard_init) > 0) {
-                                    ESP_LOGI(TAG, "Sending standard init: %s, length: %d", 
-                                            all_pids->standard_init, strlen(all_pids->standard_init));
-                    DEBUG_LOGI(TAG, "Sending standard init: %s, length: %d", 
-                        all_pids->standard_init, strlen(all_pids->standard_init));
-                                    send_commands(all_pids->standard_init, 2);
-                                }
-                                break;
-                                
-                            case PID_SPECIFIC:
-                                if(all_pids->specific_init && strlen(all_pids->specific_init) > 0) {
-                                    ESP_LOGI(TAG, "Sending specific init: %s, length: %d", 
-                                            all_pids->specific_init, strlen(all_pids->specific_init));
-                    DEBUG_LOGI(TAG, "Sending specific init: %s, length: %d", 
-                        all_pids->specific_init, strlen(all_pids->specific_init));
-                                    send_commands(all_pids->specific_init, 2);
-                                }
-                                break;
-                                
-                            case PID_MAX:
-                                break;
-                        }
+                    continue;
+                }
 
-                        previous_pid_type = curr_pid->pid_type;
-                    }
+                for(uint32_t p = 0; p < curr_pid->parameters_count && !ecu_asleep_state; p++)
+                {
+                    parameter_t *param = &curr_pid->parameters[p];
 
-                    ESP_LOGI(TAG, "Processing parameter: %s", param->name);
-                    DEBUG_LOGI(TAG, "Processing parameter: %s", param->name);
-                    // Reset timer with parameter period
-                    wc_timer_set(&param->timer, param->period);
-
-                    if(curr_pid->cmd != NULL && strlen(curr_pid->cmd) > 0) 
+                    if(wc_timer_is_expired(&param->timer))
                     {
-                        twai_message_t tx_msg;
-
-                        if(curr_pid->pid_type == PID_CUSTOM || curr_pid->pid_type == PID_SPECIFIC) 
+                        bool answered = autopid_query_parameter(curr_pid, param, &previous_pid_type);
+                        if(idle_mode)
                         {
-                            if(curr_pid->init != NULL && strlen(curr_pid->init) > 0)
-                            {
-                                send_commands(curr_pid->init, 2);
-                            }
-                        }
-
-                        ESP_LOGI(TAG, "Executing command: %s", curr_pid->cmd);
-                        DEBUG_LOGI(TAG, "Executing command: %s", curr_pid->cmd);
-                        if(elm327_process_cmd((uint8_t*)curr_pid->cmd, 
-                                            strlen(curr_pid->cmd), 
-                                            &tx_msg, 
-                                            &autopidQueue) == ESP_OK)
-                        {
-                            ESP_LOGI(TAG, "Command processed successfully");
-                            DEBUG_LOGI(TAG, "Command processed successfully");
-                            
-                            if(xQueueReceive(autopidQueue, &elm327_response, pdMS_TO_TICKS(1000)) == pdPASS)
-                            {
-                                ESP_LOGI(TAG, "Response received, length: %lu", elm327_response.length);
-                                DEBUG_LOGI(TAG, "Response received, length: %lu", elm327_response.length);
-                                ESP_LOG_BUFFER_HEXDUMP(TAG, elm327_response.data, 1, ESP_LOG_INFO);
-                                if(strstr((char*)elm327_response.data, "error") == NULL)
-                                {
-                                    double result;
-
-                                    param->failed = false;
-                                    last_ecu_response_time = esp_timer_get_time();
-
-                                    ESP_LOGI(TAG, "Response received, length: %lu", elm327_response.length);
-                                    xEventGroupSetBits(xautopid_event_group, ECU_CONNECTED_BIT);
-                                    // Process response based on PID type
-                                    if(curr_pid->pid_type == PID_CUSTOM || curr_pid->pid_type == PID_SPECIFIC) 
-                                    {
-                                        ESP_LOGI(TAG, "Processing custom/specific PID");
-                                        if(param->expression && 
-                                        evaluate_expression((uint8_t*)param->expression, 
-                                                            elm327_response.data, 0, &result))
-                                        {
-                                            if (param->min != FLT_MAX && result < param->min) {
-                                                ESP_LOGW(TAG, "Parameter %s value %.2f below min %.2f - ignoring", 
-                                                        param->name, result, param->min);
-                                            } else if (param->max != FLT_MAX && result > param->max) {
-                                                ESP_LOGW(TAG, "Parameter %s value %.2f above max %.2f - ignoring", 
-                                                        param->name, result, param->max);
-                                            } else {
-                                                result = round(result * 100.0) / 100.0;
-                                                ESP_LOGI(TAG, "Parameter %s result: %.2f", 
-                                                        param->name, result);
-                                                param->value = result;
-                                                publish_parameter_mqtt(param);
-                                            }
-                                        }
-                                    }
-                                    else if(curr_pid->pid_type == PID_STD) 
-                                    {
-                                        ESP_LOGI(TAG, "Processing standard PID");
-                                        if(curr_pid->pid_type == PID_STD) 
-                                        {
-                                            const std_pid_t* pid_info = get_pid_from_string(param->name);
-                                            if(pid_info)
-                                            {
-                                                ESP_LOGI(TAG, "Found PID info for: %s", param->name);
-                                                // Find matching parameter in pid_info
-                                                for(int p = 0; p < pid_info->num_params; p++)
-                                                {
-                                                    // Match parameter name after the dash
-                                                    const char* param_name = strchr(param->name, '-');
-                                                    if(param_name && strcmp(param_name + 1, pid_info->params[p].name) == 0)
-                                                    {
-                                                        esp_err_t err = ESP_FAIL;
-
-                                                        ESP_LOGI(TAG, "Processing parameter: %s", pid_info->params[p].name);
-                                                        if(elm327_response.priority_data != NULL && elm327_response.priority_data != 0)
-                                                        {
-                                                            err = extract_signal_value(
-                                                                elm327_response.priority_data,           // Your CAN response data buffer
-                                                                elm327_response.priority_data_len,         // Length of your CAN response data
-                                                                &pid_info->params[p],    // Parameter definition from pid_info
-                                                                &param->value            // Where to store the result
-                                                            );
-                                                        }
-                                                        else
-                                                        {
-                                                            err = extract_signal_value(
-                                                                elm327_response.data,           // Your CAN response data buffer
-                                                                elm327_response.length,         // Length of your CAN response data
-                                                                &pid_info->params[p],    // Parameter definition from pid_info
-                                                                &param->value            // Where to store the result
-                                                            );
-                                                        }
- 
-                                                        if (err != ESP_OK) {
-                                                            ESP_LOGE(TAG, "Failed to extract signal: %s", esp_err_to_name(err));
-                                                            break;
-                                                        }
-                                                        param->value = roundf(param->value * 100.0) / 100.0;
-                                                        ESP_LOGI(TAG, "Parameter %s result: %.2f %s", 
-                                                                        param->name, 
-                                                                        param->value, 
-                                                                        pid_info->params[p].unit);
-                                                        param->value = roundf(param->value * 100.0) / 100.0;
-                                                        publish_parameter_mqtt(param);
-                                                        break;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                else
-                                {   
-                                    param->failed = true;
-                                    param->value = FLT_MAX;
-                                    ESP_LOGE(TAG, "Failed to process command: %s", curr_pid->cmd);
-                                }
-                            }
-                            else
-                            {
-                                param->failed = true;
-                                param->value = FLT_MAX;
-                                ESP_LOGE(TAG, "Failed Queue Receive: curr_pid->cmd timeout");
-                            }
-                        }
-                        else 
-                        {
-                            ESP_LOGE(TAG, "Failed to process command: %s", curr_pid->cmd);
+                            // Entering idle mid-pass invalidates the values and stops this pass
+                            autopid_idle_update(answered);
                         }
                     }
-                    else 
-                    {
-                        ESP_LOGE(TAG, "Failed, cmd is NULL");
-                    }
-
-                    // While probing a sleeping vehicle a single request is enough
-                    ecu_probe = false;
                 }
             }
         }
@@ -2256,7 +2336,7 @@ static void autopid_task(void *pvParameters)
         xSemaphoreGive(all_pids->mutex);
 
         autopid_update_values();
-        
+
         if (xEventGroupGetBits(xautopid_event_group) & AUTOPID_POLLING_DISABLED_BIT) {
             xEventGroupClearBits(xautopid_event_group, AUTOPID_REQUEST_BIT);
         }
@@ -2265,7 +2345,7 @@ static void autopid_task(void *pvParameters)
 
         if (strcmp("enable", all_pids->grouping) == 0 && all_pids->group_destination_type == DEST_MQTT_TOPIC && wc_timer_is_expired(&group_cycle_timer))
         {
-            if(autopid_ecu_asleep())
+            if(idle_mode && ecu_asleep_state)
             {
                 wc_timer_set(&group_cycle_timer, AUTOPID_ECU_ASLEEP_PUBLISH_MS);
                 autopid_publish_ecu_offline();
@@ -2364,6 +2444,7 @@ all_pids_t* load_all_pids(void){
             cJSON* car_model_item = cJSON_GetObjectItem(root, "car_model");
             cJSON* ecu_protocol_item = cJSON_GetObjectItem(root, "ecu_protocol");
             cJSON* ha_discovery_item = cJSON_GetObjectItem(root, "ha_discovery");
+            cJSON* idle_mode_item = cJSON_GetObjectItem(root, "idle_mode");
             cJSON* cycle_item = cJSON_GetObjectItem(root, "cycle");
             cJSON* standard_pids_item = cJSON_GetObjectItem(root, "standard_pids");
             cJSON* specific_pids_item = cJSON_GetObjectItem(root, "car_specific");
@@ -2390,6 +2471,7 @@ all_pids_t* load_all_pids(void){
             all_pids->vehicle_model = car_model_item ? strdup(car_model_item->valuestring) : NULL;
             all_pids->std_ecu_protocol = ecu_protocol_item ? strdup(ecu_protocol_item->valuestring) : NULL;
             all_pids->ha_discovery_en = ha_discovery_item ? (strcmp(ha_discovery_item->valuestring, "enable") == 0) : false;
+            all_pids->idle_mode_en = (idle_mode_item && idle_mode_item->valuestring) ? (strcmp(idle_mode_item->valuestring, "enable") == 0) : false;
             all_pids->cycle = cycle_item ? atoi(cycle_item->valuestring) : 10000;
             all_pids->pid_std_en = standard_pids_item ? (strcmp(standard_pids_item->valuestring, "enable") == 0) : false;
             all_pids->pid_specific_en = specific_pids_item ? (strcmp(specific_pids_item->valuestring, "enable") == 0) : false;

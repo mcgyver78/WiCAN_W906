@@ -243,6 +243,20 @@
       "class": "none"
     }
   },
+  "DPF_SOOT_MASS": {
+    "description": "Diesel particulate filter soot mass (measured)",
+    "settings": {
+      "unit": "g",
+      "class": "weight"
+    }
+  },
+  "DPF_SOOT_SIM": {
+    "description": "Diesel particulate filter soot mass (simulated value)",
+    "settings": {
+      "unit": "g",
+      "class": "weight"
+    }
+  },
   "DRIVE_MODE": {
     "description": "Drive Mode",
     "settings": {

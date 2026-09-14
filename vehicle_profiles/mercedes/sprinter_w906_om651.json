@@ -201,6 +201,18 @@
       "parameters": {
         "DPF_REGEN_STATUS": "B4"
       }
+    },
+    {
+      "pid": "22604B1",
+      "parameters": {
+        "DPF_SOOT_MASS": "[B4:B5]/1600"
+      }
+    },
+    {
+      "pid": "22604A1",
+      "parameters": {
+        "DPF_SOOT_SIM": "[B4:B7]/100"
+      }
     }
   ]
 }

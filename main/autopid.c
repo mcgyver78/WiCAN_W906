@@ -1787,6 +1787,14 @@ static void dtc_publish_result(const char *topic, cJSON *root)
         mqtt_publish((char*)topic, json, 0, 0, 1);
         free(json);
     }
+    else
+    {
+        // Serialising the result failed (out of memory): tell the client the scan
+        // finished instead of leaving it without any final message.
+        cJSON *action_item = cJSON_GetObjectItem(root, "action");
+        const char *action = (action_item != NULL) ? action_item->valuestring : NULL;
+        dtc_publish_error(action != NULL ? action : "read", "result_serialize_failed");
+    }
     cJSON_Delete(root);
 }
 
@@ -1866,6 +1874,12 @@ static void dtc_scan(bool clear)
     }
 
     elm327_save_config();
+
+    // The DTC decoder needs the CAN id in front of each frame (ATH1) and byte spacing
+    // (ATS1) to find the PCI byte; force them on for the scan in case the saved config
+    // had them off. elm327_restore_config puts the polling format back.
+    char scan_format[] = "ATH1\rATS1\r";
+    send_commands(scan_format, 2);
 
     const char *reason = dtc_check_engine(clear, msg);
 
@@ -1998,6 +2012,26 @@ static bool autopid_response_usable(const response_t *response)
     return sid != 0x7F;
 }
 
+// Highest data-byte index the expression reads (the end of a [Bx:By]/[Sx:Sy] range or a
+// bare Bx/Sx). A response shorter than this would make evaluate_expression read stale
+// bytes of the previous request from the shared buffer, so such responses are ignored.
+static int autopid_expression_max_index(const char *expression)
+{
+    int max_index = -1;
+
+    for (const char *p = expression; p != NULL && *p != '\0'; p++)
+    {
+        if ((*p == 'B' || *p == 'S') && p[1] >= '0' && p[1] <= '9')
+        {
+            int idx = 0;
+            const char *q = p + 1;
+            while (*q >= '0' && *q <= '9') idx = idx * 10 + (*q++ - '0');
+            if (idx > max_index) max_index = idx;
+        }
+    }
+    return max_index;
+}
+
 // Sends one parameter's request (with the per-PID-type init) and processes the response.
 // Returns true if the ECU answered with a usable response. previous_pid_type carries the
 // last init sent between calls.
@@ -2038,6 +2072,10 @@ static bool autopid_query_parameter(pid_data2_t *curr_pid, parameter_t *param, p
         send_commands(curr_pid->init, 2);
     }
 
+    // Drop a late response from a previous, timed-out request so it is not mistaken for
+    // the answer to this one (dtc_request drains for the same reason).
+    while (xQueueReceive(autopidQueue, &elm327_response, 0) == pdPASS);
+
     if (elm327_process_cmd((uint8_t*)curr_pid->cmd, strlen(curr_pid->cmd), &tx_msg, &autopidQueue) != ESP_OK)
     {
         ESP_LOGE(TAG, "Failed to process command: %s", curr_pid->cmd);
@@ -2066,8 +2104,9 @@ static bool autopid_query_parameter(pid_data2_t *curr_pid, parameter_t *param, p
     if (curr_pid->pid_type == PID_CUSTOM || curr_pid->pid_type == PID_SPECIFIC)
     {
         double result;
+        int max_index = param->expression ? autopid_expression_max_index(param->expression) : -1;
 
-        if (!autopid_response_usable(&elm327_response))
+        if (!autopid_response_usable(&elm327_response) || max_index >= (int)elm327_response.length)
         {
             param->value = FLT_MAX;
             ESP_LOGW(TAG, "Negative or short response for %s - ignoring", param->name ? param->name : "?");
@@ -2310,7 +2349,10 @@ static void autopid_task(void *pvParameters)
             for(uint32_t i = 0; i < all_pids->pid_count && !ecu_asleep_state; i++)
             {
                 pid_data2_t *curr_pid = &all_pids->pids[i];
-                if(!autopid_pid_enabled(curr_pid))
+                // Skip disabled or misconfigured PIDs (no command). A missing command is a
+                // config error, not an unanswered request, and must not feed the idle-mode
+                // fail counter (autopid_select_probe skips these for the same reason).
+                if(!autopid_pid_enabled(curr_pid) || curr_pid->cmd == NULL || strlen(curr_pid->cmd) == 0)
                 {
                     continue;
                 }

@@ -7,12 +7,16 @@ on:
       - 'tools/w906/**'
       - 'main/dtc_decode.c'
       - 'main/dtc_decode.h'
+      - 'vehicle_profiles/**'
+      - '.vehicle_profiles/**'
       - '.github/workflows/w906-tools.yml'
   pull_request:
     paths:
       - 'tools/w906/**'
       - 'main/dtc_decode.c'
       - 'main/dtc_decode.h'
+      - 'vehicle_profiles/**'
+      - '.vehicle_profiles/**'
       - '.github/workflows/w906-tools.yml'
 
 jobs:

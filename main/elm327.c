@@ -590,7 +590,11 @@ static char* elm327_wake_send_now(const char* command_str)
 static bool elm327_wake_retry_allowed(const twai_message_t *txframe)
 {
 	uint8_t sid = txframe->data[1];
-	uint8_t subfunction = txframe->data[2];
+	// data[2] is the sub-function only when one was actually sent (single-frame length
+	// >= 2). For a bare one-byte request it is padding (0xAA) and must not be read as a
+	// suppress-positive-response bit, which would wrongly block the retry of e.g. "3E".
+	uint8_t length = txframe->data[0] & 0x0F;
+	uint8_t subfunction = length >= 2 ? txframe->data[2] : 0x00;
 
 	// TesterPresent and other sub-function services with the suppress bit never answer
 	if((sid == 0x3E || sid == 0x10 || sid == 0x28 || sid == 0x85) && (subfunction & 0x80)) return false;

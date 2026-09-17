@@ -288,13 +288,16 @@ def reassemble_isotp(frames: List[Frame]) -> List[Message]:
 
 
 def _response_matches_request(request_id: int, response_id: int, functional: bool) -> bool:
-    """True if a response id plausibly belongs to a request id (ISO 15765 addressing)."""
+    """True if a response id is the physical peer of a request id (ISO 15765 addressing)."""
     if functional:
         return True
-    if not (request_id > 0x7FF):  # 11 bit
-        return response_id == request_id + 8 or response_id > 0x7FF or response_id < 0x700
-    # 29 bit physical: 18DA<tester><ecu> request -> 18DA<ecu><tester> response
-    return ((request_id ^ response_id) & 0xFFFF) != 0
+    if not (request_id > 0x7FF):  # 11 bit: 7E0 -> 7E8, peer is request + 8
+        return response_id == request_id + 8
+    # 29 bit physical: 18DA<tester><ecu> request -> 18DA<ecu><tester> response,
+    # i.e. same 18DA prefix with the low two address bytes swapped
+    return ((request_id >> 16) == (response_id >> 16)
+            and (request_id & 0xFF) == ((response_id >> 8) & 0xFF)
+            and ((request_id >> 8) & 0xFF) == (response_id & 0xFF))
 
 
 def match_exchanges(messages: List[Message]) -> "OrderedDict[Tuple, Exchange]":

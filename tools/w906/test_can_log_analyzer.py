@@ -189,6 +189,24 @@ class ParserRobustnessTest(unittest.TestCase):
         self.assertIn((0x7E0, 0x7E8, bytes.fromhex("228032")), exchanges)
         self.assertIn((0x7E1, 0x7E9, bytes.fromhex("228032")), exchanges)
 
+    def test_pairing_29bit_not_crossed(self):
+        # two ECUs (0x10, 0x20) answer the same DID via 29-bit normal fixed
+        # addressing with overlapping requests; the byte-swapped peer must win
+        # the tie so a response is not attributed to the wrong ECU
+        log = (
+            "(1.000) can0 18DA10F1#03228032AA\n"
+            "(1.001) can0 18DA20F1#03228032AA\n"
+            "(1.010) can0 18DAF110#0562803201AA\n"
+            "(1.011) can0 18DAF120#0562803202AA\n"
+        )
+        exchanges = cla.match_exchanges(cla.reassemble_isotp(self.parse(log)))
+        key10 = (0x18DA10F1, 0x18DAF110, bytes.fromhex("228032"))
+        key20 = (0x18DA20F1, 0x18DAF120, bytes.fromhex("228032"))
+        self.assertIn(key10, exchanges)
+        self.assertIn(key20, exchanges)
+        self.assertEqual(exchanges[key10].responses[-1], bytes.fromhex("62803201AA"))
+        self.assertEqual(exchanges[key20].responses[-1], bytes.fromhex("62803202AA"))
+
     def test_wake_suggestion_filters_dangerous(self):
         clear = cla.Frame(0.0, 0x7E0, False, bytes.fromhex("0414FFFFFF000000"), "Tx")
         self.assertEqual(cla._wake_suggestion(clear)[0], None)

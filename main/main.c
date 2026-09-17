@@ -226,11 +226,17 @@ static void can_tx_task(void *pvParameters)
 		{
 			if(ucTCP_RX_Buffer.dev_channel == DEV_WIFI)
 			{
+				// Serialise client ELM327 access with AutoPID polling and the DTC scan:
+				// they share elm327_config, the CAN rx queue and the wake-up frame state.
+				elm327_lock();
 				elm327_process_cmd(msg_ptr, temp_len, &tx_msg, &xMsg_Tx_Queue);
+				elm327_unlock();
 			}
 			else if(ucTCP_RX_Buffer.dev_channel == DEV_BLE)
 			{
+				elm327_lock();
 				elm327_process_cmd(msg_ptr, temp_len, &tx_msg, &xmsg_ble_tx_queue);
+				elm327_unlock();
 			}
 		}
 	}

@@ -69,9 +69,15 @@ entfernt die zielspezifischen Einträge, legt
 Einstellungen (Target, BLE-only-Controller, Dual-Core, Partitionstabelle)
 angekommen sind.
 
-Eigene Partitionstabelle `wican_partitions_diy_esp32.csv`: Die C3-Firmware
-füllt die 1740-K-App-Slots schon fast ganz aus, der Xtensa-Build ist größer.
-Die DIY-Tabelle nutzt die vollen 4 MB (2 × 1856 K + 320 K Speicher).
+Eigene Partitionstabelle `wican_partitions_diy_esp32.csv` mit den vollen
+4 MB (2 × 1856 K + 320 K Speicher), als Reserve. Angenommen war zuerst, der
+Xtensa-Build sei größer als der C3-Build, der die 1740-K-Slots fast füllt.
+Gemessen (CI, 30.09.2026) ist er kleiner: 1.633.264 statt 1.737.840 Bytes,
+14 % Slot frei.
+
+Gegenüber der C3-Konfiguration liegen WLAN-RX-Pfad und Ringbuffer im Flash
+statt im IRAM – mit den C3-Einstellungen lief das IRAM beim Linken um
+664 Bytes über.
 
 ## Erstes Flashen
 
@@ -91,4 +97,4 @@ esptool.py --chip esp32 chip_id
 
 ## Stand
 
-Noch nicht übersetzt und nicht an Hardware getestet. LED-Polung vom V300 übernommen, ungeprüft.
+Übersetzt (CI grün, 30.09.2026), nicht an Hardware getestet. LED-Polung vom V300 übernommen, ungeprüft.

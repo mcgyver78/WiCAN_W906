@@ -29,5 +29,6 @@ check '# CONFIG_FREERTOS_UNICORE is not set'
 check 'CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="wican_partitions_diy_esp32.csv"'
 check 'CONFIG_BT_BLUEDROID_ENABLED=y'
 check 'CONFIG_ESPTOOLPY_FLASHSIZE="4MB"'
+check '# CONFIG_ESP_WIFI_RX_IRAM_OPT is not set'
 [ "$fail" = 0 ] || exit 1
 ls -l "$B"/wican-fw_obd_diy_*.bin

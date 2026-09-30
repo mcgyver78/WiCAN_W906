@@ -1,0 +1,53 @@
+name: Build Firmware (DIY ESP32-WROOM)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'main/**'
+      - 'components/**'
+      - 'CMakeLists.txt'
+      - 'sdkconfig'
+      - 'sdkconfig.diy_esp32.defaults'
+      - 'dependencies.lock'
+      - 'wican_partitions_diy_esp32.csv'
+      - 'tools/diy_esp32/**'
+      - '.github/workflows/build-firmware-diy-esp32.yml'
+  pull_request:
+    paths:
+      - 'main/**'
+      - 'components/**'
+      - 'CMakeLists.txt'
+      - 'sdkconfig'
+      - 'sdkconfig.diy_esp32.defaults'
+      - 'dependencies.lock'
+      - 'wican_partitions_diy_esp32.csv'
+      - 'tools/diy_esp32/**'
+      - '.github/workflows/build-firmware-diy-esp32.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Build with ESP-IDF
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.2
+          target: esp32
+          command: sh tools/diy_esp32/build.sh
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: wican-fw-obd-diy-esp32
+          path: |
+            build_diy/*.bin
+            build_diy/bootloader/bootloader.bin
+            build_diy/partition_table/partition-table.bin
+            build_diy/flash_args

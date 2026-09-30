@@ -1,0 +1,10 @@
+# Partition table for the self-built ESP32-WROOM board (4 MB flash), see DIY_ESP32.md.
+# Same layout as wican_partitions_table.csv, but the app slots use the whole 4 MB:
+# an ESP32 (Xtensa) build is larger than the ESP32-C3 build, which already fills 1740K.
+# Name,   Type, SubType,  Offset,   Size,  Flags
+nvs,      data, nvs,      0x9000,   0x4000,
+otadata,  data, ota,      0xd000,   0x2000,
+phy_init, data, phy,      0xf000,   0x1000,
+ota_0,    app,  ota_0,    0x10000,  1856K,
+ota_1,    app,  ota_1,    ,         1856K,
+storage,  data, spiffs,   ,         320K,

@@ -58,6 +58,7 @@
 #include "ver.h"
 #include "math.h"
 #include "dev_status.h"
+#include "hw_config.h"
 
 #define TAG 			  __func__
 
@@ -72,7 +73,7 @@
 #define MQTT_CONNECTED_BIT 			BIT0
 #define PUB_SUCCESS_BIT     		BIT1
 
-static adc_channel_t voltage_adc_ch = ADC_CHANNEL_4;
+static adc_channel_t voltage_adc_ch = VOLTAGE_ADC_CHANNEL;
 static bool calibrated = false;
 static EventGroupHandle_t s_mqtt_event_group = NULL;
 static float sleep_voltage = 13.1f;
@@ -207,7 +208,7 @@ static void calibration_init(void)
             .atten = ADC_ATTEN,
             .bitwidth = ADC_BIT_WIDTH,
         };
-        ret = adc_cali_create_scheme_line_fitting(&cali_config, &cali_handle);
+        ret = adc_cali_create_scheme_line_fitting(&cali_config, &adc1_cali_chan0_handle);
         if (ret == ESP_OK) 
 		{
             calibrated = true;

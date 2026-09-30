@@ -1,0 +1,23 @@
+# Overrides for the self-built ESP32-WROOM board, applied on top of the
+# ESP32-C3 sdkconfig by tools/diy_esp32/build.sh. See DIY_ESP32.md.
+CONFIG_IDF_TARGET="esp32"
+
+# No USB-Serial-JTAG on the classic ESP32: log on UART0 (GPIO1/3)
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+
+# ble.c enables the controller with ESP_BT_MODE_BLE, which must match the controller mode
+CONFIG_BTDM_CTRL_MODE_BLE_ONLY=y
+# CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY is not set
+# CONFIG_BTDM_CTRL_MODE_BTDM is not set
+
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="wican_partitions_diy_esp32.csv"
+CONFIG_PARTITION_TABLE_FILENAME="wican_partitions_diy_esp32.csv"
+
+# TWAI silicon errata of the classic ESP32 (workarounds in the driver)
+CONFIG_TWAI_ERRATA_FIX_BUS_OFF_REC=y
+CONFIG_TWAI_ERRATA_FIX_TX_INTR_LOST=y
+CONFIG_TWAI_ERRATA_FIX_RX_FRAME_INVALID=y
+CONFIG_TWAI_ERRATA_FIX_RX_FIFO_CORRUPT=y
+CONFIG_TWAI_ERRATA_FIX_LISTEN_ONLY_DOM=y

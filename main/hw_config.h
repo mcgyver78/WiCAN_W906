@@ -45,6 +45,20 @@
 #define BUTTON_GPIO_NUM			    8
 #define IMU_INT_GPIO_NUM			3
 
+#elif HARDWARE_VER == WICAN_DIY_ESP32
+// Self-built board: ESP32-WROOM-32 + SN65HVD230 (or TJA1051T), see DIY_ESP32.md.
+// Strapping pins (0, 2, 5, 12, 15), flash pins (6-11) and UART0 (1, 3) are avoided.
+// At runtime this board behaves like a V300 (project name contains no "usb"/"hv210"),
+// so the battery divider must match the V300 one: 100k / 16k.
+#define FS_MOUNT_POINT              "/littlefs"
+#define TX_GPIO_NUM             	21
+#define RX_GPIO_NUM             	22
+#define CAN_STDBY_GPIO_NUM			23  // SN65HVD230 Rs / TJA1051T S: high = standby/silent
+#define CONNECTED_LED_GPIO_NUM		25
+#define ACTIVE_LED_GPIO_NUM			26
+#define PWR_LED_GPIO_NUM			27
+#define VOLTAGE_ADC_CHANNEL			ADC_CHANNEL_6   // GPIO34, input only
+
 #else
 
 #define FS_MOUNT_POINT              "/littlefs"
@@ -56,6 +70,10 @@
 #define PWR_LED_GPIO_NUM			7
 #define CAN_STDBY_GPIO_NUM			6
 
+#endif
+
+#ifndef VOLTAGE_ADC_CHANNEL
+#define VOLTAGE_ADC_CHANNEL			ADC_CHANNEL_4
 #endif
 
 esp_err_t hw_config_get_device_id(char *uid);

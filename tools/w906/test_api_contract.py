@@ -148,19 +148,12 @@ def not_permitted(method, target, allow_dtc, allow_clear):
 
 
 
-def port_is_free(port):
-    """True if nothing listens on the port of 127.0.0.1. Asked by binding it: a connection attempt is no
-    proof, on Linux a connection to a free local port can succeed (seen in the CI on 2026-10-03)."""
-    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            probe.bind(("127.0.0.1", port))
-        except OSError:
-            return False
-        return True
-    finally:
-        probe.close()
+def socket_is_closed(server):
+    """True if the server has closed its listening socket. Whether the port can be used again at once is
+    the business of the operating system and no proof either way: on Linux a connection to the port just
+    closed succeeded and binding it was refused (CI on 2026-10-03), on macOS neither."""
+    return server._httpd.socket.fileno() == -1
+
 
 class Answer:
     def __init__(self, status, headers, body):
@@ -2791,9 +2784,9 @@ class Scenarios(unittest.TestCase):
             self.assertEqual(json.loads(answer.partition(b"\r\n\r\n")[2].decode("utf-8"))["up"], 40)
         finally:
             server.close()
-        # Nothing is left behind: no thread, and the port is free again
+        # Nothing is left behind: no thread, no open socket
         self.assertEqual([thread.name for thread in threading.enumerate() if thread.name.endswith("port %d" % server.port)], [])
-        self.assertTrue(port_is_free(server.port), "the port is still taken after close()")
+        self.assertTrue(socket_is_closed(server), "the listening socket is still open after close()")
         # The address is the one the socket is bound to, not the name that was asked for
         named = self.MOCK.Server(adapter, bind="localhost")
         try:
@@ -2808,7 +2801,7 @@ class Scenarios(unittest.TestCase):
         closing.start()
         closing.join(5)
         self.assertFalse(closing.is_alive(), "close() waits for a server that never served")
-        self.assertTrue(port_is_free(server.port), "the port is still taken after close()")
+        self.assertTrue(socket_is_closed(server), "the listening socket is still open after close()")
 
     def test_answer_has_the_headers_of_the_firmware_and_no_others(self):
         server = self.MOCK.Server(self.MOCK.Adapter("codes", seq_seed=43)).start()

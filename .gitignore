@@ -82,3 +82,6 @@ tools/wican-log-viewer/*.pdb
 tools/wican-log-viewer/*.dll
 tools/wican-log-viewer/*.exe
 
+# Host test binaries
+tools/w906/dtc_decode_test
+tools/w906/dtc_state_test

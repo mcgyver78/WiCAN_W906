@@ -7,6 +7,8 @@ on:
       - 'tools/w906/**'
       - 'main/dtc_decode.c'
       - 'main/dtc_decode.h'
+      - 'main/dtc_state.c'
+      - 'main/dtc_state.h'
       - 'vehicle_profiles/**'
       - '.vehicle_profiles/**'
       - '.github/workflows/w906-tools.yml'
@@ -15,6 +17,8 @@ on:
       - 'tools/w906/**'
       - 'main/dtc_decode.c'
       - 'main/dtc_decode.h'
+      - 'main/dtc_state.c'
+      - 'main/dtc_state.h'
       - 'vehicle_profiles/**'
       - '.vehicle_profiles/**'
       - '.github/workflows/w906-tools.yml'
@@ -32,6 +36,15 @@ jobs:
         working-directory: tools/w906
       - name: DTC decoder host test
         run: cc -Wall -Wextra -Werror -fsanitize=address,undefined -I../../main ../../main/dtc_decode.c dtc_decode_test.c -o dtc_decode_test && ./dtc_decode_test
+        working-directory: tools/w906
+      - name: DTC state host test
+        run: cc -Wall -Wextra -Werror -fsanitize=address,undefined -I../../main ../../main/dtc_state.c dtc_state_test.c -o dtc_state_test && ./dtc_state_test
+        working-directory: tools/w906
+      - name: Red proof (every removed rule makes a test fail)
+        run: python redproof.py
+        working-directory: tools/w906
+      - name: Red proof counter-check (a change without effect is reported)
+        run: python redproof.py --selftest
         working-directory: tools/w906
       - name: Node-RED flows match their generators
         run: |

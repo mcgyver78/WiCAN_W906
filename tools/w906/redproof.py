@@ -247,9 +247,10 @@ FOUND_BY_REVIEW = [
     ('empty_read_keeps_old_result_seq', 'dtc_state', STATE_C,
      '\ts->result_seq = s->seq;',
      '\tif(dtc_count != 0) s->result_seq = s->seq;'),
+    # (the type change "size_t len" -> "uint8_t len" does the same, but gcc rejects it: -Wsign-compare)
     ('json_length_in_8_bit', 'dtc_state', STATE_C,
-     '\tsize_t len;',
-     '\tuint8_t len;'),
+     '\tout->buf[out->len++] = c;',
+     '\tout->buf[out->len++ & 0xFFu] = c;'),
     ('json_escape_character_kept', 'dtc_state', STATE_C,
      '\t\tif(c < 0x20) continue;',
      '\t\tif(c < 0x20 && c != 0x1b) continue;'),

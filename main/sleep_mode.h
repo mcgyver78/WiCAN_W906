@@ -22,7 +22,11 @@
 #ifndef SLEEP_MODE_h
 #define SLEEP_MODE_h
 
+#include <stdint.h>
+
 int8_t sleep_mode_init(uint8_t enable, float sleep_volt);
 int8_t sleep_mode_get_voltage(float *val);
+// Seconds until the adapter goes to sleep, -1 while it is not counting down
+int32_t sleep_mode_seconds_to_sleep(void);
 
 #endif

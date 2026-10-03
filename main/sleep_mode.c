@@ -58,6 +58,8 @@
 #include "ver.h"
 #include "math.h"
 #include "dev_status.h"
+#include "autopid.h"
+#include "dtc_api.h"
 
 #define TAG 			  __func__
 
@@ -78,6 +80,8 @@ static EventGroupHandle_t s_mqtt_event_group = NULL;
 static float sleep_voltage = 13.1f;
 static uint8_t enable_sleep = 0;
 static QueueHandle_t voltage_queue = NULL;
+// Seconds until the adapter goes to sleep, -1 while it is not counting down
+static volatile int32_t sleep_in_seconds = -1;
 adc_oneshot_unit_handle_t adc_handle;
 static adc_cali_handle_t adc1_cali_chan0_handle = NULL;
 
@@ -399,7 +403,14 @@ static void adc_task(void *pvParameters)
 
 					if((esp_timer_get_time() - sleep_detect_time) > sleep_time)
 					{
-						sleep_state = SLEEP_STATE;
+						int64_t overdue_us = esp_timer_get_time() - sleep_detect_time - (int64_t)sleep_time;
+
+						// Sleep switches CAN and WiFi off. A fault memory scan in progress is not cut off
+						// half way (some control units cleared, others not); the wait is limited.
+						if(!dtc_api_defer_sleep(autopid_dtc_busy(), (uint64_t)(overdue_us / 1000)))
+						{
+							sleep_state = SLEEP_STATE;
+						}
 	//    	    		wifi_network_deinit();
 	//    	    		ble_disable();
 					}
@@ -483,6 +494,17 @@ static void adc_task(void *pvParameters)
 				}
 			}
 
+			if(sleep_state == SLEEP_DETECTED)
+			{
+				int64_t left_us = (int64_t)sleep_time - (esp_timer_get_time() - sleep_detect_time);
+
+				sleep_in_seconds = left_us > 0 ? (int32_t)(left_us / 1000000) : 0;
+			}
+			else
+			{
+				sleep_in_seconds = -1;
+			}
+
 	//    	ESP_LOGI(TAG, "value: %u",adc_val);
 			if(sleep_state == SLEEP_STATE)
 			{
@@ -500,6 +522,11 @@ static void adc_task(void *pvParameters)
     		vTaskDelay(pdMS_TO_TICKS(1000));
     	}
     }
+}
+
+int32_t sleep_mode_seconds_to_sleep(void)
+{
+	return sleep_in_seconds;
 }
 
 int8_t sleep_mode_get_voltage(float *val)

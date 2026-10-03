@@ -28,6 +28,7 @@
 #include "driver/twai.h"
 #include "esp_timer.h"
 #include "esp_system.h" 
+#include "esp_random.h"
 #include "lwip/sockets.h"
 #include "elm327.h"
 #include "autopid.h"
@@ -77,8 +78,8 @@ static bool ecu_asleep_state = false;
 #define AUTOPID_MQTT_WAIT_PASSES            5
 #define AUTOPID_POLLING_DISABLED_BIT	    BIT1
 #define AUTOPID_REQUEST_BIT			        BIT2
-#define AUTOPID_DTC_READ_BIT			    BIT3
-#define AUTOPID_DTC_CLEAR_BIT			    BIT4
+// Wakes the task for a queued read_dtc / clear_dtc; which of the two is in dtc_state
+#define AUTOPID_DTC_REQUEST_BIT			    BIT3
 
 static char auto_pid_buf[BUFFER_SIZE];
 static QueueHandle_t autopidQueue;
@@ -943,14 +944,62 @@ void autopid_request_data(void)
 }
 
 
-// Set when a read_dtc / clear_dtc command was accepted, cleared when the scan is done
-static volatile bool dtc_scan_pending = false;
+// State of the fault memory scan, one for the MQTT command and the HTTP API (dtc_state.h).
+// dtc_mutex guards dtc_state and dtc_result and is never held across a request to the vehicle,
+// a publish or a response.
+static dtc_state_t dtc_state;
+static SemaphoreHandle_t dtc_mutex = NULL;
+// Final result of the last finished scan, the text of the retained MQTT message. Only the
+// AutoPID task replaces it; other tasks copy it under the mutex.
+static char *dtc_result = NULL;
 
-// Set by the AutoPID task when it enters its main loop
+// Set once the AutoPID task exists / when it enters its main loop
+static volatile bool autopid_task_created = false;
 static volatile bool autopid_loop_ready = false;
 
-static void dtc_publish_error(const char *action, const char *reason);
+// For clients that poll /autopid_data: requests answered so far, passes with at least one
+// answer, time of the last answer
+static volatile uint32_t autopid_answer_count = 0;
+static volatile uint32_t autopid_pass_count = 0;
+static volatile int64_t autopid_last_answer_us = -1;
 
+static void dtc_publish_error(const char *action, const char *reason);
+static bool dtc_profile_supported(void);
+
+static uint64_t dtc_now_ms(void)
+{
+    return (uint64_t)(esp_timer_get_time() / 1000);
+}
+
+dtc_accept_t autopid_dtc_request(bool clear, dtc_src_t src, uint32_t seq, uint32_t *seq_out)
+{
+    dtc_accept_t result;
+
+    if (xautopid_event_group == NULL || dtc_mutex == NULL)
+    {
+        // AutoPID is not active. The HTTP API asks autopid_loop_state() first and answers not_ready.
+        if (seq_out != NULL) *seq_out = 0;
+        return DTC_REJECT_BUSY;
+    }
+
+    xSemaphoreTake(dtc_mutex, portMAX_DELAY);
+    result = dtc_state_try_begin(&dtc_state, clear, src, seq, dtc_now_ms(), seq_out);
+    if (result == DTC_ACCEPTED)
+    {
+        EventBits_t bits = AUTOPID_DTC_REQUEST_BIT;
+
+        // The task only runs on request while polling is disabled
+        if (xEventGroupGetBits(xautopid_event_group) & AUTOPID_POLLING_DISABLED_BIT)
+        {
+            bits |= AUTOPID_REQUEST_BIT;
+        }
+        xEventGroupSetBits(xautopid_event_group, bits);
+    }
+    xSemaphoreGive(dtc_mutex);
+    return result;
+}
+
+// MQTT command read_dtc / clear_dtc
 void autopid_request_dtc(bool clear)
 {
     if (xautopid_event_group == NULL)
@@ -959,22 +1008,96 @@ void autopid_request_dtc(bool clear)
     }
 
     // Commands during a scan are rejected instead of queued, a queued clear could run much later
-    if (dtc_scan_pending)
+    if (autopid_dtc_request(clear, DTC_SRC_MQTT, 0, NULL) != DTC_ACCEPTED)
     {
         ESP_LOGW(TAG, "DTC scan already running, %s rejected", clear ? "clear_dtc" : "read_dtc");
         dtc_publish_error(clear ? "clear" : "read", "busy");
-        return;
     }
-    dtc_scan_pending = true;
+}
 
-    EventBits_t bits = clear ? AUTOPID_DTC_CLEAR_BIT : AUTOPID_DTC_READ_BIT;
+bool autopid_dtc_busy(void)
+{
+    bool busy = false;
 
-    // The task only runs on request while polling is disabled
-    if (xEventGroupGetBits(xautopid_event_group) & AUTOPID_POLLING_DISABLED_BIT)
+    if (dtc_mutex != NULL)
     {
-        bits |= AUTOPID_REQUEST_BIT;
+        xSemaphoreTake(dtc_mutex, portMAX_DELAY);
+        busy = dtc_state_busy(&dtc_state);
+        xSemaphoreGive(dtc_mutex);
     }
-    xEventGroupSetBits(xautopid_event_group, bits);
+    return busy;
+}
+
+int autopid_dtc_state_json(char *buf, size_t size)
+{
+    int length;
+
+    if (dtc_mutex == NULL)
+    {
+        dtc_state_t idle;
+
+        dtc_state_init(&idle, 1);
+        return dtc_state_json(&idle, false, 0, buf, size);
+    }
+
+    xSemaphoreTake(dtc_mutex, portMAX_DELAY);
+    length = dtc_state_json(&dtc_state, dtc_profile_supported(), dtc_now_ms(), buf, size);
+    xSemaphoreGive(dtc_mutex);
+    return length;
+}
+
+// Copy of the stored result for the caller to free. Returns 1 with the copy, 0 if no result is
+// stored, -1 if there is no memory for the copy.
+int autopid_dtc_result_dup(char **copy, uint32_t *seq)
+{
+    int found = 0;
+
+    *copy = NULL;
+    *seq = 0;
+    if (dtc_mutex == NULL)
+    {
+        return 0;
+    }
+
+    xSemaphoreTake(dtc_mutex, portMAX_DELAY);
+    if (dtc_result != NULL)
+    {
+        *copy = strdup(dtc_result);
+        *seq = dtc_state.result_seq;
+        found = (*copy != NULL) ? 1 : -1;
+    }
+    xSemaphoreGive(dtc_mutex);
+    return found;
+}
+
+// "off": AutoPID is not the protocol or no vehicle profile is loaded, "starting": the task has
+// not reached its loop yet, "run"
+const char *autopid_loop_state(void)
+{
+    if (!autopid_task_created) return "off";
+    return autopid_loop_ready ? "run" : "starting";
+}
+
+uint32_t autopid_pid_count(void)
+{
+    return autopid_values_count;
+}
+
+uint32_t autopid_pass_counter(void)
+{
+    return autopid_pass_count;
+}
+
+// Milliseconds since the last answered request, -1 if none since boot
+int32_t autopid_rx_age_ms(void)
+{
+    int64_t last = autopid_last_answer_us;
+    int64_t age;
+
+    if (last < 0) return -1;
+    age = (esp_timer_get_time() - last) / 1000;
+    if (age < 0) age = 0;
+    return age > INT32_MAX ? INT32_MAX : (int32_t)age;
 }
 
 char *autopid_data_read(void)
@@ -1757,9 +1880,28 @@ static void dtc_publish_error(const char *action, const char *reason)
     dtc_publish(topic, error, 0);
 }
 
+// End of a scan with an error: the state for HTTP clients first, then the MQTT message as before.
+// reason has to be a string literal, the state keeps the pointer.
+static void dtc_fail(const char *action, const char *reason)
+{
+    xSemaphoreTake(dtc_mutex, portMAX_DELAY);
+    dtc_state_error(&dtc_state, reason, dtc_now_ms());
+    xSemaphoreGive(dtc_mutex);
+    dtc_publish_error(action, reason);
+}
+
+// step 0 is the engine check, 1..DTC_ECU_COUNT the control unit being processed
+static void dtc_progress(uint8_t step, const char *name)
+{
+    xSemaphoreTake(dtc_mutex, portMAX_DELAY);
+    dtc_state_progress(&dtc_state, step, DTC_ECU_COUNT, name);
+    xSemaphoreGive(dtc_mutex);
+}
+
 // The final result is one retained message. If it is too large for MQTT, the code lists of the control
 // units with the most entries are replaced by their number ("dtcs_omitted") until it fits.
-static void dtc_publish_result(const char *topic, cJSON *root)
+// The same text is kept for GET /api/dtc/result until the next scan finishes.
+static void dtc_publish_result(const char *topic, cJSON *root, int dtc_count)
 {
     cJSON *ecus = cJSON_GetObjectItem(root, "ecus");
     char *json = cJSON_PrintUnformatted(root);
@@ -1796,8 +1938,15 @@ static void dtc_publish_result(const char *topic, cJSON *root)
 
     if (json != NULL)
     {
+        // The state is written before the publish, a slow broker does not delay HTTP clients.
+        // json stays valid for the publish: only this task replaces dtc_result.
+        xSemaphoreTake(dtc_mutex, portMAX_DELAY);
+        free(dtc_result);
+        dtc_result = json;
+        dtc_state_done(&dtc_state, dtc_count > UINT16_MAX ? UINT16_MAX : (uint16_t)dtc_count, dtc_now_ms());
+        xSemaphoreGive(dtc_mutex);
+
         mqtt_publish((char*)topic, json, 0, 0, 1);
-        free(json);
     }
     else
     {
@@ -1805,7 +1954,7 @@ static void dtc_publish_result(const char *topic, cJSON *root)
         // finished instead of leaving it without any final message.
         cJSON *action_item = cJSON_GetObjectItem(root, "action");
         const char *action = (action_item != NULL) ? action_item->valuestring : NULL;
-        dtc_publish_error(action != NULL ? action : "read", "result_serialize_failed");
+        dtc_fail(action != NULL ? action : "read", "result_serialize_failed");
     }
     cJSON_Delete(root);
 }
@@ -1858,7 +2007,7 @@ static void dtc_scan(bool clear)
     if (!dtc_profile_supported())
     {
         ESP_LOGW(TAG, "DTC scan (%s) refused: profile has no DTC table", action);
-        dtc_publish_error(action, "not_supported");
+        dtc_fail(action, "not_supported");
         return;
     }
 
@@ -1867,7 +2016,7 @@ static void dtc_scan(bool clear)
     if (msg == NULL)
     {
         ESP_LOGE(TAG, "DTC scan: out of memory");
-        dtc_publish_error(action, "out_of_memory");
+        dtc_fail(action, "out_of_memory");
         return;
     }
 
@@ -1878,7 +2027,7 @@ static void dtc_scan(bool clear)
     if (root == NULL || ecus == NULL)
     {
         ESP_LOGE(TAG, "DTC scan: out of memory");
-        dtc_publish_error(action, "out_of_memory");
+        dtc_fail(action, "out_of_memory");
         free(msg);
         cJSON_Delete(root);
         cJSON_Delete(ecus);
@@ -1899,7 +2048,7 @@ static void dtc_scan(bool clear)
     {
         ESP_LOGW(TAG, "DTC scan (%s) refused: %s", action, reason);
         elm327_restore_config();
-        dtc_publish_error(action, reason);
+        dtc_fail(action, reason);
         free(msg);
         cJSON_Delete(root);
         cJSON_Delete(ecus);
@@ -1913,6 +2062,8 @@ static void dtc_scan(bool clear)
         const dtc_ecu_t *ecu = &dtc_ecus[i];
         char id[8];
         int count = 0;
+
+        dtc_progress((uint8_t)(i + 1), ecu->name);
 
         cJSON *progress = cJSON_CreateObject();
         cJSON_AddStringToObject(progress, "state", "running");
@@ -1988,7 +2139,7 @@ static void dtc_scan(bool clear)
     cJSON_AddNumberToObject(root, "duration_ms", (double)((esp_timer_get_time() - start) / 1000));
     cJSON_AddNumberToObject(root, "dtc_count", dtc_count);
     cJSON_AddItemToObject(root, "ecus", ecus);
-    dtc_publish_result(topic, root);
+    dtc_publish_result(topic, root, dtc_count);
 
     ESP_LOGI(TAG, "DTC scan done, %d DTCs", dtc_count);
     free(msg);
@@ -1998,8 +2149,12 @@ static void autopid_dtc_scan(bool clear)
 {
     dtc_scan(clear);
 
-    // Accept the next read_dtc / clear_dtc command
-    dtc_scan_pending = false;
+    // Every path of dtc_scan ends the request with done or an error, which accepts the next
+    // read_dtc / clear_dtc command. Should one ever not, the state must not stay busy for good.
+    // Ignored unless the scan still counts as running.
+    xSemaphoreTake(dtc_mutex, portMAX_DELAY);
+    dtc_state_error(&dtc_state, "internal", dtc_now_ms());
+    xSemaphoreGive(dtc_mutex);
 }
 
 // True if this PID type is enabled
@@ -2112,6 +2267,8 @@ static bool autopid_query_parameter(pid_data2_t *curr_pid, parameter_t *param, p
 
     param->failed = false;
     xEventGroupSetBits(xautopid_event_group, ECU_CONNECTED_BIT);
+    autopid_last_answer_us = esp_timer_get_time();
+    autopid_answer_count++;
 
     if (curr_pid->pid_type == PID_CUSTOM || curr_pid->pid_type == PID_SPECIFIC)
     {
@@ -2321,17 +2478,33 @@ static void autopid_task(void *pvParameters)
             xEventGroupWaitBits(xautopid_event_group, AUTOPID_REQUEST_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
         }
 
-        EventBits_t dtc_request_bits = xEventGroupGetBits(xautopid_event_group) & (AUTOPID_DTC_READ_BIT | AUTOPID_DTC_CLEAR_BIT);
-
-        if (dtc_request_bits)
+        if (xEventGroupGetBits(xautopid_event_group) & AUTOPID_DTC_REQUEST_BIT)
         {
-            xEventGroupClearBits(xautopid_event_group, dtc_request_bits);
-            elm327_lock();
-            autopid_dtc_scan((dtc_request_bits & AUTOPID_DTC_CLEAR_BIT) != 0);
-            elm327_unlock();
-            // The scan changed header and filters, send the vehicle init again
-            previous_pid_type = PID_MAX;
+            bool run, clear;
+
+            // The bit only wakes the task. It is cleared before the state is asked, so a request
+            // accepted from here on sets it again; read or clear comes from the state.
+            xEventGroupClearBits(xautopid_event_group, AUTOPID_DTC_REQUEST_BIT);
+            xSemaphoreTake(dtc_mutex, portMAX_DELAY);
+            run = dtc_state_pickup(&dtc_state, dtc_now_ms());
+            clear = dtc_state.clear;
+            // Step 0 (engine check) in the same breath: a running scan never shows a total of 0,
+            // and an HTTP client sees at once that its request is being worked on
+            if (run) dtc_state_progress(&dtc_state, 0, DTC_ECU_COUNT, NULL);
+            xSemaphoreGive(dtc_mutex);
+
+            // An HTTP request that waited too long has expired and does not run
+            if (run)
+            {
+                elm327_lock();
+                autopid_dtc_scan(clear);
+                elm327_unlock();
+                // The scan changed header and filters, send the vehicle init again
+                previous_pid_type = PID_MAX;
+            }
         }
+
+        uint32_t answers_before = autopid_answer_count;
 
         // Idle mode is opt-in and never active while polling is disabled, where each
         // pass is an explicit request
@@ -2395,8 +2568,18 @@ static void autopid_task(void *pvParameters)
 
         autopid_update_values();
 
+        if (autopid_answer_count != answers_before)
+        {
+            autopid_pass_count++;
+        }
+
         if (xEventGroupGetBits(xautopid_event_group) & AUTOPID_POLLING_DISABLED_BIT) {
             xEventGroupClearBits(xautopid_event_group, AUTOPID_REQUEST_BIT);
+            // A read_dtc / clear_dtc accepted during this pass asked for the next pass with the
+            // same bit; without it the request would wait for the next data request
+            if (xEventGroupGetBits(xautopid_event_group) & AUTOPID_DTC_REQUEST_BIT) {
+                xEventGroupSetBits(xautopid_event_group, AUTOPID_REQUEST_BIT);
+            }
         }
 
         vTaskDelay(pdMS_TO_TICKS(10));
@@ -3198,6 +3381,13 @@ void autopid_init(char* id)
         xautopid_event_group = xEventGroupCreate();
     }
 
+    if(dtc_mutex == NULL)
+    {
+        // The sequence numbers start at a different value after each boot
+        dtc_state_init(&dtc_state, esp_random() ^ (uint32_t)esp_timer_get_time());
+        dtc_mutex = xSemaphoreCreateMutex();
+    }
+
     // Set polling disabled bit
     xEventGroupSetBits(xautopid_event_group, AUTOPID_POLLING_DISABLED_BIT);
 
@@ -3265,6 +3455,12 @@ void autopid_init(char* id)
 
 
     
+    if (dtc_mutex == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to create dtc mutex");
+        return;
+    }
+    autopid_task_created = true;
     xTaskCreate(autopid_task, "autopid_task", 5000, (void *)AF_INET, 5, NULL);
     if(config_server_get_webhook_en())
     {

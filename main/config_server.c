@@ -75,6 +75,7 @@
 #include "wc_mdns.h"
 #include "hw_config.h"
 #include "ha_webhooks.h"
+#include "dtc_http.h"
 
 #define WIFI_CONNECTED_BIT			BIT0
 #define WS_CONNECTED_BIT			BIT1
@@ -2273,6 +2274,7 @@ static httpd_handle_t config_server_init(void)
 		httpd_register_uri_handler(server, &store_car_data_uri);
 		httpd_register_uri_handler(server, &scan_available_pids_uri);
 		ha_webhooks_register_handlers(server);
+		dtc_http_register(server, device_id);
         #if CONFIG_EXAMPLE_BASIC_AUTH
         httpd_register_basic_auth(server);
         #endif
@@ -2312,6 +2314,7 @@ void config_server_restart(void)
 		httpd_register_uri_handler(server, &store_car_data_uri);
 		httpd_register_uri_handler(server, &scan_available_pids_uri);
 		ha_webhooks_register_handlers(server);
+		dtc_http_register(server, device_id);
         return;
     }
 

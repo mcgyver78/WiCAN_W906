@@ -21,6 +21,11 @@
 #ifndef __AUTO_PID_H__
 #define __AUTO_PID_H__
 
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include "dtc_state.h"
+
 #define BUFFER_SIZE 1024
 #define QUEUE_SIZE 10
 
@@ -131,4 +136,14 @@ char* autopid_get_config(void);
 esp_err_t autopid_find_standard_pid(uint8_t protocol, char *available_pids, uint32_t available_pids_size) ;
 void autopid_request_data(void);
 void autopid_request_dtc(bool clear);
+
+// Fault memory scan for the HTTP API (tools/w906/API.md); autopid_request_dtc() above is the MQTT command
+dtc_accept_t autopid_dtc_request(bool clear, dtc_src_t src, uint32_t seq, uint32_t *seq_out);
+bool autopid_dtc_busy(void);
+int autopid_dtc_state_json(char *buf, size_t size);
+int autopid_dtc_result_dup(char **copy, uint32_t *seq);
+const char *autopid_loop_state(void);
+uint32_t autopid_pid_count(void);
+uint32_t autopid_pass_counter(void);
+int32_t autopid_rx_age_ms(void);
 #endif

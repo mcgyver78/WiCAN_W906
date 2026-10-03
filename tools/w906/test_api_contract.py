@@ -147,6 +147,21 @@ def not_permitted(method, target, allow_dtc, allow_clear):
     return None
 
 
+
+def port_is_free(port):
+    """True if nothing listens on the port of 127.0.0.1. Asked by binding it: a connection attempt is no
+    proof, on Linux a connection to a free local port can succeed (seen in the CI on 2026-10-03)."""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+        return True
+    finally:
+        probe.close()
+
 class Answer:
     def __init__(self, status, headers, body):
         self.status = status
@@ -2778,8 +2793,7 @@ class Scenarios(unittest.TestCase):
             server.close()
         # Nothing is left behind: no thread, and the port is free again
         self.assertEqual([thread.name for thread in threading.enumerate() if thread.name.endswith("port %d" % server.port)], [])
-        with self.assertRaises(OSError):
-            socket.create_connection(("127.0.0.1", server.port), timeout=2).close()
+        self.assertTrue(port_is_free(server.port), "the port is still taken after close()")
         # The address is the one the socket is bound to, not the name that was asked for
         named = self.MOCK.Server(adapter, bind="localhost")
         try:
@@ -2794,8 +2808,7 @@ class Scenarios(unittest.TestCase):
         closing.start()
         closing.join(5)
         self.assertFalse(closing.is_alive(), "close() waits for a server that never served")
-        with self.assertRaises(OSError):
-            socket.create_connection(("127.0.0.1", server.port), timeout=2).close()
+        self.assertTrue(port_is_free(server.port), "the port is still taken after close()")
 
     def test_answer_has_the_headers_of_the_firmware_and_no_others(self):
         server = self.MOCK.Server(self.MOCK.Adapter("codes", seq_seed=43)).start()

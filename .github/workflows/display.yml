@@ -1,0 +1,62 @@
+name: Display firmware
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'display/**'
+      - 'tools/w906/API.md'
+      - 'tools/w906/fixtures/**'
+      - 'vehicle_profiles/mercedes/sprinter_w906_om651.json'
+      - '.github/workflows/display.yml'
+  pull_request:
+    paths:
+      - 'display/**'
+      - 'tools/w906/API.md'
+      - 'tools/w906/fixtures/**'
+      - 'vehicle_profiles/mercedes/sprinter_w906_om651.json'
+      - '.github/workflows/display.yml'
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Tool tests
+        run: python -m unittest -v
+        working-directory: display/tools
+      - name: Partition table
+        run: python display/tools/check_partitions.py --partitions display/partitions.csv --flash-size 16M
+
+  firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build with ESP-IDF
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.2
+          target: esp32s3
+          path: display
+          command: idf.py build
+
+      - name: Image leaves a fifth of its slot free
+        run: python3 display/tools/check_partitions.py --partitions display/partitions.csv --flash-size 16M --image "display/build/wican-display.bin"
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: wican-display
+          path: |
+            display/build/wican-display.bin
+            display/build/bootloader/bootloader.bin
+            display/build/partition_table/partition-table.bin
+            display/build/ota_data_initial.bin
+            display/build/flash_args

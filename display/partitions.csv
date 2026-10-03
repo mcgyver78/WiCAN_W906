@@ -1,0 +1,17 @@
+# Partition table of the display, 16 MB flash. Fixed from the first flashed version on: it can only
+# be changed over USB, never by an OTA update.
+#
+# - two app slots of 4 MB: firmware updates in the browser with rollback
+# - nvs 128 KB: WiFi, layout of the views and its backup, value catalogue, last fault memory list
+# - store: reserve, unformatted and unused in version 1. A partition that exists can be taken into
+#   use by a later firmware over OTA, unpartitioned flash cannot.
+# - no factory partition: without one the bootloader falls back to the other OTA slot
+#
+# Name,   Type, SubType,  Offset,   Size
+nvs,      data, nvs,      0x9000,   0x20000
+otadata,  data, ota,      0x29000,  0x2000
+phy_init, data, phy,      0x2b000,  0x1000
+ota_0,    app,  ota_0,    0x30000,  0x400000
+ota_1,    app,  ota_1,    0x430000, 0x400000
+coredump, data, coredump, 0x830000, 0x20000
+store,    data, spiffs,   0x850000, 0x400000

@@ -35,15 +35,15 @@ bool dtc_state_busy(const dtc_state_t *s)
 	return s->phase == DTC_STATE_QUEUED || s->phase == DTC_STATE_RUNNING;
 }
 
-dtc_accept_t dtc_state_try_begin(dtc_state_t *s, bool clear, dtc_src_t src, bool check_seq, uint32_t seq,
-                                 uint64_t now_ms, uint32_t *seq_out)
+dtc_accept_t dtc_state_try_begin(dtc_state_t *s, bool clear, dtc_src_t src, uint32_t seq, uint64_t now_ms,
+                                 uint32_t *seq_out)
 {
 	if(seq_out != NULL) *seq_out = s->seq;
 
 	// Commands during a scan are rejected instead of queued, a queued clear could run much later
 	if(dtc_state_busy(s)) return DTC_REJECT_BUSY;
 
-	if(clear && (check_seq || src == DTC_SRC_HTTP))
+	if(clear && src == DTC_SRC_HTTP)
 	{
 		// Only the list that was just read may be cleared: the last finished request has to be a read
 		if(s->phase != DTC_STATE_DONE) return DTC_REJECT_READ_REQUIRED;

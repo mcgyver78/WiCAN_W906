@@ -18,8 +18,9 @@
  * State of the fault memory scan (read_dtc / clear_dtc). One state for both triggers, the MQTT command
  * and the HTTP API, so that a scan started by one of them is visible to the other.
  *
- * Plain C without ESP-IDF: the rules are tested on the host (tools/w906/dtc_state_test.c) and
- * tools/w906/redproof.py shows that each rule makes a test fail when it is removed or weakened.
+ * Plain C without ESP-IDF: the rules are tested on the host (tools/w906/dtc_state_test.c), by examples and
+ * by comparing long random call sequences with an independent model. tools/w906/redproof.py applies a list
+ * of changes that remove or weaken a rule and requires the test to fail for each of them.
  *
  * Not thread safe: the caller holds one mutex around every call.
  * Time is passed in as milliseconds since boot, from one clock (esp_timer_get_time() / 1000) that is read
@@ -46,7 +47,7 @@ typedef enum
 {
 	DTC_ACCEPTED,
 	DTC_REJECT_BUSY,              // a scan is queued or running, whoever started it
-	DTC_REJECT_READ_REQUIRED,     // clear, but the last finished request is not a read, or that read is too old
+	DTC_REJECT_READ_REQUIRED,     // clear, but the last request is not a read that finished with a result, or it is too old
 	DTC_REJECT_STALE_SEQ,         // clear refers to another read than the last one
 	DTC_REJECT_NOTHING_TO_CLEAR,  // the last read found no trouble codes
 } dtc_accept_t;
@@ -79,12 +80,12 @@ typedef struct
 void dtc_state_init(dtc_state_t *s, uint32_t seed);
 
 // Accept or reject a request. The state does not change on rejection.
-// A clear over HTTP is always bound to the read with number `seq`: it is only accepted right after that
-// read. check_seq binds a clear of any other source in the same way; without it an MQTT clear is unbound,
-// as before.
+// A clear over HTTP is bound to the read with number `seq`: it is only accepted if that read is the last
+// request, finished with a result of at least one trouble code, at most DTC_CLEAR_MAX_AGE_MS ago.
+// A clear over MQTT is unbound, as before; `seq` is ignored for it and for every read.
 // seq_out (may be NULL) receives the number of the new request, on rejection the number the state is at.
-dtc_accept_t dtc_state_try_begin(dtc_state_t *s, bool clear, dtc_src_t src, bool check_seq, uint32_t seq,
-                                 uint64_t now_ms, uint32_t *seq_out);
+dtc_accept_t dtc_state_try_begin(dtc_state_t *s, bool clear, dtc_src_t src, uint32_t seq, uint64_t now_ms,
+                                 uint32_t *seq_out);
 
 // The AutoPID task takes the queued request. Returns true if the scan has to run now (s->clear tells
 // which one), false if nothing is queued or the request expired (the state is then an error with reason
@@ -105,7 +106,8 @@ const char *dtc_accept_reason(dtc_accept_t result);
 // The state as a JSON object, e.g.
 // {"supported":true,"state":"running","action":"read","src":"http","seq":42,"ecu":5,"total":18,
 //  "name":"N30/4 ESP","reason":"","age_s":0,"count":0,"result_seq":41}
-// Returns the length without the terminating zero, or -1 if it does not fit (buf is then an empty string).
+// Returns the length without the terminating zero, or -1 if it does not fit. buf is then an empty string;
+// with size 0 nothing is written. No byte from buf[size] on is ever touched.
 int dtc_state_json(const dtc_state_t *s, bool supported, uint64_t now_ms, char *buf, size_t size);
 
 #endif

@@ -73,6 +73,8 @@ static bool ecu_asleep_state = false;
 
 #define TEMP_BUFFER_LENGTH  32
 #define ECU_CONNECTED_BIT			        BIT0
+// The task waits this many times 2 s for the MQTT broker before it starts polling without it
+#define AUTOPID_MQTT_WAIT_PASSES            5
 #define AUTOPID_POLLING_DISABLED_BIT	    BIT1
 #define AUTOPID_REQUEST_BIT			        BIT2
 #define AUTOPID_DTC_READ_BIT			    BIT3
@@ -944,6 +946,9 @@ void autopid_request_data(void)
 // Set when a read_dtc / clear_dtc command was accepted, cleared when the scan is done
 static volatile bool dtc_scan_pending = false;
 
+// Set by the AutoPID task when it enters its main loop
+static volatile bool autopid_loop_ready = false;
+
 static void dtc_publish_error(const char *action, const char *reason);
 
 void autopid_request_dtc(bool clear)
@@ -974,7 +979,9 @@ void autopid_request_dtc(bool clear)
 
 char *autopid_data_read(void)
 {
-    static char *json_str = NULL;
+    // The caller frees the result. Not static: after a failed allocation the pointer of the
+    // previous call, already freed by its caller, would be returned again.
+    char *json_str = NULL;
     
     if (!autopid_values || !autopid_values_mutex) {
         ESP_LOGE(TAG, "Invalid autopid_values or mutex");
@@ -982,12 +989,16 @@ char *autopid_data_read(void)
         return NULL;
     }
 
-    // Only set request bit and wait if polling is disabled
-    if (xEventGroupGetBits(xautopid_event_group) & AUTOPID_POLLING_DISABLED_BIT) {
+    // Only set request bit and wait if polling is disabled. The polling disabled bit is also set
+    // from init until the task has read the configuration; a request in that window must not
+    // wait, the task clears the request bit only while polling is disabled, so the HTTP server
+    // would hang until reboot.
+    if (autopid_loop_ready && (xEventGroupGetBits(xautopid_event_group) & AUTOPID_POLLING_DISABLED_BIT)) {
         // Set the request bit to signal autopid task
         xEventGroupSetBits(xautopid_event_group, AUTOPID_REQUEST_BIT);
         
-        while (xEventGroupGetBits(xautopid_event_group) & AUTOPID_REQUEST_BIT) {
+        while ((xEventGroupGetBits(xautopid_event_group) & (AUTOPID_REQUEST_BIT | AUTOPID_POLLING_DISABLED_BIT)) ==
+               (AUTOPID_REQUEST_BIT | AUTOPID_POLLING_DISABLED_BIT)) {
             vTaskDelay(pdMS_TO_TICKS(100)); // Small delay to prevent busy waiting
         }
     }
@@ -1112,6 +1123,7 @@ char* autopid_get_config(void)
     {
         ESP_LOGE(TAG, "Failed to create JSON object");
         DEBUG_LOGE(TAG, "Failed to create JSON object");
+        xSemaphoreGive(all_pids->mutex);
         return NULL;
     }
 
@@ -2250,7 +2262,9 @@ static void autopid_task(void *pvParameters)
     vTaskDelay(pdMS_TO_TICKS(100));
     send_commands(default_init, 50);
 
-    while(config_server_mqtt_en_config() == 1 && !mqtt_connected())
+    // Give the broker a moment so that the first values are not published into the void, but do
+    // not depend on it: HTTP clients need the values without a broker too.
+    for(int waited = 0; waited < AUTOPID_MQTT_WAIT_PASSES && config_server_mqtt_en_config() == 1 && !mqtt_connected(); waited++)
     {
         vTaskDelay(pdMS_TO_TICKS(2000));
     }
@@ -2293,6 +2307,8 @@ static void autopid_task(void *pvParameters)
     DEBUG_LOGI(TAG, "Autopid Start loop");
     ESP_LOGI(TAG, "Total PIDs: %lu", all_pids->pid_count);
     DEBUG_LOGI(TAG, "Total PIDs: %lu", all_pids->pid_count);
+
+    autopid_loop_ready = true;
 
     while(1) 
     {

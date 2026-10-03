@@ -30,6 +30,15 @@ jobs:
         working-directory: display/tools
       - name: Partition table
         run: python display/tools/check_partitions.py --partitions display/partitions.csv --flash-size 16M
+      - name: Logic host tests
+        run: make
+        working-directory: display/test
+      - name: Red proof (every removed rule makes a test fail)
+        run: python redproof.py
+        working-directory: display/test
+      - name: Red proof counter-check (a change without effect is reported)
+        run: python redproof.py --selftest
+        working-directory: display/test
 
   firmware:
     runs-on: ubuntu-latest

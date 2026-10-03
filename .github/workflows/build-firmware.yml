@@ -2,6 +2,10 @@ name: Build Firmware (WiCAN OBD V300)
 
 on:
   workflow_dispatch:
+    inputs:
+      min_free_bytes:
+        description: 'Bytes that must stay free in the OTA slot (raise it to see the size guard fail)'
+        default: '32768'
   push:
     paths:
       - 'main/**'
@@ -10,6 +14,7 @@ on:
       - 'sdkconfig'
       - 'dependencies.lock'
       - 'wican_partitions_table.csv'
+      - 'tools/w906/check_image_size.py'
       - '.github/workflows/build-firmware.yml'
   pull_request:
     paths:
@@ -19,6 +24,7 @@ on:
       - 'sdkconfig'
       - 'dependencies.lock'
       - 'wican_partitions_table.csv'
+      - 'tools/w906/check_image_size.py'
       - '.github/workflows/build-firmware.yml'
 
 jobs:
@@ -37,6 +43,9 @@ jobs:
           esp_idf_version: v5.5.2
           target: esp32c3
           command: idf.py build
+
+      - name: Image leaves room in the OTA slot
+        run: python3 tools/w906/check_image_size.py --image "build/wican-fw_*.bin" --partitions wican_partitions_table.csv --min-free "${{ inputs.min_free_bytes || '32768' }}"
 
       - name: Upload firmware
         uses: actions/upload-artifact@v4

@@ -17,6 +17,11 @@ static uint32_t seq_after(uint32_t seq)
 	return seq >= DTC_SEQ_MAX ? 1 : seq + 1;
 }
 
+static uint64_t elapsed_ms(uint64_t now_ms, uint64_t then_ms)
+{
+	return now_ms >= then_ms ? now_ms - then_ms : 0;
+}
+
 void dtc_state_init(dtc_state_t *s, uint32_t seed)
 {
 	memset(s, 0, sizeof(*s));
@@ -31,17 +36,19 @@ bool dtc_state_busy(const dtc_state_t *s)
 }
 
 dtc_accept_t dtc_state_try_begin(dtc_state_t *s, bool clear, dtc_src_t src, bool check_seq, uint32_t seq,
-                                 uint32_t now_ms, uint32_t *seq_out)
+                                 uint64_t now_ms, uint32_t *seq_out)
 {
+	if(seq_out != NULL) *seq_out = s->seq;
+
 	// Commands during a scan are rejected instead of queued, a queued clear could run much later
 	if(dtc_state_busy(s)) return DTC_REJECT_BUSY;
 
-	if(clear && check_seq)
+	if(clear && (check_seq || src == DTC_SRC_HTTP))
 	{
 		// Only the list that was just read may be cleared: the last finished request has to be a read
 		if(s->phase != DTC_STATE_DONE) return DTC_REJECT_READ_REQUIRED;
 		if(s->clear) return DTC_REJECT_READ_REQUIRED;
-		if((uint32_t)(now_ms - s->finished_ms) > DTC_CLEAR_MAX_AGE_MS) return DTC_REJECT_READ_REQUIRED;
+		if(elapsed_ms(now_ms, s->finished_ms) > DTC_CLEAR_MAX_AGE_MS) return DTC_REJECT_READ_REQUIRED;
 		if(seq != s->seq) return DTC_REJECT_STALE_SEQ;
 		if(s->result_count == 0) return DTC_REJECT_NOTHING_TO_CLEAR;
 	}
@@ -53,13 +60,14 @@ dtc_accept_t dtc_state_try_begin(dtc_state_t *s, bool clear, dtc_src_t src, bool
 	s->src = src;
 	s->queued_ms = now_ms;
 	s->step = 0;
+	s->total = 0;
 	s->reason = NULL;
 
 	if(seq_out != NULL) *seq_out = s->seq;
 	return DTC_ACCEPTED;
 }
 
-static void finish(dtc_state_t *s, dtc_phase_t phase, const char *reason, uint32_t now_ms)
+static void finish(dtc_state_t *s, dtc_phase_t phase, const char *reason, uint64_t now_ms)
 {
 	s->phase = phase;
 	s->reason = reason;
@@ -67,12 +75,12 @@ static void finish(dtc_state_t *s, dtc_phase_t phase, const char *reason, uint32
 	s->finished_ms = now_ms;
 }
 
-bool dtc_state_pickup(dtc_state_t *s, uint32_t now_ms)
+bool dtc_state_pickup(dtc_state_t *s, uint64_t now_ms)
 {
 	if(s->phase != DTC_STATE_QUEUED) return false;
 
 	// The HTTP client has given up long ago, a clear must not run behind its back
-	if(s->src == DTC_SRC_HTTP && (uint32_t)(now_ms - s->queued_ms) > DTC_HTTP_EXPIRY_MS)
+	if(s->src == DTC_SRC_HTTP && elapsed_ms(now_ms, s->queued_ms) > DTC_HTTP_EXPIRY_MS)
 	{
 		finish(s, DTC_STATE_ERROR, "expired", now_ms);
 		return false;
@@ -91,14 +99,14 @@ void dtc_state_progress(dtc_state_t *s, uint8_t step, uint8_t total, const char 
 	s->name = name;
 }
 
-void dtc_state_error(dtc_state_t *s, const char *reason, uint32_t now_ms)
+void dtc_state_error(dtc_state_t *s, const char *reason, uint64_t now_ms)
 {
-	if(!dtc_state_busy(s)) return;
+	if(s->phase != DTC_STATE_RUNNING) return;
 
 	finish(s, DTC_STATE_ERROR, reason, now_ms);
 }
 
-void dtc_state_done(dtc_state_t *s, uint16_t dtc_count, uint32_t now_ms)
+void dtc_state_done(dtc_state_t *s, uint16_t dtc_count, uint64_t now_ms)
 {
 	if(s->phase != DTC_STATE_RUNNING) return;
 
@@ -178,7 +186,7 @@ static const char *phase_text(dtc_phase_t phase)
 	}
 }
 
-int dtc_state_json(const dtc_state_t *s, bool supported, uint32_t now_ms, char *buf, size_t size)
+int dtc_state_json(const dtc_state_t *s, bool supported, uint64_t now_ms, char *buf, size_t size)
 {
 	json_out_t out = {buf, size, 0, false};
 	bool requested = s->seq != 0;
@@ -205,7 +213,7 @@ int dtc_state_json(const dtc_state_t *s, bool supported, uint32_t now_ms, char *
 	put_raw(&out, "\",\"reason\":\"");
 	put_escaped(&out, s->reason);
 	put_raw(&out, "\",\"age_s\":");
-	put_number(&out, finished ? (uint32_t)(now_ms - s->finished_ms) / 1000u : 0);
+	put_number(&out, finished ? (uint32_t)(elapsed_ms(now_ms, s->finished_ms) / 1000u) : 0);
 	put_raw(&out, ",\"count\":");
 	put_number(&out, s->result_count);
 	put_raw(&out, ",\"result_seq\":");

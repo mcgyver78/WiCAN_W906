@@ -2,17 +2,20 @@
 """Shows that the host tests really guard the rules they claim to guard.
 
 A test that stays green when the rule is removed proves nothing. Every mutation below removes or
-weakens one rule in the source; the test named with it must then FAIL. The run is red when
+weakens one rule in the source; the test named with it must then FAIL in at least one check. The
+run is red when
 
   - the unchanged source does not pass its test,
   - a mutation no longer applies (the text is not found exactly once) or does not compile,
-  - a mutation leaves the test green.
+  - a mutation leaves the test green,
+  - a mutated test aborts without a failed check (a crash names no rule).
 
   python3 redproof.py              all mutations
   python3 redproof.py --only NAME  one mutation
   python3 redproof.py --list
-  python3 redproof.py --selftest   counter-check of this script: a change without effect must be
-                                   reported as "stayed green", and a real one as red
+  python3 redproof.py --selftest   counter-check of this script: it runs itself with a change
+                                   without effect and with a mutation that does not apply and
+                                   expects exit status 1, and with a real mutation and expects 0
 """
 import argparse
 import pathlib
@@ -24,117 +27,200 @@ import tempfile
 REPO = pathlib.Path(__file__).resolve().parents[2]
 WORKFLOW = ".github/workflows/w906-tools.yml"
 
-# The same commands as in the workflow, run in tools/w906. The script checks that the workflow
-# contains them literally, so the proof and the CI test cannot drift apart.
+# Run in tools/w906. The workflow has to contain the same command text (checked below); apart from
+# that this script builds and runs the unchanged test itself before it mutates anything.
 TESTS = {
     "dtc_state": {
-        "build": "cc -Wall -Wextra -Werror -fsanitize=address,undefined -I../../main "
-                 "../../main/dtc_state.c dtc_state_test.c -o dtc_state_test",
+        "build": "cc -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=all "
+                 "-I../../main ../../main/dtc_state.c dtc_state_test.c -o dtc_state_test",
         "run": "./dtc_state_test",
     },
 }
 
-STATE = "main/dtc_state.c"
+STATE_C = "main/dtc_state.c"
+STATE_H = "main/dtc_state.h"
+
+BOUND = "\tif(clear && (check_seq || src == DTC_SRC_HTTP))"
+NOT_DONE = "\t\tif(s->phase != DTC_STATE_DONE) return DTC_REJECT_READ_REQUIRED;"
+WAS_CLEAR = "\t\tif(s->clear) return DTC_REJECT_READ_REQUIRED;"
+TOO_OLD = "\t\tif(elapsed_ms(now_ms, s->finished_ms) > DTC_CLEAR_MAX_AGE_MS) return DTC_REJECT_READ_REQUIRED;"
+STALE = "\t\tif(seq != s->seq) return DTC_REJECT_STALE_SEQ;"
+EMPTY = "\t\tif(s->result_count == 0) return DTC_REJECT_NOTHING_TO_CLEAR;"
+EXPIRED = "\tif(s->src == DTC_SRC_HTTP && elapsed_ms(now_ms, s->queued_ms) > DTC_HTTP_EXPIRY_MS)"
+NOT_QUEUED = "\tif(s->phase != DTC_STATE_QUEUED) return false;"
+NOT_RUNNING = "\tif(s->phase != DTC_STATE_RUNNING) return;\n\n"
+PROGRESS = "\ts->step = step;"
+ERROR = "\tfinish(s, DTC_STATE_ERROR, reason, now_ms);"
+DONE = "\tfinish(s, DTC_STATE_DONE, NULL, now_ms);"
+STORE = "\ts->result_seq = s->seq;\n\ts->result_count = dtc_count;\n"
+ELAPSED = "\treturn now_ms >= then_ms ? now_ms - then_ms : 0;"
+CONTROL = "\t\tif(c < 0x20) continue;"
+FINISHED = "\tbool finished = s->phase == DTC_STATE_DONE || s->phase == DTC_STATE_ERROR;"
+EXPIRE = '\t\tfinish(s, DTC_STATE_ERROR, "expired", now_ms);\n'
+
+
+def also(phase):
+    return "\tif(s->phase != DTC_STATE_RUNNING && s->phase != %s) return;\n\n" % phase
+
 
 # (name, test, file, text in the source, replacement)
 MUTATIONS = [
-    ("busy_not_checked", "dtc_state", STATE,
+    # Accepting a request
+    ("busy_not_checked", "dtc_state", STATE_C,
      "\tif(dtc_state_busy(s)) return DTC_REJECT_BUSY;",
      "\tif(0 && dtc_state_busy(s)) return DTC_REJECT_BUSY;"),
-    ("clear_without_finished_read", "dtc_state", STATE,
-     "\t\tif(s->phase != DTC_STATE_DONE) return DTC_REJECT_READ_REQUIRED;",
-     "\t\tif(0 && s->phase != DTC_STATE_DONE) return DTC_REJECT_READ_REQUIRED;"),
-    ("clear_after_clear", "dtc_state", STATE,
-     "\t\tif(s->clear) return DTC_REJECT_READ_REQUIRED;",
-     "\t\tif(0 && s->clear) return DTC_REJECT_READ_REQUIRED;"),
-    ("clear_age_not_checked", "dtc_state", STATE,
-     "\t\tif((uint32_t)(now_ms - s->finished_ms) > DTC_CLEAR_MAX_AGE_MS) return DTC_REJECT_READ_REQUIRED;",
-     "\t\tif(0 && (uint32_t)(now_ms - s->finished_ms) > DTC_CLEAR_MAX_AGE_MS) return DTC_REJECT_READ_REQUIRED;"),
-    ("clear_age_boundary", "dtc_state", STATE,
-     "(uint32_t)(now_ms - s->finished_ms) > DTC_CLEAR_MAX_AGE_MS",
-     "(uint32_t)(now_ms - s->finished_ms) >= DTC_CLEAR_MAX_AGE_MS"),
-    ("clear_seq_not_compared", "dtc_state", STATE,
-     "\t\tif(seq != s->seq) return DTC_REJECT_STALE_SEQ;",
-     "\t\tif(0 && seq != s->seq) return DTC_REJECT_STALE_SEQ;"),
-    ("clear_of_empty_list", "dtc_state", STATE,
-     "\t\tif(s->result_count == 0) return DTC_REJECT_NOTHING_TO_CLEAR;",
-     "\t\tif(0 && s->result_count == 0) return DTC_REJECT_NOTHING_TO_CLEAR;"),
-    ("mqtt_clear_bound_too", "dtc_state", STATE,
-     "\tif(clear && check_seq)",
-     "\tif(clear && (check_seq || true))"),
-    ("http_request_never_expires", "dtc_state", STATE,
-     "\tif(s->src == DTC_SRC_HTTP && (uint32_t)(now_ms - s->queued_ms) > DTC_HTTP_EXPIRY_MS)",
-     "\tif(0 && s->src == DTC_SRC_HTTP && (uint32_t)(now_ms - s->queued_ms) > DTC_HTTP_EXPIRY_MS)"),
-    ("expiry_boundary", "dtc_state", STATE,
-     "(uint32_t)(now_ms - s->queued_ms) > DTC_HTTP_EXPIRY_MS",
-     "(uint32_t)(now_ms - s->queued_ms) >= DTC_HTTP_EXPIRY_MS"),
-    ("mqtt_request_expires_too", "dtc_state", STATE,
-     "\tif(s->src == DTC_SRC_HTTP && (uint32_t)(now_ms - s->queued_ms)",
-     "\tif((s->src == DTC_SRC_HTTP || true) && (uint32_t)(now_ms - s->queued_ms)"),
-    ("pickup_without_request", "dtc_state", STATE,
-     "\tif(s->phase != DTC_STATE_QUEUED) return false;",
-     "\tif(0 && s->phase != DTC_STATE_QUEUED) return false;"),
-    ("progress_in_any_phase", "dtc_state", STATE,
-     "\tif(s->phase != DTC_STATE_RUNNING) return;\n\n\ts->step = step;",
-     "\ts->step = step;"),
-    ("error_in_any_phase", "dtc_state", STATE,
-     "\tif(!dtc_state_busy(s)) return;",
-     "\tif(0 && !dtc_state_busy(s)) return;"),
-    ("done_in_any_phase", "dtc_state", STATE,
-     "\tif(s->phase != DTC_STATE_RUNNING) return;\n\n\tfinish(s, DTC_STATE_DONE, NULL, now_ms);",
-     "\tfinish(s, DTC_STATE_DONE, NULL, now_ms);"),
-    ("seq_not_masked", "dtc_state", STATE,
-     "\ts->next_seq = seed & DTC_SEQ_MAX;",
-     "\ts->next_seq = seed;"),
-    ("seq_zero_at_boot", "dtc_state", STATE,
-     "\tif(s->next_seq == 0) s->next_seq = 1;",
-     "\tif(0 && s->next_seq == 0) s->next_seq = 1;"),
-    ("seq_no_wrap", "dtc_state", STATE,
-     "\treturn seq >= DTC_SEQ_MAX ? 1 : seq + 1;",
-     "\treturn seq + 1;"),
-    ("request_keeps_old_step", "dtc_state", STATE,
-     "\ts->step = 0;\n",
-     ""),
-    ("request_keeps_old_reason", "dtc_state", STATE,
-     "\ts->step = 0;\n\ts->reason = NULL;\n",
-     "\ts->step = 0;\n"),
-    ("finish_keeps_name", "dtc_state", STATE,
-     "\ts->reason = reason;\n\ts->name = NULL;\n",
-     "\ts->reason = reason;\n"),
-    ("result_seq_not_stored", "dtc_state", STATE,
-     "\ts->result_seq = s->seq;\n",
-     ""),
-    ("result_count_not_stored", "dtc_state", STATE,
-     "\ts->result_count = dtc_count;\n",
-     "\t(void)dtc_count;\n"),
-    ("json_truncated_silently", "dtc_state", STATE,
-     "\t\tout->overflow = true;\n",
-     ""),
-    ("json_no_room_for_zero", "dtc_state", STATE,
-     "\tif(out->len + 1 >= out->size)",
-     "\tif(out->len >= out->size)"),
-    ("json_not_escaped", "dtc_state", STATE,
-     "\t\tif(c == '\"' || c == '\\\\') put_char(out, '\\\\');\n",
-     ""),
-    ("json_control_characters", "dtc_state", STATE,
-     "\t\tif(c < 0x20) continue;\n",
-     ""),
-    ("json_age_while_not_finished", "dtc_state", STATE,
-     "\tbool finished = s->phase == DTC_STATE_DONE || s->phase == DTC_STATE_ERROR;",
-     "\tbool finished = true;"),
-    ("json_action_without_request", "dtc_state", STATE,
-     "\tbool requested = s->seq != 0;",
-     "\tbool requested = true;"),
+    ("http_clear_unbound_without_flag", "dtc_state", STATE_C, BOUND,
+     "\tif(clear && check_seq)"),
+    ("mqtt_clear_bound_too", "dtc_state", STATE_C, BOUND,
+     "\tif(clear && (check_seq || src == DTC_SRC_HTTP || true))"),
+    ("flag_ignored", "dtc_state", STATE_C, BOUND,
+     "\tif(clear && (src == DTC_SRC_HTTP || (check_seq && false)))"),
+    ("read_bound_too", "dtc_state", STATE_C, BOUND,
+     "\tif((clear || check_seq) && (check_seq || src == DTC_SRC_HTTP))"),
+    ("clear_without_finished_read", "dtc_state", STATE_C, NOT_DONE,
+     NOT_DONE.replace("if(", "if(0 && ")),
+    ("clear_after_clear", "dtc_state", STATE_C, WAS_CLEAR,
+     WAS_CLEAR.replace("if(", "if(0 && ")),
+    ("clear_after_mqtt_clear", "dtc_state", STATE_C, WAS_CLEAR,
+     WAS_CLEAR.replace("if(s->clear)", "if(s->clear && s->src == DTC_SRC_HTTP)")),
+    ("clear_age_not_checked", "dtc_state", STATE_C, TOO_OLD,
+     TOO_OLD.replace("if(", "if(0 && ")),
+    ("clear_age_boundary", "dtc_state", STATE_C, TOO_OLD,
+     TOO_OLD.replace(" > DTC_CLEAR_MAX_AGE_MS", " >= DTC_CLEAR_MAX_AGE_MS")),
+    ("clear_age_only_after_http_read", "dtc_state", STATE_C, TOO_OLD,
+     TOO_OLD.replace("if(", "if(s->src == DTC_SRC_HTTP && ")),
+    ("clear_seq_not_compared", "dtc_state", STATE_C, STALE,
+     STALE.replace("if(", "if(0 && ")),
+    ("clear_seq_low_bits_only", "dtc_state", STATE_C, STALE,
+     STALE.replace("seq != s->seq", "(seq & 0xFFFFFFu) != (s->seq & 0xFFFFFFu)")),
+    ("clear_seq_only_after_http_read", "dtc_state", STATE_C, STALE,
+     STALE.replace("if(", "if(s->src == DTC_SRC_HTTP && ")),
+    ("clear_of_empty_list", "dtc_state", STATE_C, EMPTY,
+     EMPTY.replace("if(", "if(0 && ")),
+    ("clear_of_single_code_refused", "dtc_state", STATE_C, EMPTY,
+     EMPTY.replace("== 0", "< 2")),
+    ("clear_of_empty_list_after_mqtt_read", "dtc_state", STATE_C, EMPTY,
+     EMPTY.replace("if(", "if(s->src == DTC_SRC_HTTP && ")),
+    ("reason_order_seq_before_age", "dtc_state", STATE_C,
+     TOO_OLD + "\n" + STALE, STALE + "\n" + TOO_OLD),
+    ("reason_order_count_before_seq", "dtc_state", STATE_C,
+     STALE + "\n" + EMPTY, EMPTY + "\n" + STALE),
+    ("seq_out_not_set_on_rejection", "dtc_state", STATE_C,
+     "\tif(seq_out != NULL) *seq_out = s->seq;\n\n\t// Commands during a scan",
+     "\t// Commands during a scan"),
+    ("request_keeps_old_step", "dtc_state", STATE_C, "\ts->step = 0;\n", ""),
+    ("request_keeps_old_total", "dtc_state", STATE_C, "\ts->total = 0;\n", ""),
+    ("request_keeps_old_reason", "dtc_state", STATE_C,
+     "\ts->total = 0;\n\ts->reason = NULL;\n", "\ts->total = 0;\n"),
+    ("action_not_stored", "dtc_state", STATE_C, "\ts->clear = clear;\n", ""),
+    ("source_not_stored", "dtc_state", STATE_C, "\ts->src = src;\n", ""),
+
+    # Sequence numbers
+    ("seq_not_masked", "dtc_state", STATE_C,
+     "\ts->next_seq = seed & DTC_SEQ_MAX;", "\ts->next_seq = seed;"),
+    ("seq_zero_at_boot", "dtc_state", STATE_C,
+     "\tif(s->next_seq == 0) s->next_seq = 1;", "\tif(0 && s->next_seq == 0) s->next_seq = 1;"),
+    ("seq_no_wrap", "dtc_state", STATE_C,
+     "\treturn seq >= DTC_SEQ_MAX ? 1 : seq + 1;", "\treturn seq + 1;"),
+    ("seq_max_changed", "dtc_state", STATE_H,
+     "#define DTC_SEQ_MAX             0x7FFFFFFFu", "#define DTC_SEQ_MAX             0xFFFFFFFFu"),
+
+    # Limits and time
+    ("clear_age_limit_changed", "dtc_state", STATE_H,
+     "#define DTC_CLEAR_MAX_AGE_MS    (600u * 1000u)", "#define DTC_CLEAR_MAX_AGE_MS    (601u * 1000u)"),
+    ("http_expiry_limit_changed", "dtc_state", STATE_H,
+     "#define DTC_HTTP_EXPIRY_MS      (20u * 1000u)", "#define DTC_HTTP_EXPIRY_MS      (21u * 1000u)"),
+    ("older_clock_counts_as_ages", "dtc_state", STATE_C, ELAPSED,
+     "\treturn now_ms - then_ms;"),
+    ("time_in_32_bit", "dtc_state", STATE_C, ELAPSED,
+     "\treturn now_ms >= then_ms ? (uint32_t)(now_ms - then_ms) : 0;"),
+
+    # Pickup and expiry
+    ("http_request_never_expires", "dtc_state", STATE_C, EXPIRED,
+     EXPIRED.replace("if(", "if(0 && ")),
+    ("expiry_boundary", "dtc_state", STATE_C, EXPIRED,
+     EXPIRED.replace(" > DTC_HTTP_EXPIRY_MS", " >= DTC_HTTP_EXPIRY_MS")),
+    ("mqtt_request_expires_too", "dtc_state", STATE_C, EXPIRED,
+     EXPIRED.replace("s->src == DTC_SRC_HTTP", "(s->src == DTC_SRC_HTTP || true)")),
+    ("expiry_text_changed", "dtc_state", STATE_C, '"expired"', '"timeout"'),
+    ("expiry_drops_result_seq", "dtc_state", STATE_C, EXPIRE, EXPIRE + "\t\ts->result_seq = 0;\n"),
+    ("expiry_drops_result_count", "dtc_state", STATE_C, EXPIRE, EXPIRE + "\t\ts->result_count = 0;\n"),
+    ("pickup_without_request", "dtc_state", STATE_C, NOT_QUEUED,
+     NOT_QUEUED.replace("if(", "if(0 && ")),
+    ("pickup_again_after_error", "dtc_state", STATE_C, NOT_QUEUED,
+     "\tif(s->phase != DTC_STATE_QUEUED && s->phase != DTC_STATE_ERROR) return false;"),
+    ("pickup_while_running", "dtc_state", STATE_C, NOT_QUEUED,
+     "\tif(s->phase != DTC_STATE_QUEUED && s->phase != DTC_STATE_RUNNING) return false;"),
+    ("pickup_does_not_start", "dtc_state", STATE_C,
+     "\ts->phase = DTC_STATE_RUNNING;\n\treturn true;", "\treturn true;"),
+
+    # Progress, error and done belong to a running scan
+    ("progress_in_any_phase", "dtc_state", STATE_C, NOT_RUNNING + PROGRESS, PROGRESS),
+    ("progress_while_queued", "dtc_state", STATE_C, NOT_RUNNING + PROGRESS, also("DTC_STATE_QUEUED") + PROGRESS),
+    ("progress_after_done", "dtc_state", STATE_C, NOT_RUNNING + PROGRESS, also("DTC_STATE_DONE") + PROGRESS),
+    ("progress_after_error", "dtc_state", STATE_C, NOT_RUNNING + PROGRESS, also("DTC_STATE_ERROR") + PROGRESS),
+    ("error_in_any_phase", "dtc_state", STATE_C, NOT_RUNNING + ERROR, ERROR),
+    ("error_while_queued", "dtc_state", STATE_C, NOT_RUNNING + ERROR, also("DTC_STATE_QUEUED") + ERROR),
+    ("error_after_error", "dtc_state", STATE_C, NOT_RUNNING + ERROR, also("DTC_STATE_ERROR") + ERROR),
+    ("error_after_done", "dtc_state", STATE_C, NOT_RUNNING + ERROR, also("DTC_STATE_DONE") + ERROR),
+    ("done_in_any_phase", "dtc_state", STATE_C, NOT_RUNNING + DONE, DONE),
+    ("done_while_queued", "dtc_state", STATE_C, NOT_RUNNING + DONE, also("DTC_STATE_QUEUED") + DONE),
+    ("done_after_error", "dtc_state", STATE_C, NOT_RUNNING + DONE, also("DTC_STATE_ERROR") + DONE),
+    ("done_after_done", "dtc_state", STATE_C, NOT_RUNNING + DONE, also("DTC_STATE_DONE") + DONE),
+    ("finish_keeps_name", "dtc_state", STATE_C,
+     "\ts->reason = reason;\n\ts->name = NULL;\n", "\ts->reason = reason;\n"),
+    ("error_keeps_name", "dtc_state", STATE_C,
+     "\ts->name = NULL;\n\ts->finished_ms = now_ms;",
+     "\tif(phase == DTC_STATE_DONE) s->name = NULL;\n\ts->finished_ms = now_ms;"),
+    ("result_seq_not_stored", "dtc_state", STATE_C, "\ts->result_seq = s->seq;\n", ""),
+    ("result_count_not_stored", "dtc_state", STATE_C,
+     "\ts->result_count = dtc_count;\n", "\t(void)dtc_count;\n"),
+    ("result_count_in_8_bit", "dtc_state", STATE_C,
+     "\ts->result_count = dtc_count;\n", "\ts->result_count = (uint8_t)dtc_count;\n"),
+    ("result_of_a_clear_not_stored", "dtc_state", STATE_C, STORE,
+     "\tif(!s->clear)\n\t{\n\t" + STORE.replace("\n\t", "\n\t\t") + "\t}\n"),
+    ("init_does_not_reset", "dtc_state", STATE_C, "\tmemset(s, 0, sizeof(*s));\n", ""),
+
+    # JSON
+    ("json_truncated_silently", "dtc_state", STATE_C, "\t\tout->overflow = true;\n", ""),
+    ("json_no_room_for_zero", "dtc_state", STATE_C,
+     "\tif(out->len + 1 >= out->size)", "\tif(out->len >= out->size)"),
+    ("json_no_terminating_zero", "dtc_state", STATE_C, "\tbuf[out.len] = '\\0';\n", ""),
+    ("json_not_escaped", "dtc_state", STATE_C,
+     "\t\tif(c == '\"' || c == '\\\\') put_char(out, '\\\\');\n", ""),
+    ("json_control_characters", "dtc_state", STATE_C, CONTROL + "\n", ""),
+    ("json_control_boundary", "dtc_state", STATE_C, CONTROL, "\t\tif(c < 0x1f) continue;"),
+    ("json_utf8_dropped", "dtc_state", STATE_C, CONTROL, "\t\tif(c < 0x20 || c >= 0x80) continue;"),
+    ("json_reason_not_escaped", "dtc_state", STATE_C,
+     "\tput_escaped(&out, s->reason);", "\tput_raw(&out, s->reason != NULL ? s->reason : \"\");"),
+    ("json_number_in_16_bit", "dtc_state", STATE_C,
+     '"%" PRIu32, value);', '"%" PRIu32, value & 0xFFFFu);'),
+    ("json_count_in_8_bit", "dtc_state", STATE_C,
+     "\tput_number(&out, s->result_count);", "\tput_number(&out, (uint8_t)s->result_count);"),
+    ("json_age_divided_by_1024", "dtc_state", STATE_C, "/ 1000u) : 0);", "/ 1024u) : 0);"),
+    ("json_age_while_not_finished", "dtc_state", STATE_C, FINISHED, "\tbool finished = true;"),
+    ("json_no_age_after_error", "dtc_state", STATE_C, FINISHED,
+     "\tbool finished = s->phase == DTC_STATE_DONE;"),
+    ("json_action_without_request", "dtc_state", STATE_C,
+     "\tbool requested = s->seq != 0;", "\tbool requested = true;"),
+    ("json_field_left_out", "dtc_state", STATE_C,
+     "\tput_raw(&out, \",\\\"count\\\":\");\n\tput_number(&out, s->result_count);\n", ""),
+    ("reject_text_changed", "dtc_state", STATE_C, 'return "stale_seq";', 'return "stale";'),
 ]
 
-# Changes nothing the tests could notice. Used by --selftest only.
-NOOP = ("selftest_without_effect", "dtc_state", STATE,
-        '#include "dtc_state.h"\n',
-        '#include "dtc_state.h"\n// change without effect\n')
+# For --selftest only
+SELFTEST_MUTATIONS = {
+    "noop": ("selftest_without_effect", "dtc_state", STATE_C,
+             '#include "dtc_state.h"\n', '#include "dtc_state.h"\n// change without effect\n'),
+    "missing": ("selftest_text_not_found", "dtc_state", STATE_C,
+                "this text is not in the source", ""),
+}
 
 
 def shell(command, cwd):
-    return subprocess.run(command, shell=True, cwd=cwd, capture_output=True, text=True)
+    # A mutated JSON writer may print bytes that are not UTF-8
+    return subprocess.run(command, shell=True, cwd=cwd, capture_output=True,
+                          encoding="utf-8", errors="replace")
 
 
 def copy_sources(target):
@@ -147,7 +233,7 @@ def copy_sources(target):
 
 
 def run_test(tree, test):
-    """Returns (state, detail) with state 'green', 'red' or 'broken'."""
+    """Returns (state, detail) with state 'green', 'red', 'aborted' or 'broken'."""
     cwd = tree / "tools" / "w906"
     build = shell(TESTS[test]["build"], cwd)
     if build.returncode != 0:
@@ -161,7 +247,7 @@ def run_test(tree, test):
     if failed:
         return "red", "%d checks failed, first: %s" % (len(failed), failed[0])
     last = (run.stderr.strip().splitlines() or run.stdout.strip().splitlines() or ["no output"])[-1]
-    return "red", "aborted without a failed check (exit %d): %s" % (run.returncode, last)
+    return "aborted", "exit %d without a failed check: %s" % (run.returncode, last)
 
 
 def mutate(tree, mutation):
@@ -190,7 +276,7 @@ def evaluate(mutation, test=None):
 
 
 def check_workflow():
-    """The commands here must be the ones the CI runs."""
+    """The workflow has to contain the command text used here."""
     path = REPO / WORKFLOW
     if not path.exists():
         return ["%s not found" % WORKFLOW]
@@ -199,38 +285,9 @@ def check_workflow():
     for name, test in TESTS.items():
         command = "%s && %s" % (test["build"], test["run"])
         if command not in text:
-            problems.append("%s does not run the %s test with the command used here:\n  %s"
+            problems.append("%s does not contain the command of the %s test used here:\n  %s"
                             % (WORKFLOW, name, command))
     return problems
-
-
-def selftest():
-    ok = True
-
-    state, detail = evaluate(NOOP)
-    print("%-7s %s %s" % (state.upper(), NOOP[0], detail))
-    if state != "green":
-        print("selftest FAILED: a change without effect must leave the test green")
-        ok = False
-    elif report([NOOP]) == 0:
-        print("selftest FAILED: a mutation that stays green must make this script fail")
-        ok = False
-
-    state, detail = evaluate(MUTATIONS[0])
-    print("%-7s %s %s" % (state.upper(), MUTATIONS[0][0], detail))
-    if state != "red":
-        print("selftest FAILED: a removed rule must turn the test red")
-        ok = False
-
-    gone = ("selftest_text_not_found", "dtc_state", STATE, "this text is not in the source", "")
-    state, detail = evaluate(gone)
-    print("%-7s %s %s" % (state.upper(), gone[0], detail))
-    if state != "broken":
-        print("selftest FAILED: a mutation that does not apply must be reported")
-        ok = False
-
-    print("selftest %s" % ("OK" if ok else "FAILED"))
-    return 0 if ok else 1
 
 
 def report(mutations):
@@ -239,14 +296,41 @@ def report(mutations):
     for mutation in mutations:
         state, detail = evaluate(mutation)
         if state == "red":
-            print("RED     %-30s %s" % (mutation[0], detail))
+            print("RED     %-36s %s" % (mutation[0], detail))
         elif state == "green":
-            print("GREEN   %-30s the test does not notice this change" % mutation[0])
+            print("GREEN   %-36s the test does not notice this change" % mutation[0])
+            problems += 1
+        elif state == "aborted":
+            print("ABORTED %-36s %s" % (mutation[0], detail))
             problems += 1
         else:
-            print("BROKEN  %-30s %s" % (mutation[0], detail))
+            print("BROKEN  %-36s %s" % (mutation[0], detail))
             problems += 1
     return problems
+
+
+def selftest():
+    """Runs this script as the CI does and looks at its exit status."""
+    cases = [
+        (["--selftest-mutation", "noop"], 1, "GREEN   selftest_without_effect",
+         "a change without effect must make the run fail"),
+        (["--selftest-mutation", "missing"], 1, "BROKEN  selftest_text_not_found",
+         "a mutation that does not apply must make the run fail"),
+        (["--only", MUTATIONS[0][0]], 0, "RED     " + MUTATIONS[0][0],
+         "a removed rule must be reported red and the run must pass"),
+    ]
+    ok = True
+    for arguments, status, line, rule in cases:
+        run = subprocess.run([sys.executable, str(pathlib.Path(__file__).resolve())] + arguments,
+                             capture_output=True, encoding="utf-8", errors="replace")
+        good = run.returncode == status and line in run.stdout
+        print("%s exit %d, expected %d and the line '%s': %s"
+              % ("PASS" if good else "FAIL", run.returncode, status, line.strip(), rule))
+        if not good:
+            print(run.stdout + run.stderr)
+            ok = False
+    print("selftest %s" % ("OK" if ok else "FAILED"))
+    return 0 if ok else 1
 
 
 def main():
@@ -254,6 +338,7 @@ def main():
     parser.add_argument("--only", metavar="NAME", help="run a single mutation")
     parser.add_argument("--list", action="store_true", help="list the mutations")
     parser.add_argument("--selftest", action="store_true", help="counter-check of this script")
+    parser.add_argument("--selftest-mutation", choices=sorted(SELFTEST_MUTATIONS), help=argparse.SUPPRESS)
     arguments = parser.parse_args()
 
     if arguments.list:
@@ -281,7 +366,9 @@ def main():
     print("unchanged sources: green")
 
     mutations = MUTATIONS
-    if arguments.only:
+    if arguments.selftest_mutation:
+        mutations = [SELFTEST_MUTATIONS[arguments.selftest_mutation]]
+    elif arguments.only:
         mutations = [mutation for mutation in MUTATIONS if mutation[0] == arguments.only]
         if not mutations:
             print("no mutation named %s" % arguments.only)

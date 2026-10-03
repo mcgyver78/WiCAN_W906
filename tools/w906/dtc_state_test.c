@@ -12,6 +12,8 @@
  */
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
+#include <sys/wait.h>
 #include "dtc_state.h"
 
 #define READ    false
@@ -160,6 +162,10 @@ static void test_sequence_numbers(void)
 	dtc_state_error(&s, "ecu_offline", 10);
 	dtc_state_try_begin(&s, READ, DTC_SRC_HTTP, 0, 20, &seq);
 	check(seq == 8, "a failed request has used its number too");
+	dtc_state_pickup(&s, 25);
+	dtc_state_error(&s, "ecu_offline", 30);
+	dtc_state_try_begin(&s, READ, DTC_SRC_HTTP, 0, 40, &seq);
+	check(seq == 9, "the request after two failed ones gets a new number again");
 
 	dtc_state_init(&s, 7);
 	check(dtc_state_try_begin(&s, READ, DTC_SRC_MQTT, 0, 0, NULL) == DTC_ACCEPTED && s.seq == 7,
@@ -168,7 +174,7 @@ static void test_sequence_numbers(void)
 
 static void test_json_of_a_run(void)
 {
-	dtc_state_t s;
+	dtc_state_t s, before;
 	uint32_t seq = 0;
 
 	dtc_state_init(&s, 41);
@@ -208,10 +214,20 @@ static void test_json_of_a_run(void)
 	dtc_state_error(&s, "engine_running", 51000);
 	check(json_is_fixture(&s, true, 54999, "dtc_state_error.json"), "JSON error, earlier result still referenced");
 
+	before = s;
+	check(dtc_state_try_begin(&s, CLEAR, DTC_SRC_HTTP, 42, 55000, NULL) == DTC_REJECT_READ_REQUIRED &&
+	      same_state(&s, &before) && same_text(s.reason, "engine_running"),
+	      "a refused request keeps the reason of the last error");
+
 	dtc_state_try_begin(&s, READ, DTC_SRC_HTTP, 0, 60000, &seq);
 	check(json_is(&s, true, 60000, "{\"supported\":true,\"state\":\"queued\",\"action\":\"read\",\"src\":\"http\","
 	      "\"seq\":43,\"ecu\":0,\"total\":0,\"name\":\"\",\"reason\":\"\",\"age_s\":0,\"count\":3,\"result_seq\":41}"),
 	      "a new request clears the reason of the last error");
+	dtc_state_pickup(&s, 60100);
+	dtc_state_progress(&s, 9, 18, "N80 Mantelrohrmodul (MRM)");
+	dtc_state_done(&s, 0, 95000);
+	dtc_state_try_begin(&s, READ, DTC_SRC_MQTT, 0, 96000, &seq);
+	check(s.step == 0 && s.total == 0, "a read after a finished scan starts with the progress reset, like a clear");
 }
 
 static void test_json_limits(void)
@@ -225,6 +241,9 @@ static void test_json_limits(void)
 	dtc_state_done(&s, 65535, 5000);
 	check(json_is_fixture(&s, true, 5000 + 2147483647999ull, "dtc_state_limits.json"),
 	      "JSON with every number at its limit");
+	check(json_is(&s, true, 5000 + 4294967295999ull, "{\"supported\":true,\"state\":\"done\",\"action\":\"read\",\"src\":\"http\","
+	      "\"seq\":2147483647,\"ecu\":255,\"total\":255,\"name\":\"\",\"reason\":\"\",\"age_s\":4294967295,\"count\":65535,\"result_seq\":2147483647}"),
+	      "JSON with an age of 2^32-1 s");
 }
 
 static void test_busy(void)
@@ -711,7 +730,7 @@ static void model_escape(char *out, size_t size, const char *text)
 static int model_json(const model_t *m, bool supported, uint64_t now, char *out, size_t size)
 {
 	static const char *const states[] = {"queued", "running", "done", "error"};
-	char unit[700], why[700], text[2048];
+	char unit[1400], why[1400], text[4096];
 	bool ended = m->any && (m->status == M_OK || m->status == M_FAILED);
 	int length;
 
@@ -751,12 +770,13 @@ static uint32_t walk_random(uint32_t below)
 }
 
 #define WALK_STEPS      4000
-#define WALK_BUFFER     1200
+#define WALK_BUFFER     1600
 
 // Returns the step of the first difference, -1 if module and model agree all the way
 static int walk(uint32_t walk_seed)
 {
-	static char long_unit[301];
+	static char long_unit[301], longer_unit[1101], all_bytes[256];
+	unsigned byte;
 	static const uint32_t seeds[] = {0, 1, 41, 0xFFFDu, 0xFFFEu, 0xFFFFu, 0x7FFFFFFDu, 0x7FFFFFFEu, 0x7FFFFFFFu,
 	                                 0x80000000u, 0xFFFFFFFFu};
 	static const uint64_t starts[] = {0, 1000, 4294967296ull - 30000, 4294967296ull + 5, 1099511627776ull};
@@ -764,8 +784,8 @@ static int walk(uint32_t walk_seed)
 	static const uint64_t limit_steps[] = {19999, 20000, 20001, 35000, 599999, 600000, 600001};
 	static const uint64_t huge_steps[] = {3600000, 4294967296ull - 1, 4294967296ull + 5000};
 	static const unsigned counts[] = {0, 0, 1, 2, 3, 255, 256, 300, 65535};
-	const char *units[] = {NULL, "", "N30/4 ESP", "N2/14 Rückhaltesystem (SRS)", "a\"b\\c", "x\001y\037z\177", long_unit};
-	const char *reasons[] = {"ecu_offline", "engine_running", "internal", "a\"b", NULL};
+	const char *units[] = {NULL, "", "N30/4 ESP", "N2/14 Rückhaltesystem (SRS)", "a\"b\\c", "x\001y\037z\177", long_unit, all_bytes, longer_unit};
+	const char *reasons[] = {"ecu_offline", "engine_running", "internal", "a\"b", NULL, "", long_unit, all_bytes, longer_unit};
 	dtc_state_t s;
 	model_t m;
 	uint64_t now;
@@ -773,6 +793,11 @@ static int walk(uint32_t walk_seed)
 	int step;
 
 	memset(long_unit, 'A', sizeof(long_unit) - 1);
+	for(byte = 1; byte <= 255; byte++) all_bytes[byte - 1] = (char)byte;
+	// 1100 bytes, every byte value once more at its end
+	memset(longer_unit, 'B', sizeof(longer_unit) - 1);
+	memcpy(longer_unit + sizeof(longer_unit) - 1 - 255, all_bytes, 255);
+	memset(&s, 0, sizeof(s));
 	walk_random_state = walk_seed;
 	seed = seeds[walk_random(sizeof(seeds) / sizeof(seeds[0]))];
 	now = starts[walk_random(sizeof(starts) / sizeof(starts[0]))];
@@ -792,7 +817,15 @@ static int walk(uint32_t walk_seed)
 		size_t i;
 
 		// Mostly small steps, sometimes around the two limits, sometimes very long, sometimes backwards
-		if(pace < 6) now = now >= 5 ? now - 5 : 0;
+		if(pace < 2) now = now >= 5 ? now - 5 : 0;
+		else if(pace < 3) now = 0;
+		else if(pace < 4) now = now >= 700000 ? now - 700000 : 0;
+		else if(pace < 6)
+		{
+			// the time the last request was accepted or ended, or 1 ms before it
+			now = walk_random(2) != 0 ? m.accepted_at : m.ended_at;
+			if(walk_random(2) != 0 && now > 0) now--;
+		}
 		else if(pace < 70) now += small_steps[walk_random(sizeof(small_steps) / sizeof(small_steps[0]))];
 		else if(pace < 94) now += limit_steps[walk_random(sizeof(limit_steps) / sizeof(limit_steps[0]))];
 		else now += huge_steps[walk_random(sizeof(huge_steps) / sizeof(huge_steps[0]))];
@@ -804,9 +837,13 @@ static int walk(uint32_t walk_seed)
 			uint32_t got_number = 0xDEADBEEFu, expected_number = 0;
 			uint32_t seq;
 			const char *got_reason, *expected_reason;
+			bool with_number;
+			dtc_accept_t result;
 
-			switch(walk_random(8))
+			switch(walk_random(10))
 			{
+				case 5:  seq = m.number ^ (1u << walk_random(32)); break;
+				case 6:  seq = m.upcoming + walk_random(2); break;
 				case 0:  seq = m.number + 1; break;
 				case 1:  seq = m.number ^ 0x40000000u; break;
 				case 2:  seq = m.number | 0x80000000u; break;
@@ -814,9 +851,12 @@ static int walk(uint32_t walk_seed)
 				case 4:  seq = m.result_number; break;
 				default: seq = m.number; break;
 			}
-			got_reason = dtc_accept_reason(dtc_state_try_begin(&s, clear, http ? DTC_SRC_HTTP : DTC_SRC_MQTT, seq, now, &got_number));
+			with_number = walk_random(4) != 0;
+			result = dtc_state_try_begin(&s, clear, http ? DTC_SRC_HTTP : DTC_SRC_MQTT, seq, now, with_number ? &got_number : NULL);
+			got_reason = dtc_accept_reason(result);
 			expected_reason = model_begin(&m, clear, http, seq, now, &expected_number);
-			same = same_text(got_reason, expected_reason) && got_number == expected_number;
+			same = same_text(got_reason, expected_reason) && (!with_number || got_number == expected_number) &&
+			       (result == DTC_ACCEPTED) == (expected_reason == NULL);
 			what = "try_begin";
 		}
 		else if(operation < 60)
@@ -835,7 +875,7 @@ static int walk(uint32_t walk_seed)
 		}
 		else if(operation < 84)
 		{
-			unsigned count = counts[walk_random(sizeof(counts) / sizeof(counts[0]))];
+			unsigned count = walk_random(3) == 0 ? 1u << walk_random(16) : counts[walk_random(sizeof(counts) / sizeof(counts[0]))];
 
 			dtc_state_done(&s, (uint16_t)count, now);
 			model_done(&m, count, now);
@@ -878,6 +918,24 @@ static int walk(uint32_t walk_seed)
 		if(size > 0) same = same && memchr(got, '\0', size) != NULL && strcmp(got, expected) == 0;
 		for(i = size; i < sizeof(got); i++) same = same && got[i] == 0x5A;
 
+		// Now and then into a buffer of 64 KiB and more: the complete text, whatever the size
+		if(same && walk_random(16) == 0)
+		{
+			static char big[70000];
+			static const size_t big_sizes[] = {65535, 65536, 65537, 69000};
+			size_t big_size = big_sizes[walk_random(sizeof(big_sizes) / sizeof(big_sizes[0]))];
+
+			expected_length = model_json(&m, supported, now, expected, sizeof(expected));
+			memset(big, 0x5A, sizeof(expected));
+			memset(big + big_size, 0x5A, 8);
+			got_length = dtc_state_json(&s, supported, now, big, big_size);
+			same = got_length == expected_length && memchr(big, '\0', sizeof(expected)) != NULL && strcmp(big, expected) == 0;
+			for(i = big_size; i < big_size + 8; i++) same = same && big[i] == 0x5A;
+			memcpy(got, big, sizeof(got));
+			size = big_size;
+			what = "json into a big buffer";
+		}
+
 		if(!same)
 		{
 			got[sizeof(got) - 1] = '\0';
@@ -894,17 +952,34 @@ static int walk(uint32_t walk_seed)
 static void test_walk_against_the_model(void)
 {
 	uint32_t walk_seed;
-	int different = 0;
+	int different = 0, status = 0;
+	pid_t child;
 
-	for(walk_seed = 1; walk_seed <= 60; walk_seed++)
+	// In a child process: a crash of the module is then a failed check here, not the end of the test
+	fflush(stdout);
+	alarm(90);
+	child = fork();
+	if(child == 0)
 	{
-		if(walk(walk_seed) >= 0) different++;
+		// A module that never returns ends the child here; the walk itself takes a few seconds
+		alarm(30);
+		for(walk_seed = 1; walk_seed <= 60; walk_seed++)
+		{
+			if(walk(walk_seed) >= 0) different++;
+		}
+		fflush(stdout);
+		_exit(different == 0 ? 0 : 10);
 	}
-	check(different == 0, "60 random walks of 4000 calls each: module and model agree after every call");
+	if(child < 0 || waitpid(child, &status, 0) != child) status = -1;
+	check(status != -1 && WIFEXITED(status) && (WEXITSTATUS(status) == 0 || WEXITSTATUS(status) == 10),
+	      "60 random walks of 4000 calls each: no crash");
+	check(status != -1 && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+	      "60 random walks of 4000 calls each: module and model agree after every call");
 }
 
 int main(void)
 {
+	test_walk_against_the_model();
 	test_constants();
 	test_init();
 	test_sequence_numbers();
@@ -917,7 +992,6 @@ int main(void)
 	test_times_above_32_bit();
 	test_json_buffer_and_escaping();
 	test_reasons();
-	test_walk_against_the_model();
 
 	printf("%s\n", failures ? "FAILED" : "OK");
 	return failures ? 1 : 0;

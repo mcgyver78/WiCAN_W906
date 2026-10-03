@@ -86,6 +86,7 @@ tools/wican-log-viewer/*.exe
 tools/w906/dtc_decode_test
 tools/w906/dtc_state_test
 tools/w906/dtc_api_test
+tools/w906/dtc_state_cli
 display/test/test_*
 !display/test/test_*.c
 display/test/*.log

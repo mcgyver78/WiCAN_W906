@@ -1,6 +1,6 @@
 kind: list
 ring: none
-title: Zuletzt gelöscht
+title: Vor dem Löschen
 note:
 row: > head | 3 Fehler | 3 Steuergeräte · 35 s | enabled
 row: - line | Motorelektronik | 7E0 · 2 Fehler | enabled

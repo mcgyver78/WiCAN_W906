@@ -6,7 +6,9 @@
 # The CI runs "make" and "python redproof.py" in this directory.
 
 CC      ?= cc
-CFLAGS  ?= -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=all
+# -Wimplicit-fallthrough is part of -Wextra for gcc (the CI) but not for clang (the Mac): named here so that
+# a mutation that removes a break fails to build on both, not only in the CI
+CFLAGS  ?= -Wall -Wextra -Wimplicit-fallthrough -Werror -fsanitize=address,undefined -fno-sanitize-recover=all
 # EXTRA=-funsigned-char builds the tests as the ESP32 does (char is unsigned there, signed on PC and Mac)
 EXTRA   ?=
 CORE    := ../components/core

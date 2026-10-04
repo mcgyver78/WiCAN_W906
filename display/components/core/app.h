@@ -144,8 +144,6 @@ typedef struct
 	bool has_builtin;
 	const char *builtin_text;       // its text, the one of app_boot_t
 	size_t builtin_length;
-	layout_t stored;                // what the user stored, to return to from a preview
-	bool has_stored;
 	layout_t checked;               // room for a layout the browser sent, until it is taken (app_web.h): a
 	                                // layout_t is too large for a stack
 	char layout_text[LAYOUT_TEXT_MAX + 1];  // the text `layout` was read from; layout_to_json() for a
@@ -164,6 +162,7 @@ typedef struct
 	const char *version, *git;
 	bool safe_mode;
 	bool update_pending;
+	bool update_given_up;           // the restart of an update nobody confirmed in time was asked for
 	uint64_t update_until_ms;
 	bool previous_firmware;
 	bool rolled_back;
@@ -182,7 +181,8 @@ typedef struct
 	bool has_temp;                  // the latest reading succeeded
 	int brightness_preview;         // while the brightness screen is shown: the value being set, else -1
 	uint64_t last_input_ms;
-	bool woke;                      // the press that is going on began on a dark screen: it only woke it
+	bool woke;                      // the press that is going on began on a dark screen: what the knob reports
+	                                // of it is dropped
 	uint64_t clock_ms;              // the latest time seen: it follows the calls but never runs backwards
 	uint32_t events;
 	json_token_t *work;
@@ -198,8 +198,8 @@ typedef struct
 } app_t;
 
 /*
- * The start. app_t is large (262232 bytes on a 64 bit host: the three layouts and the room for a fourth
- * 140480, the lines of the three fault memory lists 62376, the poll 39472, the layout text 16385; 262136
+ * The start. app_t is large (227088 bytes on a 64 bit host: the two layouts and the room for a third
+ * 105360, the lines of the three fault memory lists 62376, the poll 39472, the layout text 16385; 226992
  * bytes calculated for a 32 bit target that aligns 64 bit numbers to 8 bytes, not measured on the device):
  * static storage or the external RAM, never a stack.
  * - settings: settings_defaults(), then the stored text if settings_from_json() takes it
@@ -208,8 +208,9 @@ typedef struct
  * - the built-in layout is parsed (has_builtin false if that fails or there is none: then the views are
  *   made from the catalogue, layout_from_catalog(), whenever the built-in ones would be used)
  * - the layout in use: the stored text if there is one, safe_mode is false and layout_parse() takes it
- *   (source STORED, has_stored); else the choice below. In safe mode the stored text is not even read: it
- *   may be what crashed the display.
+ *   (source STORED); else the choice below. In safe mode the stored text is not even read: it may be what
+ *   crashed the display. The app keeps no second copy of what is stored: a preview ends with a restart, a
+ *   save or a reset (app_web.h), and the page in the browser keeps the text it loaded if it wants to go back.
  * - update_pending: the question "Update in Ordnung?" is shown; without an answer for
  *   APP_UPDATE_CONFIRM_MS the display restarts (APP_EVENT_REBOOT), and the boot loader takes the update back
  * - the lines of the stored old list and the info lines are there from the start; no event is raised
@@ -226,14 +227,17 @@ void app_init(app_t *app, const app_boot_t *boot, uint64_t now_ms);
 void app_choose_layout(app_t *app);
 
 /*
- * A dark screen. When the backlight is off by the standby rule (app_backlight() gives 0 although the heat
- * allows light), the first input - a press, a detent, a tap, a swipe - only wakes the screen: it restarts
- * the idle time and is not passed on to nav. Nobody acts on a screen he cannot see. A question of the
- * browser, an upload and an unconfirmed update count as something to show: the screen lights up for them.
- * A press is the reading with which the switch begins to count as pressed (knob.h); what the knob reports
- * of a press that woke the screen, short or long, is dropped. The idle time restarts with every press,
- * detent, tap and swipe, on a dark screen and on a lit one.
- * While the heat has switched the backlight off, nothing can wake it, and every input is passed on.
+ * A dark screen. Nobody acts on a screen he cannot see: an input - a press, a detent, a tap, a swipe - that
+ * is made while the backlight is off (app_backlight() gives 0) is not passed on to nav.
+ * - Off by the standby rule: that input wakes the screen, by restarting the idle time. A question of the
+ *   browser, an upload and an unconfirmed update count as something to show: the screen lights up for them.
+ * - Off by the heat (the level of guard_heat() is GUARD_HEAT_OFF): nothing wakes it, and no input is
+ *   passed on for as long as it lasts. A question of the browser cannot be answered then and runs out, an
+ *   update cannot be confirmed. When the heat switches the light off while the clear dialog shows, the
+ *   dialog is left (app_temperature()): nobody may confirm a clear he cannot see.
+ * A press is made with the reading with which the switch begins to count as pressed (knob.h); what the
+ * knob reports of a press that began on a dark screen, short or long, is dropped. The idle time restarts
+ * with every press, detent, tap and swipe, on a dark screen and on a lit one.
  */
 
 // One reading of the switch of the knob (board, every 20 ms). Feeds knob_sample() and hold_sample() (with
@@ -255,11 +259,15 @@ void app_tap(app_t *app, int row, uint64_t now_ms);
 // A swipe: dx is negative (finger went left: next page), positive (previous page) or 0; dy is negative
 // (finger went up: the focus of a list moves APP_SWIPE_ROWS rows down), positive (up) or 0. Vertical (dx is
 // 0, dy is not) on a screen with rows: nav_turn(). Every other swipe: nav_swipe() with the direction of dx,
-// which nav ignores unless a value page shows. In the clear dialog also hold_activity().
+// which nav ignores unless a value page shows.
+// In the two dialogs (NAV_DTC_CONFIRM, NAV_CONFIRM) every swipe is ignored, the vertical one as well: it
+// goes to nav_swipe(), so it is an input for the idle times and moves no focus - the knob alone does that
+// there. In the clear dialog it is also hold_activity(), as every swipe there.
 void app_swipe(app_t *app, int dx, int dy, uint64_t now_ms);
 
-// About five times a second: nav_tick(), the time of an unconfirmed update (APP_EVENT_REBOOT with every tick
-// from APP_UPDATE_CONFIRM_MS after the start on, until it is confirmed), the info lines, and the end of a
+// About five times a second: nav_tick(), the time of an unconfirmed update (APP_EVENT_REBOOT once, with the
+// first tick from APP_UPDATE_CONFIRM_MS after the start on at which it is not confirmed; the platform
+// restarts when it has carried out what waits), the info lines, and the end of a
 // firmware upload that has brought nothing for APP_UPLOAD_IDLE_MS (as app_web_upload_end() with ok false:
 // `uploading` becomes false - an upload that stalls must not lock the display, which takes no input while it
 // runs). What the browser asked for (wifi_asked, ask_detail) is dropped when no question waits any more.
@@ -287,7 +295,9 @@ void app_tick(app_t *app, uint64_t now_ms);
  */
 
 // A reading of the chip temperature (guard_heat()). temp_c is the last reading that succeeded, has_temp
-// tells whether the latest did.
+// tells whether the latest did. While the level is GUARD_HEAT_OFF the clear dialog does not show: if it
+// does, it is left as by a hold that was cancelled - hold_close(), and nav back to the list with the focus
+// on Fehler löschen (nav_hold() with HOLD_CANCELLED, at the time of the app).
 void app_temperature(app_t *app, int celsius, bool valid);
 
 // What the platform knows about itself, about once a second

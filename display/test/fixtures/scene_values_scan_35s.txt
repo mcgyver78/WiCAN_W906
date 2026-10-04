@@ -1,0 +1,10 @@
+kind: values
+ring: progress 277
+title: Fünf
+note: Live-Werte angehalten (Fehlerspeicher-Scan)
+item: Abgas vor Turbo | 412 | °C | dim | number | -1
+item: Abgas vor DPF | 289 | °C | dim | number | -1
+item: Getriebeöl | n. v. |  | dim | number | -1
+item: Ruß | 11,3 | g | dim | bar | 282
+item: Glow Plug | 0 |  | dim | state | -1
+dots: 6/6

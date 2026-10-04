@@ -1,6 +1,6 @@
 kind: list
 ring: none
-title: Zuletzt gelöscht
+title: Vor dem Löschen
 note:
 row: - line | Rückhaltesystem | 6BC · 1 Fehler | enabled
 row: - sub | 9100 | Status E0 | enabled

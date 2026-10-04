@@ -385,6 +385,13 @@ static void seen(const char *json, uint64_t age_ms)
 	if(values_apply(&values, json, strlen(json), -1, NOW - age_ms, work, COUNT(work)) != VALUES_RENEWED) setup_failures++;
 }
 
+// The same with the pass counter of the state before it, as a firmware with the API has one. An answer renews
+// only if the counter moved.
+static void seen_counted(const char *json, uint64_t age_ms, uint32_t pass)
+{
+	if(values_apply(&values, json, strlen(json), pass, NOW - age_ms, work, COUNT(work)) != VALUES_RENEWED) setup_failures++;
+}
+
 static void expect_view(conn_view_t view)
 {
 	if(conn_view(&conn, NOW) != view) setup_failures++;
@@ -602,7 +609,11 @@ static void stage_dialog(int row, uint64_t held_ms)
 	nav.screen = NAV_DTC_CONFIRM;
 	nav.row = row;
 	if(!hold_open(&hold, NOW - 5000)) setup_failures++;
-	if(hold_sample(&hold, false, true, row == 1, NOW - 4000) != HOLD_WAITING) setup_failures++;
+	// hold.h observes nothing between readings more than 200 ms apart: three of them up to the press
+	for(uint64_t before = 600; before > 0; before -= 200)
+	{
+		if(hold_sample(&hold, false, true, row == 1, NOW - held_ms - before) != HOLD_WAITING) setup_failures++;
+	}
 	if(held_ms > 0 && hold_sample(&hold, true, true, true, NOW - held_ms) != HOLD_PROGRESS) setup_failures++;
 }
 
@@ -788,6 +799,29 @@ static void test_values_screens(void)
 	nav.page = 2;
 	screen("values_scan_queued", "a queued scan dims the values as well, the ring is an arc of nothing");
 	stage();
+	values_init(&values);
+	seen("{\"ENGINE_RPM\":812,\"BOOST_PRESSURE\":1013}", 500);
+	seen("{\"@BATT_V\":14.1}", 2999);
+	seen("{\"COOLANT_TMP\":88.4}", 3000);
+	seen("{\"ACCEL_PEDAL\":12.5}", 9999);
+	seen("{\"DPF_REGEN_STATUS\":1}", 10000);
+	view_scan();
+	screen("values_scan_ages", "the values of scene_values_ages.txt during a scan, 500 to 10000 ms old: each with its text, its unit and its place in the range, dimmed - also the one that is a dash outside of a scan");
+	stage();
+	values_init(&values);
+	seen(base_values, 35000);
+	view_scan();
+	nav.page = 5;
+	screen("values_scan_35s", "every value seen 35 s ago, as long as a scan took on the vehicle: during the scan all of them are still shown, dimmed; the value the profile does not have is n. v.");
+	scan(WICAN_DTC_DONE, 41, false, 18, 18, "");
+	view_live();
+	screen("values_scan_over", "the same page when the scan is over and no new values have arrived yet: the age counts again, the values are dashes and the ring is yellow");
+	stage();
+	values_init(&values);
+	seen("{\"ENGINE_RPM\":812}", 35000);
+	view_scan();
+	screen("values_scan_never", "during a scan a value the display never had stays a dash, next to one it has held for 35 s");
+	stage();
 	view_no_api();
 	nav.page = 3;
 	screen("values_no_api", "a firmware without the API: the values in their tones, the ring grey, the note tells of it");
@@ -856,6 +890,16 @@ static void test_items(void)
 		{"TRANS_TEMP", SCENE_UNAVAILABLE, "FUEL_L", "43", RING_YELLOW, "one the profile does not provide and an old one"},
 		{"COOLANT_TMP", SCENE_DASH, "FUEL_L", "43", RING_YELLOW, "a dash and an old one"},
 		{"COOLANT_TMP", SCENE_DASH, "COOLANT_TMP", SCENE_DASH, RING_YELLOW, "both dashes"},
+	};
+	// Ages at the limits of fresh and old, at the 35 s a scan took on the vehicle, and far beyond
+	static const struct
+	{
+		uint64_t age_ms;
+		const char *rule;
+	} held[] = {
+		{0, "it is fresh"}, {2999, "it is still fresh"}, {3000, "it is old"}, {9999, "it is still old"}, {10000, "outside of a scan it is gone"},
+		{10001, "it is gone by 1 ms"}, {34999, "1 ms before the scan is as long as it was measured"}, {35000, "the scan is as long as it was measured"},
+		{35001, "1 ms more"}, {60000, "a minute"}, {600000, "ten minutes"}, {1000000, "it was seen at time 0"},
 	};
 	layout_item_t *item, *second;
 
@@ -1088,6 +1132,134 @@ static void test_items(void)
 	seen("{\"X\":1}", 500);
 	build();
 	check(scene->items[0].tone == SCENE_TONE_DIM && strcmp(scene->items[0].text, "1") == 0, "during a scan a value within its limits is dimmed");
+
+	// During a scan the adapter delivers no values: the age of a value does not count
+	for(int i = 0; i < COUNT(held); i++)
+	{
+		stage();
+		item = probe();
+		SET(item->key, "COOLANT_TMP");
+		seen("{\"COOLANT_TMP\":88.4}", held[i].age_ms);
+		view_scan();
+		build();
+		snprintf(what, sizeof(what), "during a scan a value seen %lu ms ago is shown with its text and its unit, dimmed: %s", (unsigned long)held[i].age_ms, held[i].rule);
+		check(scene->item_count == 1 && item_is(0, "Coolant Tmp", "88", "°C", SCENE_TONE_DIM, LAYOUT_WIDGET_NUMBER, -1) && ring_is(RING_PROGRESS, 277), what);
+		view_no_api();
+		build();
+		snprintf(what, sizeof(what), "with a firmware without the API a value seen %lu ms ago is %s: only a scan holds the values", (unsigned long)held[i].age_ms,
+		         held[i].age_ms < 3000 ? "fresh" : held[i].age_ms < 10000 ? "old" : "a dash");
+		check(item_is(0, "Coolant Tmp", held[i].age_ms < 10000 ? "88" : SCENE_DASH, held[i].age_ms < 10000 ? "°C" : "", held[i].age_ms < 3000 ? SCENE_TONE_NORMAL : SCENE_TONE_DIM,
+		              LAYOUT_WIDGET_NUMBER, -1) && ring_is(RING_GREY, 0), what);
+	}
+	stage();
+	item = probe();
+	SET(item->key, "COOLANT_TMP");
+	view_scan();
+	input.now_ms = NOW + 7200000;
+	build();
+	check(item_is(0, "Coolant Tmp", "88", "°C", SCENE_TONE_DIM, LAYOUT_WIDGET_NUMBER, -1), "during a scan a value seen two hours ago is shown, dimmed");
+	input.now_ms = UINT64_MAX;
+	build();
+	check(item_is(0, "Coolant Tmp", "88", "°C", SCENE_TONE_DIM, LAYOUT_WIDGET_NUMBER, -1), "during a scan a value is shown at the end of all time: whatever its age");
+	input.now_ms = NOW - 60000;
+	build();
+	check(item_is(0, "Coolant Tmp", "88", "°C", SCENE_TONE_DIM, LAYOUT_WIDGET_NUMBER, -1), "during a scan a value seen after the time of the scene, the clock of another task, is shown dimmed");
+	stage();
+	item = probe();
+	SET(item->key, "COOLANT_TMP");
+	seen("{\"COOLANT_TMP\":88.4}", 35000);
+	scan(WICAN_DTC_QUEUED, 41, false, 0, 0, "");
+	answer(CONN_VIEW_SCAN);
+	build();
+	check(item_is(0, "Coolant Tmp", "88", "°C", SCENE_TONE_DIM, LAYOUT_WIDGET_NUMBER, -1) && ring_is(RING_PROGRESS, 0), "a scan that is queued holds the values as well: one seen 35 s ago is shown");
+
+	// Nothing but the view decides: not who asked for the scan, not a round that failed during it, not how the values came
+	stage();
+	item = probe();
+	SET(item->key, "COOLANT_TMP");
+	seen("{\"COOLANT_TMP\":88.4}", 35000);
+	scan(WICAN_DTC_RUNNING, 7, true, 17, 18, "N73 EZS");
+	adapter.dtc.from_http = false;
+	answer(CONN_VIEW_SCAN);
+	build();
+	check(item_is(0, "Coolant Tmp", "88", "°C", SCENE_TONE_DIM, LAYOUT_WIDGET_NUMBER, -1) && ring_is(RING_PROGRESS, 944),
+	      "a scan nobody asked for over HTTP, a clear at its last control unit, holds the values as well: one seen 35 s ago is shown");
+	if(conn_next(&conn, NOW - 3000) != CONN_ASK_STATE) setup_failures++;
+	conn_got_state(&conn, CONN_GOT_FAILED, NULL, NOW - 2900);
+	expect_view(CONN_VIEW_SCAN);
+	build();
+	check(conn.failed_rounds == 1 && item_is(0, "Coolant Tmp", "88", "°C", SCENE_TONE_DIM, LAYOUT_WIDGET_NUMBER, -1),
+	      "a round without an answer during a scan leaves the view and the values as they are: the value is still shown");
+	stage();
+	item = probe();
+	SET(item->key, "COOLANT_TMP");
+	values_init(&values);
+	seen_counted("{\"COOLANT_TMP\":88.4,\"A_NAME_OF_33_BYTES_FINDS_NO_ROOM_X\":1}", 35000, 1234);
+	view_scan();
+	build();
+	check(values.has_pass && values.dropped == 1 && item_is(0, "Coolant Tmp", "88", "°C", SCENE_TONE_DIM, LAYOUT_WIDGET_NUMBER, -1),
+	      "a value of an answer with a pass counter, next to one that found no room, is held during a scan like any other");
+
+	// What the display never had is not held
+	stage();
+	item = probe();
+	SET(item->key, "COOLANT_TMP");
+	second = probe_more("TRANS_TEMP");
+	values_init(&values);
+	view_scan();
+	build();
+	check(item_is(0, "Coolant Tmp", SCENE_DASH, "", SCENE_TONE_DIM, LAYOUT_WIDGET_NUMBER, -1) && item_is(1, "Trans Temp", SCENE_UNAVAILABLE, "", SCENE_TONE_DIM, LAYOUT_WIDGET_NUMBER, -1),
+	      "during a scan a value the display never had is a dash if the profile has it and n. v. if not, as outside of a scan");
+	world.catalog = &unloaded;
+	build();
+	check(item_is(0, "Coolant Tmp", SCENE_DASH, "", SCENE_TONE_DIM, LAYOUT_WIDGET_NUMBER, -1) && item_is(1, "Trans Temp", SCENE_DASH, "", SCENE_TONE_DIM, LAYOUT_WIDGET_NUMBER, -1),
+	      "during a scan before the profile arrived both are dashes");
+
+	// Held is what the display has, whether the profile knows the key or not
+	stage();
+	item = probe();
+	SET(item->key, "TRANS_TEMP");
+	seen("{\"TRANS_TEMP\":70}", 35000);
+	view_scan();
+	build();
+	check(item_is(0, "Trans Temp", "70", "", SCENE_TONE_DIM, LAYOUT_WIDGET_NUMBER, -1), "during a scan a value seen 35 s ago is shown although the profile does not have its key");
+	scan(WICAN_DTC_DONE, 41, false, 18, 18, "");
+	view_live();
+	build();
+	check(item_is(0, "Trans Temp", SCENE_UNAVAILABLE, "", SCENE_TONE_DIM, LAYOUT_WIDGET_NUMBER, -1) && ring_is(RING_NONE, 0), "when that scan is over the value is n. v. again, as every gone value the profile does not have");
+
+	// A value that has no text is a dash during a scan too
+	stage();
+	item = probe();
+	SET(item->key, "COOLANT_TMP");
+	item->widget = LAYOUT_WIDGET_ARC;
+	limit(&item->min, 0);
+	limit(&item->max, 100);
+	second = probe_more("TRANS_TEMP");
+	seen("{\"COOLANT_TMP\":1e12,\"TRANS_TEMP\":1e12}", 35000);
+	view_scan();
+	build();
+	check(item_is(0, "Coolant Tmp", SCENE_DASH, "", SCENE_TONE_DIM, LAYOUT_WIDGET_ARC, -1), "during a scan a held value that cannot be printed is a dash without unit and range");
+	check(item_is(1, "Trans Temp", SCENE_DASH, "", SCENE_TONE_DIM, LAYOUT_WIDGET_NUMBER, -1), "during a scan a held value that cannot be printed is a dash, not n. v., also when the profile does not have its key");
+
+	// A held value is shown as every old value: text of its widget, unit, place in its range, and never in a tone of its own
+	stage();
+	item = probe();
+	SET(item->key, "COOLANT_TMP");
+	item->widget = LAYOUT_WIDGET_ARC;
+	limit(&item->min, 40);
+	limit(&item->max, 130);
+	limit(&item->crit_hi, 80);
+	second = probe_more("GLOW_PLUG");
+	second->widget = LAYOUT_WIDGET_STATE;
+	second->map_count = 1;
+	SET(second->map[0].raw, "on");
+	SET(second->map[0].text, "an");
+	seen("{\"COOLANT_TMP\":88.4,\"GLOW_PLUG\":\"on\"}", 35000);
+	view_scan();
+	build();
+	check(item_is(0, "Coolant Tmp", "88", "°C", SCENE_TONE_DIM, LAYOUT_WIDGET_ARC, 537), "during a scan an arc seen 35 s ago keeps its place in the range, and is dimmed although it is beyond its crit limit");
+	check(item_is(1, "Glow Plug", "an", "", SCENE_TONE_DIM, LAYOUT_WIDGET_STATE, -1), "during a scan a state seen 35 s ago shows the text of its map");
 
 	// What the ring takes for old: an old value and a dash, not what the profile does not provide
 	for(int i = 0; i < COUNT(gone); i++)
@@ -1781,7 +1953,7 @@ static void test_dtc(void)
 	world.cleared_lines = cleared_count;
 	input.cleared = cleared_lines;
 	build();
-	check(lines_are("Noch nicht gelesen", NULL, NULL, NULL) && row_is(2, false, SCENE_ROW_ACTION, "Zuletzt gelöscht", "", true),
+	check(lines_are("Noch nicht gelesen", NULL, NULL, NULL) && row_is(2, false, SCENE_ROW_ACTION, "Liste vor dem Löschen", "", true),
 	      "an idle flow next to an old list and the lines of an outcome: the line follows the phase");
 	stage_on(NAV_DTC, 0);
 	flow.seq = 41;
@@ -1826,17 +1998,17 @@ static void test_dtc(void)
 	stage_on(NAV_DTC, 0);
 	world.old_lines = 1;
 	build();
-	check(row_is(2, false, SCENE_ROW_ACTION, "Zuletzt gelöscht", "", true), "\"Zuletzt gelöscht\" with an old list of one line: enabled, also without the lines themselves");
+	check(row_is(2, false, SCENE_ROW_ACTION, "Liste vor dem Löschen", "", true), "\"Liste vor dem Löschen\" with an old list of one line: enabled, also without the lines themselves");
 	world.old_lines = 0;
 	input.old = codes_lines;
 	build();
-	check(row_is(2, false, SCENE_ROW_ACTION, "Zuletzt gelöscht", "", false), "\"Zuletzt gelöscht\" with an old list of no line: disabled");
+	check(row_is(2, false, SCENE_ROW_ACTION, "Liste vor dem Löschen", "", false), "\"Liste vor dem Löschen\" with an old list of no line: disabled");
 	world.old_lines = -1;
 	build();
-	check(row_is(2, false, SCENE_ROW_ACTION, "Zuletzt gelöscht", "", false), "\"Zuletzt gelöscht\" with an old list of -1 lines: disabled");
+	check(row_is(2, false, SCENE_ROW_ACTION, "Liste vor dem Löschen", "", false), "\"Liste vor dem Löschen\" with an old list of -1 lines: disabled");
 	world.old_lines = INT_MAX;
 	build();
-	check(row_is(2, false, SCENE_ROW_ACTION, "Zuletzt gelöscht", "", true) && scene->total == 4, "\"Zuletzt gelöscht\" with the largest number of lines: enabled, and the screen still has four rows");
+	check(row_is(2, false, SCENE_ROW_ACTION, "Liste vor dem Löschen", "", true) && scene->total == 4, "\"Liste vor dem Löschen\" with the largest number of lines: enabled, and the screen still has four rows");
 	world.list_lines = 17;
 	world.cleared_lines = 7;
 	input.list = mixed_lines;
@@ -2403,7 +2575,14 @@ static void test_windows(void)
 	nav.screen = NAV_DTC_OLD;
 	build();
 	check(scene->total == 13 && row_is(0, true, SCENE_ROW_HEAD, "5 Fehler", "18 Steuergeräte · 34 s", true), "the old list shows the lines before the last clear, whatever other lists there are");
-	check(strcmp(scene->title, "Zuletzt gelöscht") == 0 && scene->note[0] == '\0', "the old list has its title and no note, also while clearing is not allowed");
+	check(strcmp(scene->title, "Vor dem Löschen") == 0 && scene->note[0] == '\0', "the old list has its title and no note, also while clearing is not allowed");
+	// The list is kept when the adapter accepts a clear, which it can still refuse at its own engine check
+	check(strstr(scene->title, "elöscht") == NULL, "the title of the old list does not call it cleared: \"Vor dem Löschen\", not \"Zuletzt gelöscht\"");
+	nav.screen = NAV_DTC;
+	nav.row = 2;
+	build();
+	check(row_is(2, true, SCENE_ROW_ACTION, "Liste vor dem Löschen", "", true) && strstr(scene->rows[2].text, "elöscht") == NULL,
+	      "the row that leads to the old list does not call it cleared either: \"Liste vor dem Löschen\"");
 }
 
 /* The dialogs ------------------------------------------------------------------------------------------ */
@@ -2492,6 +2671,7 @@ static void test_clear_dialog(void)
 		check(scene->permille == holds[i].permille && scene->option == 1, what);
 	}
 	stage_dialog(1, 1500);
+	for(uint64_t before = 1400; before > 0; before -= 200) hold_sample(&hold, true, true, true, NOW - before);
 	if(hold_sample(&hold, true, true, true, NOW) != HOLD_PROGRESS) setup_failures++;
 	input.now_ms = NOW - 600;
 	build();
@@ -3141,7 +3321,7 @@ static void test_screens_and_views(void)
 	} screens[] = {
 		{NAV_MENU, SCENE_LIST, "Menü", false}, {NAV_DTC, SCENE_LIST, "Fehlerspeicher", false}, {NAV_DTC_BUSY, SCENE_PROGRESS, "Fehlerspeicher", true},
 		{NAV_DTC_LIST, SCENE_LIST, "Fehlerspeicher", false}, {NAV_DTC_CONFIRM, SCENE_CHOICE, "Fehler löschen?", true}, {NAV_DTC_CLEARED, SCENE_LIST, "Gelöscht", false},
-		{NAV_DTC_FAILED, SCENE_NOTICE, "Fehlerspeicher", false}, {NAV_DTC_OLD, SCENE_LIST, "Zuletzt gelöscht", false}, {NAV_BRIGHTNESS, SCENE_LEVEL, "Helligkeit", false},
+		{NAV_DTC_FAILED, SCENE_NOTICE, "Fehlerspeicher", false}, {NAV_DTC_OLD, SCENE_LIST, "Vor dem Löschen", false}, {NAV_BRIGHTNESS, SCENE_LEVEL, "Helligkeit", false},
 		{NAV_WEB, SCENE_LIST, "Web-Zugriff", false}, {NAV_INFO, SCENE_LIST, "Info", false}, {NAV_SETTINGS, SCENE_LIST, "Einstellungen", false},
 		{NAV_CONFIRM, SCENE_CHOICE, "", false},
 	};
@@ -3845,7 +4025,7 @@ typedef enum
 	IF_READ,        // can_read
 	IF_CLEAR,       // can_clear
 	IF_OUTCOME,     // the own request left something to look at
-	IF_OLD,         // a list from before the last clear is stored
+	IF_OLD,         // a list from before a clear is stored
 	IF_PREVIOUS,    // the other slot holds a firmware
 } when_t;
 
@@ -3858,7 +4038,7 @@ static const struct
 } CHOICES[] = {
 	{NAV_MENU, "Fehlerspeicher", ALWAYS}, {NAV_MENU, "Helligkeit", ALWAYS}, {NAV_MENU, "Nachtmodus", ALWAYS}, {NAV_MENU, "Web-Zugriff", ALWAYS}, {NAV_MENU, "Info", ALWAYS},
 	{NAV_MENU, "Einstellungen", ALWAYS}, {NAV_MENU, "Zurück", ALWAYS},
-	{NAV_DTC, "Lesen", IF_READ}, {NAV_DTC, "Liste ansehen", IF_OUTCOME}, {NAV_DTC, "Zuletzt gelöscht", IF_OLD}, {NAV_DTC, "Zurück", ALWAYS},
+	{NAV_DTC, "Lesen", IF_READ}, {NAV_DTC, "Liste ansehen", IF_OUTCOME}, {NAV_DTC, "Liste vor dem Löschen", IF_OLD}, {NAV_DTC, "Zurück", ALWAYS},
 	{NAV_DTC_LIST, "Erneut lesen", IF_READ}, {NAV_DTC_LIST, "Fehler löschen", IF_CLEAR}, {NAV_DTC_LIST, "Zurück", ALWAYS},
 	{NAV_DTC_CLEARED, "Fertig", ALWAYS},
 	{NAV_DTC_OLD, "Zurück", ALWAYS},
@@ -3963,7 +4143,7 @@ static const char *model_texts(scene_kind_t kind, conn_view_t view)
 			lines = FAILED_LINES[phase];
 			break;
 		case NAV_DTC_OLD:
-			title = "Zuletzt gelöscht";
+			title = "Vor dem Löschen";
 			break;
 		case NAV_BRIGHTNESS:
 			title = world.night_mode ? "Helligkeit (Nacht)" : "Helligkeit";
@@ -4028,6 +4208,38 @@ static void model_page(int *level, bool *old)
 		if(there && layout_item_level(item, value) > *level) *level = layout_item_level(item, value);
 		if(missed || (there && age == VALUE_AGE_OLD)) *old = true;
 	}
+}
+
+// What is wrong with the values of the page shown, NULL if nothing. Each value by what the display has of it:
+// on the page is a value that is not gone by its age, and during a scan every value the display has, whatever
+// its age.
+static const char *model_items(conn_view_t view)
+{
+	const layout_page_t *page = &world.layout->pages[nav.page];
+	bool scanning = view == CONN_VIEW_SCAN;
+	char text[SCENE_VALUE_SIZE];
+
+	if(scene->item_count != page->item_count) return "the page does not show the values of the layout";
+	for(int i = 0; i < page->item_count; i++)
+	{
+		const layout_item_t *item = &page->items[i];
+		const scene_item_t *shown = &scene->items[i];
+		const value_t *value = values_find(&values, item->key);
+		value_age_t age = values_age(value, input.now_ms);
+		bool kept = value != NULL && (scanning || age != VALUE_AGE_GONE);
+		bool there = kept && layout_item_text(item, value, text, sizeof(text));
+		// What is not kept is missed only if the profile has it, or may have it: `unloaded` is the catalogue
+		// before the profile arrived
+		bool lacking = !kept && world.catalog != &unloaded && catalog_find(world.catalog, item->key) < 0;
+		int level = there ? layout_item_level(item, value) : 0;
+		scene_tone_t tone = SCENE_TONE_DIM;
+
+		if(there && !scanning && age == VALUE_AGE_FRESH) tone = level >= 2 ? SCENE_TONE_ALARM : level == 1 ? SCENE_TONE_WARN : SCENE_TONE_NORMAL;
+		if(strcmp(shown->text, there ? text : lacking ? SCENE_UNAVAILABLE : SCENE_DASH) != 0) return "a value does not show what the display has of it: its text, the dash, or n. v.";
+		if(shown->tone != tone) return "the tone of a value is not that of its age, its limits and the view";
+		if(!there && (shown->unit[0] != '\0' || shown->permille != -1)) return "a value that is not shown has a unit or a place in a range";
+	}
+	return NULL;
 }
 
 // What is wrong with what lies over the scene, NULL if nothing
@@ -4097,7 +4309,12 @@ static const char *model(void)
 	if(scene->dots != dots || scene->dot != dot) return "the dots are not those of the layout";
 
 	// The ring: on a value page by its values; a progress and the dialog with the hold have their own arc
-	if(kind == SCENE_VALUES) model_page(&level, &old);
+	if(kind == SCENE_VALUES)
+	{
+		wrong = model_items(view);
+		if(wrong != NULL) return wrong;
+		model_page(&level, &old);
+	}
 	ring = ring_state(view, conn_state(&conn), level, old);
 	if(ring.kind == RING_PROGRESS && (kind == SCENE_PROGRESS || (kind == SCENE_CHOICE && on != NAV_CONFIRM)))
 	{
@@ -4261,9 +4478,11 @@ static void test_made_up(void)
 			input.summary = pick(2) == 0 ? &mixed_summary : NULL;
 			if(pick(2) == 0)
 			{
+				uint64_t held_ms = (uint64_t)pick(4000);
+
 				hold_open(&hold, NOW - 5000);
-				hold_sample(&hold, false, true, true, NOW - 4000);
-				hold_sample(&hold, true, true, true, NOW - (uint64_t)pick(4000));
+				for(uint64_t before = 600; before > 0; before -= 200) hold_sample(&hold, false, true, true, NOW - held_ms - before);
+				hold_sample(&hold, true, true, true, NOW - held_ms);
 			}
 			if(pick(2) == 0) access_open(&gate, NOW - (uint64_t)pick(700000));
 			if(pick(2) == 0) access_ask(&gate, ACCESS_ASK_WIFI, NOW - (uint64_t)pick(70000));
@@ -4353,6 +4572,26 @@ static const struct
 	{"DPF_SOOT_MASS", "11.3", "55"}, {"TRANS_TEMP", "70", "1e13"}, {"X", "2", "1e300"},
 };
 
+// What the adapter says of itself that has no say in what a value page shows, made up
+static void any_adapter(void)
+{
+	static const char *const reasons[] = {"", "busy", "engine_running"};
+
+	adapter.boot = random_number();
+	adapter.up_s = (uint32_t)pick(100000);
+	adapter.pids = (uint32_t)pick(40);
+	adapter.pass = random_number();
+	adapter.rx_age_ms = pick(3) == 0 ? -1 : pick(5000);
+	adapter.mqtt = (wican_mqtt_t)pick(3);
+	adapter.dtc.supported = pick(2) == 0;
+	adapter.dtc.has_request = pick(2) == 0;
+	adapter.dtc.from_http = pick(2) == 0;
+	adapter.dtc.count = (uint32_t)pick(5);
+	adapter.dtc.result_seq = (uint32_t)pick(3);
+	adapter.dtc.age_s = (uint32_t)pick(100);
+	SET(adapter.dtc.reason, reasons[pick(COUNT(reasons))]);
+}
+
 // Value pages alone: every value for itself fresh, old, gone or never seen, at the limits of each age, within
 // its limits, beyond them or not to be printed; the pages of the fixture or a page of one to six values with
 // limits of its own; the profile loaded or not; mostly live, where the ring tells of the values
@@ -4362,6 +4601,9 @@ static void test_made_up_pages(void)
 	static const uint64_t ages[] = {0, 1, 2999, 3000, 3001, 9999, 10000, 10001, 60000};
 	static int rings[5];
 	int differences = 0, scenes = 0, dashes = 0, lacking = 0, back = 0;
+	// During a scan: pages with a value that is shown although it is gone by its age, with a dash for a value
+	// the display never had, and at a time before the values
+	int held = 0, never = 0, held_back = 0;
 	bool reached;
 
 	for(int s = 0; s < COUNT(seeds); s++)
@@ -4371,19 +4613,26 @@ static void test_made_up_pages(void)
 		{
 			const char *wrong;
 			bool shown = false, dash = false, unavailable = false;
+			// The answers come with a pass counter, as those of a firmware with the API, or without one
+			bool counted = pick(2) == 0;
 
 			stage();
 			values_init(&values);
 			for(int i = 0; i < COUNT(VALUES); i++)
 			{
 				char json[64];
+				uint64_t age_ms;
 
 				// Never seen
 				if(pick(5) == 0) continue;
 
 				snprintf(json, sizeof(json), "{\"%s\":%s}", VALUES[i].key, pick(4) == 0 ? VALUES[i].strange : VALUES[i].usual);
-				seen(json, pick(2) == 0 ? ages[pick(COUNT(ages))] : (uint64_t)pick(13000));
+				age_ms = pick(2) == 0 ? ages[pick(COUNT(ages))] : (uint64_t)pick(13000);
+				if(counted) seen_counted(json, age_ms, (uint32_t)i + 1);
+				else seen(json, age_ms);
 			}
+			// Now and then a value that finds no room: it is counted, and nothing else
+			if(pick(4) == 0) seen("{\"A_NAME_OF_33_BYTES_FINDS_NO_ROOM_X\":1}", 500);
 
 			if(pick(2) == 0) nav.page = pick(8);
 			else
@@ -4411,9 +4660,25 @@ static void test_made_up_pages(void)
 					view_no_api();
 					break;
 				case 1:
-					view_scan();
+					// A scan of every kind: queued or running, a read or a clear, asked for over HTTP or not,
+					// the own request or another one, at any step - and a request after it that failed
+					scan(pick(2) == 0 ? WICAN_DTC_QUEUED : WICAN_DTC_RUNNING, 40 + (uint32_t)pick(3), pick(2) == 0, (uint32_t)pick(19), 18, "N30/4 ESP");
+					any_adapter();
+					answer(CONN_VIEW_SCAN);
+					if(pick(3) == 0)
+					{
+						// The result the state names, or the state of the next round
+						if(conn_next(&conn, NOW - 3000) == CONN_ASK_RESULT) conn_got_result(&conn, CONN_GOT_FAILED, NOW - 2900);
+						else conn_got_state(&conn, CONN_GOT_FAILED, NULL, NOW - 2900);
+						if(conn.failed_rounds != 1) setup_failures++;
+						expect_view(CONN_VIEW_SCAN);
+					}
+					flow.seq = 41;
+					flow.phase = pick(2) == 0 ? DTC_FLOW_READING : DTC_FLOW_IDLE;
 					break;
 				default:
+					any_adapter();
+					view_live();
 					break;
 			}
 			input.safe_mode = pick(8) == 0;
@@ -4441,6 +4706,23 @@ static void test_made_up_pages(void)
 				else if(strcmp(scene->items[i].text, SCENE_UNAVAILABLE) == 0) unavailable = true;
 				else shown = true;
 			}
+			if(conn_view(&conn, input.now_ms) == CONN_VIEW_SCAN)
+			{
+				const layout_page_t *page = &world.layout->pages[nav.page];
+				bool gone_shown = false, never_seen = false;
+
+				for(int i = 0; i < scene->item_count; i++)
+				{
+					const value_t *value = values_find(&values, page->items[i].key);
+					bool is_value = strcmp(scene->items[i].text, SCENE_DASH) != 0 && strcmp(scene->items[i].text, SCENE_UNAVAILABLE) != 0;
+
+					if(value == NULL && !is_value) never_seen = true;
+					if(value != NULL && is_value && values_age(value, input.now_ms) == VALUE_AGE_GONE) gone_shown = true;
+				}
+				if(gone_shown) held++;
+				if(never_seen) never++;
+				if(input.now_ms < NOW) held_back++;
+			}
 			if(conn_view(&conn, input.now_ms) != CONN_VIEW_LIVE) rings[scene->ring.kind == RING_GREY ? RING_GREY : RING_PROGRESS]++;
 			else
 			{
@@ -4458,10 +4740,13 @@ static void test_made_up_pages(void)
 		printf("  rings off, yellow, grey, red, progress: %d, %d, %d, %d, %d\n", rings[RING_NONE], rings[RING_YELLOW], rings[RING_GREY], rings[RING_RED], rings[RING_PROGRESS]);
 		printf("  live pages of nothing but dashes: %d; with a value the profile lacks and the ring off: %d; at a time before the values: %d\n", dashes, lacking, back);
 	}
+	if(held < 500 || never < 500 || held_back < 50) printf("  pages during a scan with a value that is gone by its age: %d; with a value never seen: %d; at a time before the values: %d\n", held, never, held_back);
+	check(held >= 500 && never >= 500 && held_back >= 50, "the made-up value pages reach a scan with a value on the page that is gone by its age and a scan with a value the display never had, "
+	      "each at least 500 times, and a scan with the clock stepping back at least 50 times");
 	check(scenes == 16000 && reached, "16000 made-up value pages reach the ring off, yellow and red in the view LIVE, grey without the API and the progress during a scan, the clock stepping back, "
 	      "each at least 500 times, live pages of nothing but dashes and live pages with a value the profile lacks under a ring that is off at least 200 times");
 	check(differences == 0, "each of the made-up value pages has the ring that the age of each of its values, the catalogue and the limits give when they are followed a second way, "
-	      "and title, note and dots as the tables of the screens say");
+	      "each value the text and the tone that what the display has of it gives - held during a scan whatever its age - and title, note and dots as the tables of the screens say");
 }
 
 /* In child processes ----------------------------------------------------------------------------------- */

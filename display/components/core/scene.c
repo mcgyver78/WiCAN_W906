@@ -143,7 +143,10 @@ static void build_item(const scene_input_t *input, conn_view_t view, const layou
 {
 	const catalog_t *catalog = input->world->catalog;
 	const value_t *value = values_find(input->values, item->key);
-	layout_item_state_t state = layout_item_state(item, catalog, input->values, input->now_ms);
+	// During a scan the adapter delivers no values, for 35 s as measured on the vehicle: what the display holds
+	// stands still and stays on the page as an old value, however long that takes. Judged by its age it would
+	// be a dash from VALUE_KEPT_MS on, which is most of the scan.
+	layout_item_state_t state = view == CONN_VIEW_SCAN && value != NULL ? LAYOUT_ITEM_OLD : layout_item_state(item, catalog, input->values, input->now_ms);
 	// A value that has no text (not finite, too large) is shown like one that is missing
 	bool shown = (state == LAYOUT_ITEM_LIVE || state == LAYOUT_ITEM_OLD) && layout_item_text(item, value, out->text, sizeof(out->text));
 	int item_level;
@@ -172,8 +175,7 @@ static void build_item(const scene_input_t *input, conn_view_t view, const layou
 	if(item_level > *level) *level = item_level;
 	if(state == LAYOUT_ITEM_OLD) *old = true;
 
-	// During a scan the values stand still: none of them is shown as if it were live
-	if(state == LAYOUT_ITEM_LIVE && view != CONN_VIEW_SCAN)
+	if(state == LAYOUT_ITEM_LIVE)
 	{
 		out->tone = item_level >= 2 ? SCENE_TONE_ALARM : item_level == 1 ? SCENE_TONE_WARN : SCENE_TONE_NORMAL;
 	}
@@ -319,7 +321,8 @@ static void build_dtc(const scene_input_t *input, scene_t *scene)
 	const choice_t choices[] = {
 		{"Lesen", "", world->can_read},
 		{"Liste ansehen", "", outcome},
-		{"Zuletzt gelöscht", "", world->old_lines > 0},
+		// Not "gelöscht": the adapter can accept a clear and refuse it afterwards, at its own engine check
+		{"Liste vor dem Löschen", "", world->old_lines > 0},
 		{"Zurück", "", true},
 	};
 
@@ -641,7 +644,7 @@ void scene_build(const scene_input_t *input, scene_t *scene)
 			build_failed(input, state, scene);
 			break;
 		case NAV_DTC_OLD:
-			set_title(scene, "Zuletzt gelöscht");
+			set_title(scene, "Vor dem Löschen");
 			build_rows(input, input->old, NULL, back, COUNT(back), scene);
 			break;
 		case NAV_BRIGHTNESS:

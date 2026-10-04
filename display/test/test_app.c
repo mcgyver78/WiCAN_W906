@@ -1033,12 +1033,7 @@ static bool browser_layout(const char *text, bool stored)
 	app->layout_length = length;
 	app->source = stored ? APP_LAYOUT_STORED : APP_LAYOUT_PREVIEW;
 	app->nav.page = -1;
-	if(stored)
-	{
-		app->stored = app->checked;
-		app->has_stored = true;
-		app->events |= APP_EVENT_STORE_LAYOUT;
-	}
+	if(stored) app->events |= APP_EVENT_STORE_LAYOUT;
 	return true;
 }
 
@@ -1047,7 +1042,6 @@ static bool browser_layout_reset(void)
 {
 	if(!access_write(&app->access, now)) return false;
 
-	app->has_stored = false;
 	app_choose_layout(app);
 	app->events |= APP_EVENT_ERASE_LAYOUT;
 	return true;
@@ -1254,9 +1248,11 @@ static void test_constants(void)
 	      APP_EVENT_ERASE_LAYOUT == 0x10 && APP_EVENT_STORE_CATALOG == 0x20 && APP_EVENT_STORE_OLD == 0x40 && APP_EVENT_MARK_VALID == 0x80 &&
 	      APP_EVENT_REBOOT == 0x100 && APP_EVENT_FACTORY_RESET == 0x200 && APP_EVENT_PREVIOUS_FIRMWARE == 0x400 && APP_EVENT_INSTALL_FIRMWARE == 0x800,
 	      "the events are twelve different bits");
-	printf("  sizeof(app_t) is %lu: poll %lu, four layouts %lu, three lists of lines %lu, layout text %lu\n", (unsigned long)sizeof(app_t),
-	       (unsigned long)sizeof(app->poll), (unsigned long)(4 * sizeof(layout_t)), (unsigned long)(3 * sizeof(app->list)), (unsigned long)sizeof(app->layout_text));
-	check(sizeof(void *) != 8 || sizeof(app_t) == 262232, "app_t has the 262232 bytes app.h names (on a 64 bit host)");
+	printf("  sizeof(app_t) is %lu: poll %lu, three layouts %lu, three lists of lines %lu, layout text %lu\n", (unsigned long)sizeof(app_t),
+	       (unsigned long)sizeof(app->poll), (unsigned long)(3 * sizeof(layout_t)), (unsigned long)(3 * sizeof(app->list)), (unsigned long)sizeof(app->layout_text));
+	check(sizeof(void *) != 8 || sizeof(app_t) == 227088, "app_t has the 227088 bytes app.h names (on a 64 bit host)");
+	check(sizeof(app->poll) == 39472 && 3 * sizeof(layout_t) == 105360 && 3 * sizeof(app->list) == 62376 && sizeof(app->layout_text) == 16385,
+	      "the large parts of app_t have the sizes app.h names: the poll, the two layouts and the room for a third, the lines of three lists, the layout text");
 }
 
 
@@ -1311,7 +1307,7 @@ static void test_first_start(void)
 	check(stores() + restarts() + done.valid == 0 && app->events == 0, "the start raises no event");
 	run(100);
 	shows("first_start", "first start without anything stored and without a network: the adapter was not found, the first of the seven built-in pages");
-	check(app->source == APP_LAYOUT_BUILTIN && app->has_builtin && !app->has_stored && app->layout.page_count == 7 &&
+	check(app->source == APP_LAYOUT_BUILTIN && app->has_builtin && app->layout.page_count == 7 &&
 	      strcmp(app->layout.name, "W906 OM651 Standard") == 0, "first start: the built-in layout is in use");
 	check(app->layout_length == strlen(builtin_text) && strcmp(app->layout_text, builtin_text) == 0 && app->builtin_text == builtin_text,
 	      "first start: layout_text is the text of the built-in layout, and the app keeps the text it was given");
@@ -1413,9 +1409,10 @@ static void test_stored_start(void)
 	flash.has_old = true;
 	start();
 	shows("stored_start", "start with everything stored, before the network is there: the adapter was not found, the first of the two stored pages");
-	check(app->source == APP_LAYOUT_STORED && app->has_stored && app->layout.page_count == 2 && strcmp(app->layout.name, "Meine Ansichten") == 0 &&
-	      memcmp(&app->stored, &app->layout, sizeof(layout_t)) == 0, "stored start: the stored layout is in use and kept as the stored one");
+	check(app->source == APP_LAYOUT_STORED && app->layout.page_count == 2 && strcmp(app->layout.name, "Meine Ansichten") == 0 && strcmp(app->layout.pages[1].title, "Tank") == 0,
+	      "stored start: the stored layout is in use");
 	check(app->layout_length == strlen(stored_layout) && strcmp(app->layout_text, stored_layout) == 0, "stored start: layout_text is the stored text");
+	check(all_bytes(&app->checked, sizeof(app->checked), 0), "stored start: the room for a layout the browser sends is empty, the stored layout was read into its own place");
 	check(app->settings.brightness == 60 && app->settings.night == 15 && app->settings.night_mode && app->settings.reverse && app->settings.standby_s == 0 &&
 	      app->knob.reverse && light() == 15, "stored start: the stored settings are in use - the knob is reversed, the backlight is the one of the night");
 	check(app->profile_count == 1 && strcmp(app->profiles[0].ssid, "Werkstatt") == 0 && app->link.profiles == app->profiles && app->link.profile_count == 1 &&
@@ -1847,7 +1844,15 @@ static void test_settings(void)
 	check(on(NAV_SETTINGS) && app->nav.row == 4 && restarts() == 0, "Werkseinstellungen, a tap on Abbrechen: back to the settings, nothing happens");
 	short_press();
 	tap(1);
-	check(done.reset == 1 && restarts() == 1 && done.last == APP_EVENT_FACTORY_RESET && on(NAV_PAGES), "Werkseinstellungen, a tap on Ausführen: the platform is asked for the factory reset");
+	tap(1);
+	check(on(NAV_CONFIRM) && app->nav.row == 0 && restarts() == 0, "Werkseinstellungen, two taps on Ausführen: nothing happens and the focus stays on Abbrechen - a touch confirms nothing here");
+	swipe(0, -1);
+	check(on(NAV_CONFIRM) && app->nav.row == 0 && restarts() == 0, "Werkseinstellungen, a swipe up: the focus stays on Abbrechen");
+	turn(-1);
+	tap(1);
+	check(on(NAV_CONFIRM) && app->nav.row == 1 && restarts() == 0, "Werkseinstellungen, a tap on Ausführen with the focus on it: nothing happens either");
+	short_press();
+	check(done.reset == 1 && restarts() == 1 && done.last == APP_EVENT_FACTORY_RESET && on(NAV_PAGES), "Werkseinstellungen, short press on Ausführen: the platform is asked for the factory reset");
 	wifi.aps_on = 0;
 	restart_as_asked();
 	run(100);
@@ -1855,6 +1860,26 @@ static void test_settings(void)
 	      "after the factory reset: default settings, no network, not bound, the own access point open");
 	check(app->source == APP_LAYOUT_STORED && strcmp(app->layout.name, "Meine Ansichten") == 0 && app->poll.catalog.count == 4 && app->old_lines == 7,
 	      "after the factory reset the views, the catalogue and the old list are still there");
+
+	// While the own read is under way - asked for at 2540, done at 5840 - the settings lead to no restart
+	drive();
+	short_press();
+	short_press();
+	short_press();
+	long_press();
+	short_press();
+	turn(5);
+	short_press();
+	turn(2);
+	short_press();
+	check(on(NAV_SETTINGS) && app->nav.row == 2 && app->poll.flow.phase == DTC_FLOW_READING && app_busy(app) && now == 4020,
+	      "while the own read runs a short press on Neustart opens no dialog");
+	tap(4);
+	check(on(NAV_SETTINGS) && app->nav.row == 4 && restarts() == 0, "while the own read runs a tap on Werkseinstellungen opens no dialog either");
+	run_to(6300);
+	check(app->poll.flow.phase == DTC_FLOW_LIST && on(NAV_SETTINGS) && !app_busy(app), "the read has ended, the settings still show");
+	short_press();
+	check(on(NAV_CONFIRM) && app->nav.confirm == NAV_DO_FACTORY_RESET && restarts() == 0, "when the read has ended a short press on Werkseinstellungen asks again");
 }
 
 
@@ -2017,7 +2042,7 @@ static void test_list_and_dialog(void)
 	      "a short press on Erneut lesen sends a second read; the list is dropped with the press, not with the next round");
 
 	scene_dialog();
-	check(on(NAV_DTC_CONFIRM) && app->nav.row == 1 && app->hold.seen_released && !app->hold.holding && now == 7600,
+	check(on(NAV_DTC_CONFIRM) && app->nav.row == 1 && app->hold.seen_released && !app->hold.pressed && hold_permille(&app->hold, now) == 0 && now == 7600,
 	      "the scene of the dialog: open, the focus on Löschen, the switch seen released, not held, at 7600");
 	tap(1);
 	run(4000);
@@ -2047,34 +2072,36 @@ static void test_list_and_dialog(void)
 	run_to(12000);
 	check(sent[POLL_DTC_CLEAR] == 0 && on(NAV_DTC_CONFIRM) && has_line("permille: 0"), "a press that began 80 ms after the dialog opened is never a hold: 4700 ms of it clear nothing");
 
+	// A hold that was broken does not go on by itself: the knob has to be released and pressed anew
 	scene_dialog();
 	switch_pressed = true;
 	run_to(9000);
 	turn(1);
 	run_to(10620);
-	check(sent[POLL_DTC_CLEAR] == 0, "a detent during the hold breaks it, also one at the hard end: 3000 ms after the press nothing is sent");
-	run_to(12000);
-	check(sent[POLL_DTC_CLEAR] == 0, "the hold begins anew with the detent: 2980 ms after it nothing is sent");
-	run_to(12020);
-	check(sent[POLL_DTC_CLEAR] == 1 && clear_sent_ms == 12000, "3000 ms after the detent the clear is sent");
+	check(sent[POLL_DTC_CLEAR] == 0 && has_line("permille: 0"), "a detent during the hold breaks it, also one at the hard end: 3000 ms after the press nothing is sent, the ring is empty");
+	run_to(13000);
+	check(sent[POLL_DTC_CLEAR] == 0 && on(NAV_DTC_CONFIRM) && has_line("permille: 0"), "kept pressed for 4000 ms behind the detent: the hold does not begin anew, nothing is sent");
+	switch_pressed = false;
+	run(320);
+	switch_pressed = true;
+	run(3000);
+	check(sent[POLL_DTC_CLEAR] == 0 && has_line("permille: 1000"), "released for 320 ms and pressed anew: 2980 ms of readings later nothing is sent");
+	run(20);
+	check(sent[POLL_DTC_CLEAR] == 1 && clear_sent_ms == 16320, "3000 ms after the press that began behind the release the clear is sent");
 
 	scene_dialog();
 	switch_pressed = true;
 	run_to(9000);
 	tap(1);
-	run_to(12000);
-	check(sent[POLL_DTC_CLEAR] == 0, "a tap during the hold breaks it: 2980 ms after the tap nothing is sent");
-	run_to(12020);
-	check(sent[POLL_DTC_CLEAR] == 1, "3000 ms after the tap the clear is sent");
+	run_to(13000);
+	check(sent[POLL_DTC_CLEAR] == 0 && on(NAV_DTC_CONFIRM) && app->nav.row == 1 && has_line("permille: 0"), "a tap during the hold breaks it for good: kept pressed for 4000 ms behind the tap, nothing is sent");
 
 	scene_dialog();
 	switch_pressed = true;
 	run_to(9000);
 	swipe(-1, 0);
-	run_to(12000);
-	check(sent[POLL_DTC_CLEAR] == 0, "a swipe during the hold breaks it: 2980 ms after the swipe nothing is sent");
-	run_to(12020);
-	check(sent[POLL_DTC_CLEAR] == 1, "3000 ms after the swipe the clear is sent");
+	run_to(13000);
+	check(sent[POLL_DTC_CLEAR] == 0 && on(NAV_DTC_CONFIRM) && has_line("permille: 0"), "a swipe during the hold breaks it for good: kept pressed for 4000 ms behind the swipe, nothing is sent");
 
 	scene_dialog();
 	switch_pressed = true;
@@ -2082,20 +2109,42 @@ static void test_list_and_dialog(void)
 	switch_ok = false;
 	run_to(9020);
 	switch_ok = true;
-	run_to(12020);
-	check(sent[POLL_DTC_CLEAR] == 0, "a reading that failed during the hold breaks it: 3000 ms after it nothing is sent");
-	run_to(12040);
-	check(sent[POLL_DTC_CLEAR] == 1 && clear_sent_ms == 12020, "3000 ms after the first reading that succeeded again the clear is sent");
+	run_to(13020);
+	check(sent[POLL_DTC_CLEAR] == 0 && on(NAV_DTC_CONFIRM) && has_line("permille: 0"), "a reading that failed during the hold breaks it for good: kept pressed for 4000 ms behind it, nothing is sent");
 
 	scene_dialog();
 	turn(-1);
 	switch_pressed = true;
 	run_to(9000);
 	turn(1);
-	run_to(12000);
-	check(sent[POLL_DTC_CLEAR] == 0, "a press that began on Abbrechen counts from the detent to Löschen: 2980 ms after it nothing is sent");
-	run_to(12020);
-	check(sent[POLL_DTC_CLEAR] == 1, "3000 ms on Löschen of a press that began on Abbrechen: the clear is sent");
+	run_to(13000);
+	check(sent[POLL_DTC_CLEAR] == 0 && on(NAV_DTC_CONFIRM) && app->nav.row == 1 && has_line("permille: 0"),
+	      "a press that began on Abbrechen never becomes the confirmation: 4000 ms on Löschen behind the detent, nothing is sent");
+	switch_pressed = false;
+	run(320);
+	switch_pressed = true;
+	run(3020);
+	check(sent[POLL_DTC_CLEAR] == 1 && clear_sent_ms == 16320, "released and pressed anew on Löschen: the clear is sent 3000 ms after that press");
+
+	// The readings of the switch stop for a moment during the hold: 220 ms between two of them, and 200 ms
+	scene_dialog();
+	switch_pressed = true;
+	run_to(9000);
+	stride = 220;
+	step();
+	stride = STEP_MS;
+	run_to(13000);
+	check(sent[POLL_DTC_CLEAR] == 0 && on(NAV_DTC_CONFIRM) && has_line("permille: 0"), "220 ms without a reading during the hold break it for good: nobody saw the switch in between, nothing is sent");
+	scene_dialog();
+	switch_pressed = true;
+	run_to(9000);
+	stride = 200;
+	step();
+	stride = STEP_MS;
+	run_to(10600);
+	check(sent[POLL_DTC_CLEAR] == 0, "200 ms without a reading during the hold are no gap: 2980 ms after the press nothing is sent yet");
+	run_to(10620);
+	check(sent[POLL_DTC_CLEAR] == 1 && clear_sent_ms == 10600, "with readings 200 ms apart the hold goes on: the clear is sent 3000 ms after the press");
 
 	// The last input of the dialog was the detent at 7260
 	scene_dialog();
@@ -2656,6 +2705,8 @@ static void test_standby(void)
 
 static void test_heat(void)
 {
+	uint64_t nav_input, input, at;
+
 	drive();
 	app_temperature(app, 99, false);
 	check(app->heat == GUARD_HEAT_NORMAL && light() == 80 && !app->has_temp && app->temp_c == 0, "a reading of 99 degrees that failed is no reading: no limit, no temperature");
@@ -2669,17 +2720,46 @@ static void test_heat(void)
 	app_temperature(app, 85, true);
 	check(app->heat == GUARD_HEAT_OFF && light() == 0, "85 degrees: the backlight is off");
 	short_press();
-	check(on(NAV_MENU), "while the heat keeps the screen dark a press is passed on: nothing could wake it");
+	check(on(NAV_PAGES) && light() == 0 && app->last_input_ms == 2120, "while the heat keeps the screen dark a short press is not passed on, and wakes nothing; the idle time restarts with it");
+	turn(1);
+	tap(0);
+	swipe(-1, 0);
+	check(on(NAV_PAGES) && app->nav.page == 0 && app->nav.last_input_ms == 0 && light() == 0 && app->last_input_ms == 2260,
+	      "while the heat keeps the screen dark a detent, a tap and a swipe are not passed on either: nav hears of no input");
+	long_press();
+	turn(1);
+	check(on(NAV_PAGES) && app->nav.page == 0 && app->nav.last_input_ms == 0 && light() == 0, "the heat keeps the screen dark: a long press and the detent behind it change nothing - no input wakes it");
 	app_temperature(app, 80, true);
 	check(app->heat == GUARD_HEAT_OFF && light() == 0, "back at 80 degrees: still off");
 	app_temperature(app, 99, false);
 	check(app->heat == GUARD_HEAT_OFF && app->temp_c == 80 && !app->has_temp, "a reading that failed keeps the level and the last temperature");
+	short_press();
+	check(on(NAV_PAGES), "still off behind the reading that failed: a press is not passed on");
 	app_temperature(app, 79, true);
 	check(app->heat == GUARD_HEAT_DIM && light() == 30, "back at 79 degrees: limited to 30");
+	short_press();
+	check(on(NAV_MENU), "limited by the heat the screen is lit: the press opens the menu");
 	app_temperature(app, 70, true);
 	check(app->heat == GUARD_HEAT_DIM, "back at 70 degrees: still limited");
 	app_temperature(app, 69, true);
 	check(app->heat == GUARD_HEAT_NORMAL && light() == 80, "back at 69 degrees: no limit");
+
+	// An input is made when it begins
+	app_temperature(app, 85, true);
+	switch_pressed = true;
+	run(100);
+	app_temperature(app, 69, true);
+	switch_pressed = false;
+	run(60);
+	check(on(NAV_MENU) && app->nav.row == 0 && light() == 80, "a press that began while the heat kept the screen dark is dropped, also when the screen is lit again before it ends");
+	turn(6);
+	switch_pressed = true;
+	run(100);
+	app_temperature(app, 85, true);
+	switch_pressed = false;
+	run(60);
+	check(on(NAV_PAGES) && light() == 0, "a press that began on a lit screen counts, also when the heat switches the light off before it ends: Zurück leaves the menu");
+	app_temperature(app, 69, true);
 
 	garage();
 	strcpy(flash.settings, "{\"brightness\":20}");
@@ -2706,15 +2786,95 @@ static void test_heat(void)
 	run_to(61000);
 	check(light() == 0, "the scene of heat and standby: dark by both");
 	short_press();
-	check(on(NAV_MENU), "dark by standby and by heat: the press is passed on, there is nothing to wake");
+	check(on(NAV_PAGES) && light() == 0, "dark by standby and by heat: the press is not passed on, and the screen stays dark");
 	app_temperature(app, 70, true);
-	check(light() == 30, "cooled down after that press: lit, limited to 30");
+	check(light() == 30, "cooled down after that press: lit, limited to 30 - the press restarted the idle time of the standby");
+	short_press();
+	check(on(NAV_MENU), "cooled down: the next press opens the menu");
+
+	// The heat switches the light off while the clear dialog shows. The knob is held since 7600.
+	scene_dialog();
+	switch_pressed = true;
+	run_to(9000);
+	app_temperature(app, 84, true);
+	run_to(9300);
+	check(on(NAV_DTC_CONFIRM) && app->hold.open && light() == 30 && has_line("permille: 566"),
+	      "84 degrees during the hold: the backlight is limited, the dialog stays and the hold goes on - 1700 ms of 3000");
+	nav_input = app->nav.last_input_ms;
+	input = app->last_input_ms;
+	at = app->clock_ms;
+	app_temperature(app, 85, true);
+	check(on(NAV_DTC_LIST) && app->nav.row == 8 && !app->hold.open && light() == 0 && !app_busy(app) && app_take_events(app) == 0,
+	      "85 degrees during the hold: the light goes off and the dialog is left at once - the list, the focus on Fehler löschen, the hold closed");
+	check(app->nav.last_input_ms == nav_input && app->last_input_ms == input && app->clock_ms == at && app->nav.clock_ms == at,
+	      "the dialog the heat closed: that was no input, and it happened at the time the app had");
+	run_to(13300);
+	check(sent[POLL_DTC_CLEAR] == 0 && on(NAV_DTC_LIST) && phase() == DTC_FLOW_LIST, "the knob kept pressed for 4000 ms on the dark screen: nothing is sent");
+	switch_pressed = false;
+	run(100);
+	short_press();
+	check(on(NAV_DTC_LIST) && !app->hold.open, "while the heat keeps the screen dark a short press on Fehler löschen opens no dialog");
+	app_temperature(app, 69, true);
+	tap(8);
+	check(on(NAV_DTC_CONFIRM) && app->hold.open && light() == 80, "cooled down: a tap on Fehler löschen opens the dialog again");
+	turn(1);
+	run(400);
+	switch_pressed = true;
+	run(3020);
+	switch_pressed = false;
+	check(sent[POLL_DTC_CLEAR] == 1, "a hold in that dialog is confirmed: the last press of the knob, which began in the dark, is over and counts for nothing");
+
+	// A reading that failed is no heat, whatever it reads
+	scene_dialog();
+	app_temperature(app, 99, false);
+	check(on(NAV_DTC_CONFIRM) && app->hold.open && light() == 80, "a reading of 99 degrees that failed while the clear dialog shows: the dialog stays");
+
+	// The focus on Abbrechen
+	scene_list();
+	turn(8);
+	short_press();
+	app_temperature(app, 85, true);
+	check(on(NAV_DTC_LIST) && app->nav.row == 8 && !app->hold.open, "the heat switches the light off while the focus of the clear dialog is on Abbrechen: the dialog is left as well");
+
+	// Limited by the heat the display works as always
+	scene_dialog();
+	app_temperature(app, 84, true);
+	switch_pressed = true;
+	run_to(10620);
+	switch_pressed = false;
+	check(sent[POLL_DTC_CLEAR] == 1 && clear_sent_ms == 10600 && light() == 30, "with the backlight limited by the heat a hold is confirmed as always: the clear is sent 3000 ms after the press");
+
+	// The heat closes the dialog and leaves the switch alone: pressed since 7600, it hangs at 27600
+	scene_dialog();
+	switch_pressed = true;
+	run_to(9000);
+	app_temperature(app, 85, true);
+	run_to(27600);
+	check(!hold_is_stuck(&app->hold) && on(NAV_DTC_LIST), "the knob kept pressed behind the dialog the heat closed, for 19980 ms: the switch does not hang yet");
+	run_to(27620);
+	check(hold_is_stuck(&app->hold) && on(NAV_DTC_LIST) && sent[POLL_DTC_CLEAR] == 0, "20000 ms after the press began the switch hangs: the heat closed the dialog, it did not forget the press");
+	switch_pressed = false;
+
+	// ... and while a question of the browser lies over the dialog
+	scene_dialog();
+	app_do(app, NAV_DO_RELEASE_ON, now);
+	check(browser_wifi("Neu", "passwort1", "") == 1 && has_line("over: ask"), "the scene of the question over the clear dialog, asked at 7600");
+	app_temperature(app, 85, true);
+	check(on(NAV_DTC_LIST) && !app->hold.open && access_asking(&app->access, now) == ACCESS_ASK_WIFI, "the heat switches the light off under a question: the dialog below it is left, the question waits on");
+	run(1600);
+	short_press();
+	check(done.wifi == 0 && access_asking(&app->access, now) == ACCESS_ASK_WIFI, "on the screen the heat keeps dark a press is no answer to the question");
+	run_to(67600);
+	check(access_ticket(&app->access, 1, now) == ACCESS_TICKET_EXPIRED && done.wifi == 0, "the question nobody could see runs out after its 60 s");
+
+	// Not in the dialog: the level changes nothing on the screen
+	scene_list();
+	app_temperature(app, 85, true);
+	check(on(NAV_DTC_LIST) && app->nav.row == 0 && phase() == DTC_FLOW_LIST && app->list_lines == 7, "the heat switches the light off while the list shows: the list stays as it is");
 }
 
 static void test_safe_mode(void)
 {
-	static const layout_t untouched;
-
 	garage();
 	machine.safe_mode = true;
 	strcpy(flash.layout, stored_layout);
@@ -2722,8 +2882,8 @@ static void test_safe_mode(void)
 	start();
 	run(100);
 	shows("safe_mode", "safe mode: the built-in views instead of the stored ones, and the note");
-	check(app->safe_mode && app->source == APP_LAYOUT_BUILTIN && !app->has_stored && memcmp(&app->stored, &untouched, sizeof(untouched)) == 0,
-	      "safe mode: the stored layout is not in use and was not even read");
+	check(app->safe_mode && app->source == APP_LAYOUT_BUILTIN && strcmp(app->layout.name, "W906 OM651 Standard") == 0 && app->layout.page_count == 7 &&
+	      strcmp(app->layout_text, builtin_text) == 0, "safe mode: the stored layout is not in use - the views and their text are the built-in ones");
 	check(wifi.ap_on && wifi.aps_on == 1 && wifi.joins == 1 && view() == CONN_VIEW_LIVE, "safe mode: the own access point is open next to the stored network");
 	check(stores() == 0 && strcmp(flash.layout, stored_layout) == 0, "safe mode: the stored layout stays in the flash");
 	run_to(700000);
@@ -2739,7 +2899,7 @@ static void test_safe_mode(void)
 	machine.safe_mode = false;
 	start();
 	run(100);
-	check(app->source == APP_LAYOUT_STORED && app->has_stored && !wifi.ap_on && has_line("title: Fahrt"), "the start after the safe mode: the stored views, no access point");
+	check(app->source == APP_LAYOUT_STORED && !wifi.ap_on && has_line("title: Fahrt"), "the start after the safe mode: the stored views, no access point");
 }
 
 /* The update and the upload --------------------------------------------------------------------------- */
@@ -2784,8 +2944,8 @@ static void test_update(void)
 	check(strcmp(scene.over_lines[2], "sonst alte Version in 0:00") == 0, "the update question looked at half a second behind its time: no time is left, and none that wrapped around");
 	run_to(300020);
 	check(done.reboot == 1 && done.last == APP_EVENT_REBOOT && done.valid == 0 && app->update_pending, "an update nobody confirmed for 300 s: the platform is asked to restart");
-	run_to(300220);
-	check(done.reboot == 2, "the restart is asked for again with the next tick");
+	run_to(301020);
+	check(done.reboot == 1 && app->update_pending && has_line("over: update"), "the restart is asked for once: the five ticks of the next second do not ask again, the question stays");
 	restart_as_asked();
 	check(!app->update_pending && app->rolled_back && info_is(0, "Update nicht übernommen – vorherige Version aktiv") && !has_line("over: update"),
 	      "after that restart the version before runs, without a question, and the info says that the update was taken back");
@@ -2799,10 +2959,41 @@ static void test_update(void)
 	app_tick(app, 305000);
 	check(app_take_events(app) == APP_EVENT_REBOOT, "an update started at 5000: at 305000 the restart");
 	app_tick(app, 305000);
-	check(app_take_events(app) == APP_EVENT_REBOOT, "the restart is asked for with every tick from then on");
-	app_do(app, NAV_DO_UPDATE_OK, 305000);
+	app_tick(app, 305200);
+	check(app_take_events(app) == 0, "the restart is asked for once: not again with the same time, not again 200 ms later");
 	app_tick(app, 400000);
+	check(app_take_events(app) == 0 && app->update_pending, "nor a minute and a half later: the platform restarts by the one event");
+	app_do(app, NAV_DO_UPDATE_OK, 400000);
+	app_tick(app, 400200);
 	check(app_take_events(app) == APP_EVENT_MARK_VALID, "an update confirmed late is confirmed: no restart any more");
+
+	// The first tick behind the time need not come at the very millisecond
+	garage();
+	machine.update_pending = true;
+	start();
+	app_tick(app, 300007);
+	check(app_take_events(app) == APP_EVENT_REBOOT, "the first tick comes 7 ms behind the time of the update: it asks for the restart");
+	app_tick(app, 300207);
+	check(app_take_events(app) == 0, "the tick behind that one does not ask again");
+	app_do(app, NAV_DO_NIGHT_TOGGLE, 300300);
+	app->uploading = true;
+	app->upload_ms = 300300;
+	app_tick(app, 300407);
+	check(app_take_events(app) == APP_EVENT_STORE_SETTINGS, "nor does a tick while another event waits and an upload runs: the night mode is to be stored, nothing else");
+
+	// An update that is confirmed in time asks for no restart, and one that follows it asks again
+	garage();
+	machine.update_pending = true;
+	start();
+	app_do(app, NAV_DO_UPDATE_OK, 1000);
+	app_tick(app, 300000);
+	check(app_take_events(app) == APP_EVENT_MARK_VALID, "an update confirmed after one second: the tick at 300 s asks for no restart");
+	machine.update_pending = true;
+	start();
+	app_tick(app, 299999);
+	check(app_take_events(app) == 0, "the start of the next update: one millisecond before its time no restart");
+	app_tick(app, 300000);
+	check(app_take_events(app) == APP_EVENT_REBOOT, "the next update nobody confirms: its restart is asked for - a start begins anew, whatever stood in the memory");
 
 	// Behind the largest time nothing ends
 	garage();
@@ -3203,7 +3394,7 @@ static void test_layout_choice(void)
 	flash.has_layout = true;
 	start();
 	run(100);
-	check(app->source == APP_LAYOUT_BUILTIN && !app->has_stored && has_line("title: Motor") && stores() == 0 && strcmp(flash.layout, "{\"format\":\"wican-display-layout\",\"v\":2,\"pages\":[]}") == 0,
+	check(app->source == APP_LAYOUT_BUILTIN && has_line("title: Motor") && stores() == 0 && strcmp(flash.layout, "{\"format\":\"wican-display-layout\",\"v\":2,\"pages\":[]}") == 0,
 	      "a stored layout of a later version cannot be read: the built-in views are in use, and the stored text is left alone");
 
 	// A stored layout longer than any layout may be
@@ -3267,6 +3458,22 @@ static void test_layout_choice(void)
 	run(2000);
 	check(app->source == APP_LAYOUT_STORED && app->poll.catalog.count == 6, "a layout stored by the browser stays when another vehicle answers");
 	check(browser_layout_reset() && app->source == APP_LAYOUT_GENERATED && app->nav.page == 0 && text_follows(), "reset on another vehicle: generated views");
+
+	// A preview ends with a restart: the app keeps no copy of what is stored, the flash does
+	garage();
+	strcpy(flash.layout, stored_layout);
+	flash.has_layout = true;
+	start();
+	run(2100);
+	app_do(app, NAV_DO_RELEASE_ON, now);
+	check(browser_layout(builtin_text, false) && app->source == APP_LAYOUT_PREVIEW && strcmp(app->layout.name, "W906 OM651 Standard") == 0 && stores() == 0,
+	      "the browser sends the built-in views to look at while a layout is stored: a preview, nothing is stored");
+	run(300);
+	check(has_line("title: Motor") && strcmp(flash.layout, stored_layout) == 0, "the preview is on the screen, the stored layout is in the flash as it was");
+	start();
+	run(100);
+	check(app->source == APP_LAYOUT_STORED && strcmp(app->layout.name, "Meine Ansichten") == 0 && strcmp(app->layout_text, stored_layout) == 0 && has_line("title: Fahrt"),
+	      "a restart ends the preview: the stored layout is read from the flash again");
 }
 
 
@@ -3600,24 +3807,46 @@ static void test_inputs(void)
 	short_press();
 	turn(2);
 	short_press();
+	run(1000);
 	swipe(0, -1);
-	check(on(NAV_CONFIRM) && app->nav.row == 1 && restarts() == 0, "a dialog has two rows: a swipe up puts the focus on the second, nothing is carried out");
+	check(on(NAV_CONFIRM) && app->nav.row == 0 && restarts() == 0 && app->nav.last_input_ms == now && app->last_input_ms == now,
+	      "the dialog of the settings: a swipe up moves no focus - it is an input for the idle times and nothing else");
+	turn(1);
 	swipe(0, 1);
-	check(app->nav.row == 0, "a swipe down puts the focus on Abbrechen again");
+	swipe(-1, 0);
+	swipe(1, 1);
+	check(on(NAV_CONFIRM) && app->nav.row == 1 && app->nav.page == 0 && restarts() == 0, "the dialog of the settings with the focus on Ausführen: a swipe down or to a side leaves it there");
 
 	scene_list();
 	turn(8);
 	short_press();
 	run(400);
 	swipe(0, -1);
-	check(on(NAV_DTC_CONFIRM) && app->nav.row == 1 && app->hold.last_input_ms == now, "in the clear dialog a swipe moves the focus like the knob, and is an activity for the hold");
+	check(on(NAV_DTC_CONFIRM) && app->nav.row == 0 && app->hold.last_input_ms == now && app->nav.last_input_ms == now,
+	      "in the clear dialog a swipe up moves no focus: it is an activity for the hold and an input, nothing else");
+	run(100);
+	swipe(0, 0);
+	check(app->nav.row == 0 && app->hold.last_input_ms == now, "in the clear dialog a swipe without a direction is an activity for the hold as well");
+	turn(1);
+	swipe(0, 1);
+	swipe(1, 0);
+	check(on(NAV_DTC_CONFIRM) && app->nav.row == 1, "in the clear dialog a swipe down or to a side leaves the focus on Löschen");
+	run(20);
 	switch_pressed = true;
 	run(2000);
+	check(has_line("permille: 666"), "the scene of the hold in the dialog: 2000 ms of 3000");
+	swipe(0, 1);
+	run(4000);
+	check(sent[POLL_DTC_CLEAR] == 0 && app->nav.row == 1 && has_line("permille: 0"), "a swipe down during the hold breaks it for good: 4000 ms later nothing is sent, and the focus is still on Löschen");
+	switch_pressed = false;
+
+	// The screens of the fault memory
+	scene_list();
 	swipe(0, -1);
-	run(2980);
-	check(sent[POLL_DTC_CLEAR] == 0, "a vertical swipe during the hold breaks it");
-	run(40);
-	check(sent[POLL_DTC_CLEAR] == 1, "3000 ms after the swipe the hold is complete");
+	check(on(NAV_DTC_LIST) && app->nav.row == 3, "the list of the fault memory scrolls three rows with a swipe up");
+	long_press();
+	swipe(0, -1);
+	check(on(NAV_DTC) && app->nav.row == 3, "the fault memory menu: a swipe up moves the focus three rows down, to its last row");
 
 	// The info screen
 	drive();
@@ -3904,15 +4133,17 @@ static void test_boot(void)
 	boot.layout_text = stored_layout;
 	boot.layout_length = strlen(stored_layout) - 1;
 	app_init(app, &boot, 0);
-	check(app->has_builtin && !app->has_stored && app->source == APP_LAYOUT_BUILTIN && app->layout_length == strlen(builtin_text), "the length of the stored layout counts: one byte less is no layout");
+	check(app->has_builtin && app->source == APP_LAYOUT_BUILTIN && app->layout_length == strlen(builtin_text) && strcmp(app->layout.name, "W906 OM651 Standard") == 0,
+	      "the length of the stored layout counts: one byte less is no layout");
 	boot.layout_length = strlen(stored_layout);
 	app_init(app, &boot, 0);
-	check(app->has_builtin && app->has_stored && app->source == APP_LAYOUT_STORED && app->layout_length == strlen(stored_layout) && app->layout_text[app->layout_length] == '\0',
-	      "the stored layout with its length is taken; its text ends where it ends");
+	check(app->has_builtin && app->source == APP_LAYOUT_STORED && strcmp(app->layout.name, "Meine Ansichten") == 0 && app->layout_length == strlen(stored_layout) &&
+	      app->layout_text[app->layout_length] == '\0', "the stored layout with its length is taken; its text ends where it ends");
 	boot.layout_text = "[]";
 	boot.layout_length = 2;
 	app_init(app, &boot, 0);
-	check(!app->has_stored && app->source == APP_LAYOUT_BUILTIN && all_bytes(&app->stored, sizeof(layout_t), 0), "a stored text that is no layout: the built-in views");
+	check(app->source == APP_LAYOUT_BUILTIN && strcmp(app->layout.name, "W906 OM651 Standard") == 0 && app->layout.page_count == 7 && strcmp(app->layout_text, builtin_text) == 0,
+	      "a stored text that is no layout: the built-in views and their text");
 
 	// The time of the start
 	garage();
@@ -4179,11 +4410,11 @@ static void test_dialog_under_question(void)
 	app_do(app, NAV_DO_RELEASE_ON, now);
 	switch_pressed = true;
 	run_to(9000);
-	check(has_line("permille: 466") && app->hold.holding, "the scene of the hold: 1400 ms of 3000");
+	check(has_line("permille: 466") && hold_permille(&app->hold, now) == 466, "the scene of the hold: 1400 ms of 3000");
 	check(browser_reset() == 0 && browser_wifi("Neu", "passwort1", "") == 1 && has_line("over: ask"),
 	      "while the clear dialog shows the display is busy for a factory reset; a network can be asked for, and the question lies over the dialog");
 	run_to(10700);
-	check(sent[POLL_DTC_CLEAR] == 0 && on(NAV_DTC_CONFIRM) && !app->hold.holding && has_line("permille: 0") && phase() == DTC_FLOW_LIST,
+	check(sent[POLL_DTC_CLEAR] == 0 && on(NAV_DTC_CONFIRM) && hold_permille(&app->hold, now) == 0 && has_line("permille: 0") && phase() == DTC_FLOW_LIST,
 	      "a question over the clear dialog breaks the hold: 3100 ms after the press nothing is sent, the ring is empty");
 	check(done.wifi == 0 && access_asking(&app->access, now) == ACCESS_ASK_WIFI, "the knob held under the question is no answer to it");
 	switch_pressed = false;
@@ -4193,10 +4424,39 @@ static void test_dialog_under_question(void)
 	run(900);
 	check(access_ticket(&app->access, 1, now) == ACCESS_TICKET_REFUSED && done.wifi == 0 && on(NAV_DTC_CONFIRM) && app->hold.open,
 	      "a long press under the question refuses it, and is no way out of the dialog below");
-	run_to(14600);
-	check(sent[POLL_DTC_CLEAR] == 0, "the press that refused the question goes on as a hold from the reading behind it: 2980 ms later nothing is sent");
+	// What was measured before hold.h asked for a new release: this press, kept, cleared the fault memory at
+	// 14600, 3000 ms after the question went
+	check(has_line("permille: 0") && !has_line("over: ask") && app->nav.row == 1, "the question is gone, the knob still pressed with the focus on Löschen: the ring stays empty");
 	run_to(14620);
-	check(sent[POLL_DTC_CLEAR] == 1 && clear_sent_ms == 14600 && phase() == DTC_FLOW_CLEARING && done.old == 1, "3000 ms after the question went the hold is complete: the clear is sent");
+	check(sent[POLL_DTC_CLEAR] == 0 && on(NAV_DTC_CONFIRM) && has_line("permille: 0") && phase() == DTC_FLOW_LIST,
+	      "the long press that refused the question, kept pressed for 3000 ms behind it: nothing is cleared - it began for another reason");
+	run_to(18000);
+	check(sent[POLL_DTC_CLEAR] == 0 && phase() == DTC_FLOW_LIST && done.old == 0 && stores() == 0, "kept pressed for 6400 ms behind the question: still nothing is cleared and nothing stored");
+	switch_pressed = false;
+	run(320);
+	switch_pressed = true;
+	run(3000);
+	check(sent[POLL_DTC_CLEAR] == 0, "released for 320 ms and pressed anew on Löschen, with nothing over the dialog: 2980 ms later nothing is sent");
+	run(20);
+	check(sent[POLL_DTC_CLEAR] == 1 && clear_sent_ms == 21320 && phase() == DTC_FLOW_CLEARING && done.old == 1, "the press that began on Löschen behind an observed release clears, 3000 ms after it began");
+	switch_pressed = false;
+
+	// The same with a short press that confirms the question: the press that answered is no hold either
+	scene_dialog();
+	app_do(app, NAV_DO_RELEASE_ON, now);
+	check(browser_wifi("Neu", "kurz", "") == 1, "the scene of a question for a network net_store() refuses, over the dialog: asked at 7600");
+	run(1500);
+	switch_pressed = true;
+	run(60);
+	switch_pressed = false;
+	run(40);
+	switch_pressed = true;
+	run(40);
+	check(access_ticket(&app->access, 1, now) == ACCESS_TICKET_CONFIRMED && done.wifi == 0 && on(NAV_DTC_CONFIRM) && !has_line("over: ask"),
+	      "a short press answers the question; nothing is stored of a network that is refused, and the dialog below stays");
+	run(4000);
+	check(sent[POLL_DTC_CLEAR] == 0 && on(NAV_DTC_CONFIRM) && has_line("permille: 0"),
+	      "pressed again 40 ms behind the press that answered, and kept for 4000 ms: nothing is cleared - no release of 300 ms was observed since the press under the question");
 	switch_pressed = false;
 
 	// The answer to the question is given over the dialog
@@ -4366,9 +4626,9 @@ static void real_story(bool literal, const char *name)
 	snprintf(what, sizeof(what), "%s: 9.98 s after the last values they are still shown", name);
 	check(has_line("item: Drehzahl | 0 | 1/min | dim | arc | 0"), what);
 	run_to(12200);
-	snprintf(what, sizeof(what), "%s: 10 s after the last values they are gone, 25 s before the scan ends", name);
-	check(has_line("item: Drehzahl | – |  | dim | arc | -1") && has_line("ring: progress 222"), what);
-	if(literal) shows("real_page_gone", "the adapter as measured, 10 s into its scan: dashes instead of values that are 10 s old; the ring at 4 of 18");
+	snprintf(what, sizeof(what), "%s: 10 s after the last values they still stand there, dimmed, 25 s before the scan ends - during a scan the age of a value does not count (scene.h)", name);
+	check(has_line("item: Drehzahl | 0 | 1/min | dim | arc | 0") && has_line("ring: progress 222"), what);
+	if(literal) shows("real_page_gone", "the adapter as measured, 10 s into its scan: the values of before it, 10 s old and dimmed, no dashes; the ring at 4 of 18");
 	short_press();
 	short_press();
 	run_to(13200);
@@ -4459,7 +4719,8 @@ static void test_real_adapter(void)
 
 enum
 {
-	PROMISE_CLEAR,      // a clear without three seconds of pressed readings on "Löschen", or sent twice
+	PROMISE_CLEAR,      // a clear without a press that began on "Löschen" behind an observed release and was kept for three
+	                    // seconds of readings without a gap, or sent twice
 	PROMISE_DANGER,     // restart, factory reset, another firmware or "update in order" by a way the headers do not name
 	PROMISE_STORE,      // something that is stored changed without its event, or an event came without its cause
 	PROMISE_OLD,        // the list before a clear: stored when the adapter accepted, as the text it sent
@@ -4498,6 +4759,10 @@ typedef struct
 	long starts, healed;
 	long values, lines, summaries;
 	long reboots_late, confirmed_asks, taps_that_acted;
+	long spoiled_holds;         // presses in the clear dialog that were kept for more than three seconds and must not clear
+	long heat_closed;           // clear dialogs the heat closed
+	long dialog_swipes;         // swipes in the two dialogs
+	long asks_refused;          // presses and taps on a row of the settings that asks first, while a request was under way
 } run_result_t;
 
 // What the run knows by itself
@@ -4512,7 +4777,14 @@ typedef struct
 	settings_t settings;        // as the flash holds them
 	int preview;                // the brightness being set, -1 if none
 
-	bool held;                  // the readings read pressed on "Löschen" without a break ...
+	// The switch in the clear dialog, as hold.h wants it watched
+	bool read_before;           // there was a reading since the start ...
+	uint64_t read_ms;           // ... at this time ...
+	bool was_up;                // ... and it succeeded and read released
+	uint64_t up_since;          // the first of the readings in a row that did, no two of them more than 200 ms apart
+	uint64_t dialog_since;      // when the clear dialog opened
+	bool released;              // 300 ms of them were seen in this dialog, and nothing took that back
+	bool held;                  // a press that began on "Löschen" behind that release is read pressed there ever since ...
 	uint64_t held_since;        // ... since this time
 	bool hold_done;             // ... for three seconds with the reading of this step
 	int confirmed;              // clears that a hold confirmed and that were not handed out yet
@@ -4639,10 +4911,10 @@ static int light_at(uint64_t time)
 	return m.heat == GUARD_HEAT_DIM && percent > GUARD_DIM_PERCENT ? GUARD_DIM_PERCENT : percent;
 }
 
-// The events a short press, or a tap on `row`, has to raise in the state the app is in: the ways the
-// headers name for a restart, another firmware, the factory reset, the confirmed update and the stored
+// The events a short press, or a tap on `row` (by_touch), has to raise in the state the app is in: the ways
+// the headers name for a restart, another firmware, the factory reset, the confirmed update and the stored
 // settings and networks
-static uint32_t acts(int row, uint64_t time)
+static uint32_t acts(int row, uint64_t time, bool by_touch)
 {
 	uint64_t access_time = time > app->access.clock_ms ? time : app->access.clock_ms;
 	access_ask_t asking = access_asking(&app->access, time);
@@ -4657,7 +4929,8 @@ static uint32_t acts(int row, uint64_t time)
 		if(asking == ACCESS_ASK_RESET) return APP_EVENT_FACTORY_RESET;
 		return m.wifi_good ? APP_EVENT_STORE_WIFI : 0;
 	}
-	if(on(NAV_CONFIRM) && row == 1)
+	// Ausführen is out of reach of a finger
+	if(on(NAV_CONFIRM) && row == 1 && !by_touch)
 	{
 		if(app->nav.confirm == NAV_DO_REBOOT) return APP_EVENT_REBOOT;
 		if(app->nav.confirm == NAV_DO_FACTORY_RESET) return APP_EVENT_FACTORY_RESET;
@@ -4755,11 +5028,13 @@ static void honest(void)
 		for(int i = 0; i < shown.item_count && i < page->item_count; i++)
 		{
 			const value_t *value = values_find(&poll->values, page->items[i].key);
+			// During a scan the adapter delivers no values, and the age of one the poll holds does not count (scene.h)
+			bool gone = value == NULL || (values_age(value, now) == VALUE_AGE_GONE && view() != CONN_VIEW_SCAN);
 			char text[SCENE_VALUE_SIZE];
 
 			if(strcmp(shown.items[i].text, SCENE_DASH) == 0 || strcmp(shown.items[i].text, SCENE_UNAVAILABLE) == 0) continue;
 
-			if(values_age(value, now) == VALUE_AGE_GONE || !layout_item_text(&page->items[i], value, text, sizeof(text)) || strcmp(shown.items[i].text, text) != 0)
+			if(gone || !layout_item_text(&page->items[i], value, text, sizeof(text)) || strcmp(shown.items[i].text, text) != 0)
 			{
 				broke(PROMISE_SCENE, "a value is shown that the poll does not hold, or does not hold any more");
 			}
@@ -4812,6 +5087,9 @@ static void world_holds(void)
 		broke(PROMISE_WORLD, "nav is told another brightness than the one stored");
 	}
 	if(app_busy(app) != (under_way || on(NAV_DTC_CONFIRM) || app->uploading)) broke(PROMISE_WORLD, "busy is not what flow, clear dialog and upload say");
+	if(on(NAV_DTC_CONFIRM) && m.heat == GUARD_HEAT_OFF) broke(PROMISE_WORLD, "the clear dialog shows on a screen the heat keeps dark");
+	// nav.h leaves the dialog of the settings open when a request begins, because none begins below it
+	if(on(NAV_CONFIRM) && under_way) broke(PROMISE_DANGER, "the dialog of the settings shows while a request of the display is under way");
 	if(strcmp(app_host(app), link_host(&app->link)) != 0 || app->poll.wifi != link_up(&app->link) || dropped != 0)
 	{
 		broke(PROMISE_WORLD, "the poll does not follow the link: a request for an adapter without an address");
@@ -4898,10 +5176,52 @@ static void info_holds(void)
 
 /* Around every call ---------------------------------------------------------------------------------- */
 
-// Dark by the standby rule, not by the heat: an input only wakes the screen then
+// Dark: by the standby rule, where an input wakes the screen, or by the heat, where nothing does. Nobody sees
+// the screen either way, and an input is not passed on.
 static bool dark_at(uint64_t time)
 {
-	return light_at(time) == 0 && m.heat != GUARD_HEAT_OFF;
+	return light_at(time) == 0;
+}
+
+// The reading of this step, for the promise about the clear. Written from hold.h for this one question: is a
+// press going on that began on "Löschen" with nothing over the dialog, behind 300 ms of readings that read
+// released in this dialog, and that was read pressed there ever since - no reading failed, no two readings
+// more than 200 ms apart, no detent and no touch?
+static void watch_hold(bool focus)
+{
+	bool up = switch_ok && !switch_pressed;
+	bool down = switch_ok && switch_pressed;
+	bool gap = !m.read_before || m.time - m.read_ms > HOLD_GAP_MS;
+	// A press is seen to begin where the reading before it saw the switch released
+	bool begins = down && m.was_up && !gap;
+
+	if(!up || !m.was_up || gap) m.up_since = m.time;
+	// What takes an observed release back: no dialog, a reading that failed, readings that were missing, a
+	// press that is not on "Löschen"
+	if(!on(NAV_DTC_CONFIRM) || !switch_ok || gap || (down && !focus)) m.released = false;
+	else if(up && m.time - m.up_since >= HOLD_RELEASED_MS && m.time - m.dialog_since >= HOLD_RELEASED_MS) m.released = true;
+
+	if(begins && focus && m.released)
+	{
+		m.held = true;
+		m.held_since = m.time;
+	}
+	else if(!down || !m.released) m.held = false;
+	m.hold_done = m.held && m.time - m.held_since >= HOLD_CONFIRM_MS;
+
+	m.read_before = true;
+	m.read_ms = m.time;
+	m.was_up = up;
+}
+
+// The clear dialog opened with the call that is over: what was observed before it does not count
+static void follow_dialog(void)
+{
+	if(!on(NAV_DTC_CONFIRM) || m.nav.screen == NAV_DTC_CONFIRM) return;
+
+	m.dialog_since = m.time;
+	m.released = false;
+	m.held = false;
 }
 
 // A call begins that gives the app the time `time`
@@ -5022,18 +5342,11 @@ static void run_step(void)
 		if(m.woke) tally->dark_presses++;
 	}
 
-	// Three seconds of readings that read pressed, with the focus on "Löschen" and nothing over the dialog
-	if(switch_pressed && switch_ok && focus)
-	{
-		if(!m.held) m.held_since = m.time;
-		m.held = true;
-	}
-	else m.held = false;
-	m.hold_done = m.held && m.time - m.held_since >= HOLD_CONFIRM_MS;
+	watch_hold(focus);
 
 	if(m.knob == KNOB_SHORT && !m.woke)
 	{
-		m.must = acts(app->nav.row, m.time);
+		m.must = acts(app->nav.row, m.time, false);
 		if(m.over == NAV_OVER_NONE && on(NAV_BRIGHTNESS)) m.must |= APP_EVENT_STORE_SETTINGS;
 	}
 	if(m.knob == KNOB_LONG && !m.woke && m.over == NAV_OVER_NONE && on(NAV_BRIGHTNESS)) m.must |= APP_EVENT_STORE_SETTINGS;
@@ -5055,6 +5368,13 @@ static void run_button(void)
 {
 	follow_phase(m.hold_done);
 	if(m.hold_done) m.held = false;
+	follow_dialog();
+	if(m.knob == KNOB_SHORT && !m.woke && m.over == NAV_OVER_NONE && m.nav.screen == NAV_SETTINGS && m.nav.row >= 2 && m.nav.row <= 4 && app_busy(app) && !app->uploading)
+	{
+		// The own request is under way: no way to a restart opens
+		if(!on(NAV_SETTINGS)) broke(PROMISE_DANGER, "a row of the settings that leads to a restart was taken while a request of the display is under way");
+		tally->asks_refused++;
+	}
 
 	// What the knob reports is an input for nav, unless its press began in the dark; a reading without a
 	// report is none
@@ -5141,23 +5461,37 @@ static void run_touch(touch_t kind, int a, int b)
 	m.twin = app->nav;
 	if(kind == TOUCH_COUNTS) asked = nav_turn(&m.twin, detents, &seen, m.time);
 	else if(kind == TOUCH_TAP) asked = nav_tap(&m.twin, a, &seen, m.time);
+	else if(on(NAV_DTC_CONFIRM) || on(NAV_CONFIRM))
+	{
+		// A swipe in one of the two dialogs is an input for the idle time and nothing else, whatever its
+		// direction: written here without nav
+		m.twin.clock_ms = m.time;
+		m.twin.last_input_ms = m.time;
+		asked = NAV_DO_NOTHING;
+		tally->dialog_swipes++;
+	}
 	else if(a == 0 && b != 0 && nav_rows(&m.twin, &seen) > 0) asked = nav_turn(&m.twin, b < 0 ? 3 : -3, &seen, m.time);
 	else asked = nav_swipe(&m.twin, a < 0 ? 1 : a > 0 ? -1 : 0, &seen, m.time);
 	// A dialog the hold refuses is left at once
 	if(asked == NAV_DO_HOLD_OPEN && hold_is_stuck(&app->hold)) nav_hold(&m.twin, HOLD_STUCK, &seen, m.time);
 	m.toggles_release = asked == NAV_DO_RELEASE_ON || asked == NAV_DO_RELEASE_OFF;
 	m.was_open = seen.release_open;
-	// A touch and a detent break the hold
-	if(on(NAV_DTC_CONFIRM)) m.held = false;
+	// A touch and a detent break the hold, and the press that goes on does not become a new one
+	if(on(NAV_DTC_CONFIRM))
+	{
+		m.held = false;
+		if(!m.was_up) m.released = false;
+	}
 	if(kind == TOUCH_TAP && !(m.over == NAV_OVER_NONE && on(NAV_BRIGHTNESS)))
 	{
-		m.must = acts(a, m.time);
+		m.must = acts(a, m.time, true);
 		if(m.must != 0) tally->taps_that_acted++;
 	}
 }
 
 static void run_touched(void)
 {
+	follow_dialog();
 	if(m.input && !m.dark)
 	{
 		if(app->nav.last_input_ms != m.time) broke(PROMISE_WAKE, "an input on a lit screen was not passed on");
@@ -5257,10 +5591,17 @@ static void uploads(bool running)
 // A reading of the chip temperature
 static void feel(int celsius, bool valid)
 {
+	bool in_dialog = on(NAV_DTC_CONFIRM);
+
 	m.heat = guard_heat(m.heat, celsius, valid);
 	m.has_temp = valid;
 	if(valid) m.temp = celsius;
 	app_temperature(app, celsius, valid);
+	if(m.heat != GUARD_HEAT_OFF || !in_dialog) return;
+
+	// The heat switched the light off under the clear dialog: nobody may confirm a clear he cannot see
+	if(!on(NAV_DTC_LIST) || app->nav.row != app->list_lines + 1 || app->hold.open) broke(PROMISE_WORLD, "the heat switched the light off and the clear dialog was not left for the list");
+	tally->heat_closed++;
 }
 
 // A world in which nothing is wrong: the adapter the display is bound to, awake, with the W906 standing still
@@ -5454,30 +5795,63 @@ static void wait_for_scan(int rounds)
 	for(int i = 0; i < rounds && on(NAV_DTC_BUSY); i++) run(200);
 }
 
-// The knob is held in the clear dialog for about three seconds: mostly as it has to be done, and now and
-// then in one of the ways that must not clear anything
+// The knob is held in the clear dialog: half of the time as it has to be done, for about three seconds, and
+// half of the time in one of the ways that must not clear anything - then for longer than three seconds
+// behind what broke the hold, so that a hold that went on by itself would clear
 static void hold_in_dialog(void)
 {
-	int how = pick(12);
+	int how = pick(18);
+	bool spoiled = how <= 8;
 
-	// 0: the focus stays on "Abbrechen"
-	if(how != 0) focus_on(1);
+	// 0: the focus stays on "Abbrechen"; 5: it comes to "Löschen" only during the press
+	if(how != 0 && how != 5) focus_on(1);
 	run(260 + 20u * (uint32_t)pick(10));
+	if(spoiled && on(NAV_DTC_CONFIRM)) tally->spoiled_holds++;
 	switch_pressed = true;
 	run(1500);
-	if(how == 1)
+	switch(how)
 	{
-		// A reading in the middle fails
-		switch_ok = false;
-		run(40);
-		switch_ok = true;
+		case 1:
+			// A reading in the middle fails
+			switch_ok = false;
+			run(40);
+			switch_ok = true;
+			break;
+		case 2:
+			count(KNOB_COUNTS_PER_DETENT * (app->settings.reverse ? -1 : 1));
+			break;
+		case 3:
+			tap(1);
+			break;
+		case 4:
+			swipe(pick(3) - 1, pick(3) - 1);
+			break;
+		case 5:
+			focus_on(1);
+			break;
+		case 6:
+			// The readings of the switch stop for a moment
+			stride = HOLD_GAP_MS + 20;
+			step();
+			stride = STEP_MS;
+			break;
+		case 7:
+			// The browser asks for something over the dialog; whoever holds the knob has not answered it
+			web_begin("a question over the hold");
+			if(browser_wifi("Neu", "passwort1", "") != 0) m.wifi_good = true;
+			web_end(0);
+			break;
+		case 8:
+			feel(85 + pick(10), true);
+			break;
+		default:
+			break;
 	}
-	else if(how == 2) count(KNOB_COUNTS_PER_DETENT * (app->settings.reverse ? -1 : 1));
-	else if(how == 3) tap(1);
-	else if(how == 4) swipe(pick(3) - 1, 0);
-	run(1440 + 20u * (uint32_t)pick(12));
+	run((spoiled ? 3100u : 1440u) + 20u * (uint32_t)pick(12));
 	switch_pressed = false;
 	run(60);
+	if(how == 7) answer();
+	if(how == 8) feel(40 + pick(30), true);
 }
 
 // The release for the web interface, given at the knob if it is not open
@@ -5689,6 +6063,16 @@ static void intent(void)
 		case 23:
 		case 24:
 			doing = "settings";
+			if(chance(20))
+			{
+				// ... while a read of the display is under way
+				to_menu(0);
+				if(on(NAV_DTC))
+				{
+					focus_on(0);
+					short_press();
+				}
+			}
 			to_menu(5);
 			if(on(NAV_SETTINGS))
 			{
@@ -5709,12 +6093,16 @@ static void intent(void)
 					uploads(false);
 					web_end(0);
 				}
-				if(chance(50))
+				if(chance(75))
 				{
 					focus_on(pick(2));
 					short_press();
 				}
-				else tap(pick(2));
+				else
+				{
+					tap(pick(2));
+					swipe(0, pick(3) - 1);
+				}
 			}
 			break;
 		case 14:
@@ -5784,6 +6172,13 @@ static void intent(void)
 static void one(void)
 {
 	int what_now = pick(100);
+
+	// The heat does not last: while it keeps the screen dark nothing else can be done at the display
+	if(m.heat == GUARD_HEAT_OFF && chance(25))
+	{
+		doing = "cooling down";
+		feel(40 + pick(35), true);
+	}
 
 	if(what_now < 12)
 	{
@@ -5981,13 +6376,15 @@ static void random_run(uint32_t number, run_result_t *result)
 static void test_random_runs(void)
 {
 	static const char *const promises[PROMISES] = {
-		"in every random run a clear is handed out only after 3000 ms of pressed readings on the clear dialog with the focus on Löschen and nothing over it, once per hold, with the number of the list shown",
-		"in every random run restart, factory reset, previous and uploaded firmware and the confirmed update are raised exactly by the ways the headers name",
+		"in every random run a clear is handed out only after a press that began on Löschen behind 300 ms of released readings in the dialog and was read pressed there for 3000 ms, "
+		"with nothing over the dialog, no reading that failed, no two readings more than 200 ms apart and no detent or touch; once per hold, with the number of the list shown",
+		"in every random run restart, factory reset, previous and uploaded firmware and the confirmed update are raised exactly by the ways the headers name, never by a tap on Ausführen, "
+		"and the dialog of the settings never shows while a request of the display is under way",
 		"in every random run settings, networks, binding and catalogue in use are those stored, and each store event comes exactly with its cause",
 		"in every random run the list before a clear is stored exactly when the adapter accepted or may have accepted, with the answer that says so, as the text the adapter sent",
 		"in every random run the screen shows no list, outcome, summary or value that the poll does not hold at that moment",
 		"in every random run the backlight is what the stored settings, the value being set, the standby rule and the heat say",
-		"in every random run the first input on a dark screen only wakes it, and every other input is passed on",
+		"in every random run an input on a dark screen is not passed on - dark by standby it only wakes it, dark by heat nothing does - and every other input is passed on",
 		"in every random run nav is told what the modules below hold, the poll follows the link, the time never runs backwards and the hold dialog is open exactly while the clear dialog shows",
 		"in every random run the layout is the built-in one where it suits the catalogue, a generated one where it does not, and the one of the user stays whatever the catalogue does",
 		"in every random run the info lines are what the platform, the adapter and the views say at the tick",
@@ -6051,6 +6448,8 @@ static void test_random_runs(void)
 	       "summaries looked at; %ld ticks with an update that was not confirmed in time, %ld taps that acted\n",
 	       result.holds, result.clears, result.withdrawn, result.lists, result.outcomes, result.old_at_once, result.old_later, result.dark_inputs, result.dark_presses, result.lit_inputs,
 	       result.back, result.dim, result.off, result.standby, result.values, result.lines, result.summaries, result.reboots_late, result.taps_that_acted);
+	printf("  random runs: %ld presses of more than three seconds in the clear dialog that must not clear, %ld clear dialogs closed by the heat, %ld swipes in a dialog, "
+	       "%ld presses on a row of the settings that asks first while a request was under way\n", result.spoiled_holds, result.heat_closed, result.dialog_swipes, result.asks_refused);
 
 	check(complete && status != -1 && WIFEXITED(status) && WEXITSTATUS(status) == 0, "24 random runs of 240 deeds each: no crash and no hang");
 	for(int i = 0; i < PROMISES; i++) check(complete && result.broken[i] == 0, promises[i]);
@@ -6070,6 +6469,9 @@ static void test_random_runs(void)
 	      "the random runs make inputs in the dark and on a lit screen, with times that step back, with the backlight limited and switched off by heat and by standby");
 	check(complete && result.values >= 1000 && result.lines >= 500 && result.summaries >= 50 && result.reboots_late >= 2 && result.taps_that_acted >= 5 && result.starts >= RUNS + 10,
 	      "the random runs look at values, lines and summaries on the screen, restart the display and let an update go unconfirmed");
+	check(complete && result.spoiled_holds >= 20 && result.heat_closed >= 2 && result.dialog_swipes >= 5 && result.asks_refused >= 3,
+	      "the random runs keep the knob pressed in the clear dialog in ways that must not clear, let the heat close the dialog, swipe in the dialogs and press the rows of the settings that "
+	      "lead to a restart while a request is under way");
 }
 
 

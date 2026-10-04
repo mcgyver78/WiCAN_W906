@@ -28,6 +28,7 @@ FOCUS_BOTTOM = "\tif(row < 0) row = 0;\n"
 READ = "\tif(!world->can_read) return NAV_DO_NOTHING;\n\n\tenter(nav, NAV_DTC_BUSY, 0);\n\treturn NAV_DO_READ;"
 CLOSE_DIALOG = "\tenter(nav, NAV_DTC_LIST, lines_of(world->list_lines) + LIST_CLEAR);"
 ASK = "\tenter(nav, NAV_CONFIRM, CHOICE_CANCEL);\n\tnav->confirm = action;\n"
+ASK_FREE = "\tif(under_way(world->flow)) return;\n\n\tenter(nav, NAV_CONFIRM"
 
 BACK_PAGES = "\t\t\tnav->page = layout_first_page(world->layout, world->catalog);\n\t\t\tbreak;"
 BACK_MENU = "\t\tcase NAV_MENU:\n\t\tcase NAV_DTC_BUSY:\n"
@@ -54,9 +55,9 @@ DTC_VIEW = "\t\t\tif(outcome != NAV_DTC) enter(nav, outcome, 0);"
 DTC_OLD = "\t\t\tif(world->old_lines > 0) enter(nav, NAV_DTC_OLD, 0);"
 LIST_ROW = "\tswitch(nav->row - lines_of(world->list_lines))"
 LIST_CLEAR = "\t\t\tif(!world->can_clear) break;\n\t\t\tenter(nav, NAV_DTC_CONFIRM, CHOICE_CANCEL);\n\t\t\treturn NAV_DO_HOLD_OPEN;"
-SET_REBOOT = "\t\t\task(nav, NAV_DO_REBOOT);\n\t\t\tbreak;"
-SET_PREVIOUS = "\t\t\tif(world->previous_firmware) ask(nav, NAV_DO_PREVIOUS_FIRMWARE);"
-SET_RESET = "\t\t\task(nav, NAV_DO_FACTORY_RESET);\n\t\t\tbreak;"
+SET_REBOOT = "\t\t\task(nav, NAV_DO_REBOOT, world);\n\t\t\tbreak;"
+SET_PREVIOUS = "\t\t\tif(world->previous_firmware) ask(nav, NAV_DO_PREVIOUS_FIRMWARE, world);"
+SET_RESET = "\t\t\task(nav, NAV_DO_FACTORY_RESET, world);\n\t\t\tbreak;"
 
 PRESS_PAGES = "\t\t\tenter(nav, NAV_MENU, MENU_DTC);\n\t\t\tbreak;\n\t\tcase NAV_MENU:\n\t\t\treturn press_menu(nav, world);"
 PRESS_DIALOG = "\t\t\tif(nav->row != CHOICE_CANCEL) break;\n\t\t\tclose_dialog(nav, world);\n\t\t\treturn NAV_DO_HOLD_CLOSE;"
@@ -92,6 +93,9 @@ TAP_FAILED = "\tif(nav->screen != NAV_DTC_FAILED)\n\t{"
 TAP_ROW = "\t\tif(row < 0 || row >= nav_rows(nav, world)) return NAV_DO_NOTHING;\n"
 TAP_FOCUS = "\t\tnav->row = row;\n\t}\n\treturn press(nav, world);"
 TAP_BODY = TAP_HEAD + " has no rows, and a touch anywhere acknowledges it\n" + TAP_FAILED + "\n\t\t// A screen without rows has no row that exists\n" + TAP_ROW
+TAP_DIALOG = "\t\tif((nav->screen == NAV_DTC_CONFIRM || nav->screen == NAV_CONFIRM) && row != CHOICE_CANCEL) return NAV_DO_NOTHING;\n"
+TAP_KNOB_ALONE = ("\t\t// What the two dialogs ask for is confirmed with the knob alone, and the knob alone moves their focus:\n"
+                  "\t\t// a touch happens too easily\n" + TAP_DIALOG)
 SWIPE = ("\tnote_input(nav, now_ms);\n"
          "\tif(nav->screen != NAV_PAGES || direction == 0 || nav_overlay(world) != NAV_OVER_NONE) return NAV_DO_NOTHING;\n\n"
          "\tturn_pages(nav, direction < 0 ? -1 : 1, world);")
@@ -470,15 +474,28 @@ MUTATIONS = [
     ("nav_settings_restart_at_once", T, F, SET_REBOOT, "\t\t\treturn NAV_DO_REBOOT;"),
     ("nav_settings_restart_asks_for_reset", T, F, SET_REBOOT, SET_REBOOT.replace("NAV_DO_REBOOT", "NAV_DO_FACTORY_RESET")),
     ("nav_settings_restart_no_dialog", T, F, SET_REBOOT, "\t\t\tbreak;"),
-    ("nav_settings_previous_without_firmware", T, F, SET_PREVIOUS, "\t\t\task(nav, NAV_DO_PREVIOUS_FIRMWARE);"),
+    ("nav_settings_previous_without_firmware", T, F, SET_PREVIOUS, "\t\t\task(nav, NAV_DO_PREVIOUS_FIRMWARE, world);"),
     ("nav_settings_previous_never", T, F, SET_PREVIOUS + "\n", ""),
     ("nav_settings_previous_at_once", T, F, SET_PREVIOUS, "\t\t\tif(world->previous_firmware) return NAV_DO_PREVIOUS_FIRMWARE;"),
     ("nav_settings_previous_asks_for_restart", T, F, SET_PREVIOUS, SET_PREVIOUS.replace("NAV_DO_PREVIOUS_FIRMWARE", "NAV_DO_REBOOT")),
     ("nav_settings_reset_at_once", T, F, SET_RESET, "\t\t\treturn NAV_DO_FACTORY_RESET;"),
     ("nav_settings_reset_asks_for_restart", T, F, SET_RESET, SET_RESET.replace("NAV_DO_FACTORY_RESET", "NAV_DO_REBOOT")),
-    ("nav_settings_reset_needs_previous_firmware", T, F, SET_RESET, "\t\t\tif(world->previous_firmware) ask(nav, NAV_DO_FACTORY_RESET);\n\t\t\tbreak;"),
+    ("nav_settings_reset_needs_previous_firmware", T, F, SET_RESET, "\t\t\tif(world->previous_firmware) ask(nav, NAV_DO_FACTORY_RESET, world);\n\t\t\tbreak;"),
     ("nav_settings_back_focus_on_first_row", T, F, BACK_SETTINGS, BACK_SETTINGS.replace("MENU_SETTINGS", "MENU_DTC")),
     ("nav_settings_back_to_pages", T, F, BACK_SETTINGS, "\t\t\tenter(nav, NAV_PAGES, 0);"),
+    # ... not while the own request is under way
+    ("nav_ask_while_under_way", T, F, ASK_FREE, "\t(void)world;\n\tenter(nav, NAV_CONFIRM"),
+    ("nav_ask_restart_while_under_way", T, F, ASK_FREE, ASK_FREE.replace("under_way(world->flow))", "under_way(world->flow) && action != NAV_DO_REBOOT)")),
+    ("nav_ask_previous_while_under_way", T, F, ASK_FREE, ASK_FREE.replace("under_way(world->flow))", "under_way(world->flow) && action != NAV_DO_PREVIOUS_FIRMWARE)")),
+    ("nav_ask_reset_while_under_way", T, F, ASK_FREE, ASK_FREE.replace("under_way(world->flow))", "under_way(world->flow) && action != NAV_DO_FACTORY_RESET)")),
+    ("nav_ask_refused_only_during_a_clear", T, F, ASK_FREE, ASK_FREE.replace("under_way(world->flow)", "world->flow == DTC_FLOW_CLEAR_SENT || world->flow == DTC_FLOW_CLEARING")),
+    ("nav_ask_refused_only_during_a_read", T, F, ASK_FREE, ASK_FREE.replace("under_way(world->flow)", "world->flow == DTC_FLOW_READ_SENT || world->flow == DTC_FLOW_READING")),
+    ("nav_ask_refused_only_once_the_adapter_accepted", T, F, ASK_FREE, ASK_FREE.replace("under_way(world->flow)", "world->flow == DTC_FLOW_READING || world->flow == DTC_FLOW_CLEARING")),
+    ("nav_ask_refused_only_until_the_adapter_accepted", T, F, ASK_FREE, ASK_FREE.replace("under_way(world->flow)", "world->flow == DTC_FLOW_READ_SENT || world->flow == DTC_FLOW_CLEAR_SENT")),
+    ("nav_ask_refused_unless_idle", T, F, ASK_FREE, ASK_FREE.replace("under_way(world->flow)", "world->flow != DTC_FLOW_IDLE")),
+    ("nav_ask_refused_with_a_list", T, F, ASK_FREE, ASK_FREE.replace("under_way(world->flow)", "under_way(world->flow) || world->flow == DTC_FLOW_LIST")),
+    ("nav_ask_refused_while_reading_is_forbidden", T, F, ASK_FREE, ASK_FREE.replace("under_way(world->flow)", "!world->can_read")),
+    ("nav_ask_refused_leads_to_the_progress", T, F, ASK_FREE, ASK_FREE.replace("return;", "\n\t{\n\t\tenter(nav, NAV_DTC_BUSY, 0);\n\t\treturn;\n\t}")),
     ("nav_ask_focus_on_execute", T, F, ASK, ASK.replace("CHOICE_CANCEL", "CHOICE_ACT")),
     ("nav_ask_action_not_stored", T, F, ASK, "\tenter(nav, NAV_CONFIRM, CHOICE_CANCEL);\n\t(void)action;\n"),
     ("nav_ask_action_stored_before_entering", T, F, ASK, "\tnav->confirm = action;\n\tenter(nav, NAV_CONFIRM, CHOICE_CANCEL);\n"),
@@ -535,6 +552,25 @@ MUTATIONS = [
     ("nav_tap_does_not_move_focus", T, F, TAP_FOCUS, TAP_FOCUS.replace("\t\tnav->row = row;\n", "")),
     ("nav_tap_only_moves_focus", T, F, TAP_FOCUS, TAP_FOCUS.replace("\t\tnav->row = row;\n", "\t\tnav->row = row;\n\t\treturn NAV_DO_NOTHING;\n")),
     ("nav_tap_on_focused_row_only_acts", T, F, TAP_FOCUS, TAP_FOCUS.replace("\t\tnav->row = row;\n", "\t\tif(nav->row != row)\n\t\t{\n\t\t\tnav->row = row;\n\t\t\treturn NAV_DO_NOTHING;\n\t\t}\n")),
+
+    # taps in the two dialogs
+    ("nav_dialog_taps_reach_both_answers", T, F, TAP_DIALOG, ""),
+    ("nav_dialog_tap_moves_focus_to_clear", T, F, TAP_DIALOG, TAP_DIALOG.replace("(nav->screen == NAV_DTC_CONFIRM || nav->screen == NAV_CONFIRM)", "nav->screen == NAV_CONFIRM")),
+    ("nav_dialog_tap_executes", T, F, TAP_DIALOG, TAP_DIALOG.replace("(nav->screen == NAV_DTC_CONFIRM || nav->screen == NAV_CONFIRM)", "nav->screen == NAV_DTC_CONFIRM")),
+    ("nav_dialog_tap_does_not_cancel", T, F, TAP_DIALOG, TAP_DIALOG.replace(" && row != CHOICE_CANCEL", "")),
+    ("nav_dialog_tap_on_cancel_ignored_tap_on_action_taken", T, F, TAP_DIALOG, TAP_DIALOG.replace("row != CHOICE_CANCEL", "row == CHOICE_CANCEL")),
+    ("nav_dialog_tap_on_focused_answer_acts", T, F, TAP_DIALOG, TAP_DIALOG.replace("row != CHOICE_CANCEL", "row != CHOICE_CANCEL && row != nav->row")),
+    ("nav_dialog_tap_ignored_only_from_cancel", T, F, TAP_DIALOG, TAP_DIALOG.replace("row != CHOICE_CANCEL", "row != CHOICE_CANCEL && nav->row == CHOICE_CANCEL")),
+    ("nav_dialog_tap_moves_the_focus", T, F, TAP_DIALOG, TAP_DIALOG.replace("return NAV_DO_NOTHING;", "\n\t\t{\n\t\t\tnav->row = row;\n\t\t\treturn NAV_DO_NOTHING;\n\t\t}")),
+    ("nav_dialog_tap_executes_only_the_restart", T, F,
+     TAP_DIALOG, TAP_DIALOG.replace("nav->screen == NAV_CONFIRM)", "(nav->screen == NAV_CONFIRM && nav->confirm != NAV_DO_REBOOT))")),
+    ("nav_dialog_tap_executes_the_previous_firmware", T, F,
+     TAP_DIALOG, TAP_DIALOG.replace("nav->screen == NAV_CONFIRM)", "(nav->screen == NAV_CONFIRM && nav->confirm != NAV_DO_PREVIOUS_FIRMWARE))")),
+    ("nav_dialog_tap_executes_the_factory_reset", T, F,
+     TAP_DIALOG, TAP_DIALOG.replace("nav->screen == NAV_CONFIRM)", "(nav->screen == NAV_CONFIRM && nav->confirm != NAV_DO_FACTORY_RESET))")),
+    ("nav_dialog_ignored_tap_is_no_input", T, F,
+     TAP_BODY + TAP_KNOB_ALONE, "\tuint64_t last_input_ms = nav->last_input_ms;\n\n" + TAP_BODY +
+     TAP_KNOB_ALONE.replace("return NAV_DO_NOTHING;", "\n\t\t{\n\t\t\tnav->last_input_ms = last_input_ms;\n\t\t\treturn NAV_DO_NOTHING;\n\t\t}")),
 
     # nav_tick: the clear dialog
     ("nav_tick_dialog_stays", T, F, TICK_DIALOG, ""),

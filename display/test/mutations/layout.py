@@ -62,6 +62,29 @@ NO_RANGE_BLOCK = NO_RANGE + "\n\t{\n\t\twarn(r, \"widget\", \"arc or bar without
 NO_MAP = "\tif(widget == LAYOUT_WIDGET_STATE && map_count == 0)"
 NO_MAP_BLOCK = NO_MAP + "\n\t{\n\t\twarn(r, \"widget\", \"state without map, shown as number\");\n\t\twidget = LAYOUT_WIDGET_NUMBER;\n\t}\n"
 HAS_UNIT = "\t\titem->has_unit = member(r, object, \"unit\") >= 0;"
+TAKE = "\tlimit->set = read->set;\n\tlimit->value = read->value;"
+# A layout cleared without the bytes that belong to no field: of the layout itself, of its pages, of its items.
+# The last one fills each item with ones before it clears its fields: so nothing but the bytes between the
+# fields of the items is left, whatever the memory held.
+CLEAR_FIELDS = ("memset(layout->name, 0, sizeof(layout->name));\n\tmemset(layout->profile_hint, 0, sizeof(layout->profile_hint));\n"
+                "\tmemset(layout->pages, 0, sizeof(layout->pages));\n\tlayout->page_count = 0;")
+CLEAR_PAGE_FIELDS = ("memset(layout, 0, offsetof(layout_t, pages));\n\tfor(int p = 0; p < LAYOUT_PAGES_MAX; p++)\n\t{\n"
+                     "\t\tmemset(layout->pages[p].title, 0, sizeof(layout->pages[p].title));\n\t\tlayout->pages[p].hidden = false;\n"
+                     "\t\tmemset(layout->pages[p].items, 0, sizeof(layout->pages[p].items));\n\t\tlayout->pages[p].item_count = 0;\n\t}\n"
+                     "\tmemset(&layout->page_count, 0, sizeof(*layout) - offsetof(layout_t, page_count));")
+CLEAR_ITEM_FIELDS = ("memset(layout, 0, sizeof(*layout));\n\tfor(int p = 0; p < LAYOUT_PAGES_MAX; p++)\n\t{\n\t\tfor(int i = 0; i < LAYOUT_ITEMS_MAX; i++)\n\t\t{\n"
+                     "\t\t\tlayout_item_t *cleared = &layout->pages[p].items[i];\n\n"
+                     "\t\t\tmemset(cleared, 1, sizeof(*cleared));\n"
+                     "\t\t\tmemset(cleared->key, 0, sizeof(cleared->key));\n\t\t\tmemset(cleared->label, 0, sizeof(cleared->label));\n"
+                     "\t\t\tmemset(cleared->unit, 0, sizeof(cleared->unit));\n\t\t\tcleared->has_unit = false;\n\t\t\tcleared->decimals = 0;\n"
+                     "\t\t\tcleared->widget = LAYOUT_WIDGET_NUMBER;\n\t\t\tcleared->scale = 0;\n\t\t\tmemset(&cleared->min, 0, 6 * sizeof(layout_limit_t));\n"
+                     "\t\t\tmemset(cleared->map, 0, sizeof(cleared->map));\n\t\t\tcleared->map_count = 0;\n\t\t}\n\t}")
+TAKE_MIN = "\t\ttake_limit(&item->min, &min);"
+TAKE_MAX = "\t\ttake_limit(&item->max, &max);"
+TAKE_WARN_LO = "\t\ttake_limit(&item->warn_lo, &warn_lo);"
+TAKE_WARN_HI = "\t\ttake_limit(&item->warn_hi, &warn_hi);"
+TAKE_CRIT_LO = "\t\ttake_limit(&item->crit_lo, &crit_lo);"
+TAKE_CRIT_HI = "\t\ttake_limit(&item->crit_hi, &crit_hi);"
 
 # numbers, texts, maps
 NUMBER_SET = "\tnumber->set = index >= 0;\n\tnumber->value = 0;\n\tif(index < 0) return true;"
@@ -453,19 +476,45 @@ MUTATIONS = [
     ("layout_range_only_checked_for_arc_and_bar", T, F, RANGE_ORDER, RANGE_ORDER.replace("if(min.set", "if(widget != LAYOUT_WIDGET_NUMBER && min.set")),
     ("layout_range_order_named_at_max", T, F, RANGE_ORDER, RANGE_ORDER.replace("refuse(r, \"min\",", "refuse(r, \"max\",")),
     ("layout_single_min_refused", T, F, RANGE_ORDER, RANGE_ORDER.replace("min.set && max.set && ", "")),
-    ("layout_min_not_stored", T, F, "\t\titem->min = min;\n", ""),
-    ("layout_max_not_stored", T, F, "\t\titem->max = max;\n", ""),
-    ("layout_max_stored_as_min", T, F, "\t\titem->max = max;", "\t\titem->max = min;"),
+    ("layout_min_not_stored", T, F, TAKE_MIN + "\n", ""),
+    ("layout_max_not_stored", T, F, TAKE_MAX + "\n", ""),
+    ("layout_max_stored_as_min", T, F, TAKE_MAX, "\t\ttake_limit(&item->max, &min);"),
     ("layout_warn_limits_not_read", T, F, WARN + "\n", "\twarn_lo.set = false;\n\twarn_lo.value = 0;\n\twarn_hi = warn_lo;\n"),
     ("layout_warn_limits_swapped", T, F, WARN, WARN.replace("\"warn_lo\", &warn_lo) || !read_number(r, object, \"warn_hi\", &warn_hi)",
                                                            "\"warn_hi\", &warn_lo) || !read_number(r, object, \"warn_lo\", &warn_hi)")),
     ("layout_crit_limits_not_read", T, F, CRIT + "\n", "\tcrit_lo.set = false;\n\tcrit_lo.value = 0;\n\tcrit_hi = crit_lo;\n"),
     ("layout_crit_read_from_warn", T, F, CRIT, CRIT.replace("\"crit_lo\"", "\"warn_lo\"").replace("\"crit_hi\"", "\"warn_hi\"")),
-    ("layout_warn_lo_not_stored", T, F, "\t\titem->warn_lo = warn_lo;\n", ""),
-    ("layout_warn_hi_not_stored", T, F, "\t\titem->warn_hi = warn_hi;\n", ""),
-    ("layout_crit_lo_not_stored", T, F, "\t\titem->crit_lo = crit_lo;\n", ""),
-    ("layout_crit_hi_not_stored", T, F, "\t\titem->crit_hi = crit_hi;\n", ""),
-    ("layout_crit_hi_stored_as_crit_lo", T, F, "\t\titem->crit_lo = crit_lo;", "\t\titem->crit_lo = crit_hi;"),
+    ("layout_warn_lo_not_stored", T, F, TAKE_WARN_LO + "\n", ""),
+    ("layout_warn_hi_not_stored", T, F, TAKE_WARN_HI + "\n", ""),
+    ("layout_crit_lo_not_stored", T, F, TAKE_CRIT_LO + "\n", ""),
+    ("layout_crit_hi_not_stored", T, F, TAKE_CRIT_HI + "\n", ""),
+    ("layout_crit_hi_stored_as_crit_lo", T, F, TAKE_CRIT_LO, "\t\ttake_limit(&item->crit_lo, &crit_hi);"),
+    # every byte: a limit taken over as a whole struct brings along what the stack held between its fields. What
+    # that is depends on the compiler: these are red where the locals lie on the stack and it held something
+    # (seen with clang on arm64 at every optimisation level, see test_every_byte()).
+    ("layout_limits_taken_as_structs", T, F, TAKE, "\t*limit = *read;"),
+    ("layout_set_limits_taken_as_structs", T, F, TAKE, "\tif(read->set) *limit = *read;"),
+    ("layout_unset_limits_taken_as_structs", T, F, TAKE, "\tif(!read->set) *limit = *read;\n" + TAKE),
+    ("layout_min_taken_as_struct", T, F, TAKE_MIN, "\t\titem->min = min;"),
+    ("layout_max_taken_as_struct", T, F, TAKE_MAX, "\t\titem->max = max;"),
+    ("layout_warn_lo_taken_as_struct", T, F, TAKE_WARN_LO, "\t\titem->warn_lo = warn_lo;"),
+    ("layout_warn_hi_taken_as_struct", T, F, TAKE_WARN_HI, "\t\titem->warn_hi = warn_hi;"),
+    ("layout_crit_lo_taken_as_struct", T, F, TAKE_CRIT_LO, "\t\titem->crit_lo = crit_lo;"),
+    ("layout_crit_hi_taken_as_struct", T, F, TAKE_CRIT_HI, "\t\titem->crit_hi = crit_hi;"),
+    ("layout_limit_taken_byte_for_byte", T, F, TAKE, "\tmemcpy(limit, read, sizeof(*limit));"),
+    ("layout_text_taken_with_its_room", T, F, "\tif(out != NULL) strcpy(out, text);", "\tif(out != NULL) memcpy(out, text, size);"),
+    # every byte: a layout that is cleared field by field keeps what the memory held between the fields. These
+    # do not depend on the stack: the layout of the test is full of bytes that are not zero before each call.
+    ("layout_parse_clears_only_the_fields", T, F, "\tmemset(layout, 0, sizeof(*layout));\n\tread_layout(&reader, layout);", "\t" + CLEAR_FIELDS + "\n\tread_layout(&reader, layout);"),
+    ("layout_parse_leaves_bytes_between_fields_of_pages", T, F,
+     "\tmemset(layout, 0, sizeof(*layout));\n\tread_layout(&reader, layout);", "\t" + CLEAR_PAGE_FIELDS + "\n\tread_layout(&reader, layout);"),
+    ("layout_parse_leaves_bytes_between_fields_of_items", T, F,
+     "\tmemset(layout, 0, sizeof(*layout));\n\tread_layout(&reader, layout);", "\t" + CLEAR_ITEM_FIELDS + "\n\tread_layout(&reader, layout);"),
+    ("layout_generated_clears_only_the_fields", T, F, GENERATED_CLEAR, GENERATED_CLEAR.replace("memset(layout, 0, sizeof(*layout));", CLEAR_FIELDS)),
+    ("layout_generated_leaves_bytes_between_fields_of_items", T, F, GENERATED_CLEAR, GENERATED_CLEAR.replace("memset(layout, 0, sizeof(*layout));", CLEAR_ITEM_FIELDS)),
+    ("layout_limit_never_set", T, F, "\tlimit->set = read->set;\n", ""),
+    ("layout_limit_without_value", T, F, "\tlimit->value = read->value;\n", ""),
+    ("layout_limit_always_set", T, F, "\tlimit->set = read->set;", "\tlimit->set = true;"),
     ("layout_number_of_any_type_is_zero", T, F, NOT_A_NUMBER, "\tjson_number(r->json, &r->tokens[index], &number->value);"),
     ("layout_infinite_number_accepted", T, F, NOT_FINITE + "\n", ""),
     ("layout_infinite_called_no_number", T, F, NOT_FINITE, NOT_FINITE.replace("\"not finite\"", "\"not a number\"")),

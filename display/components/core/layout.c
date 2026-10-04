@@ -145,6 +145,15 @@ static bool read_number(const reader_t *r, int object, const char *key, layout_l
 	return true;
 }
 
+// A limit that was read, taken over into the layout field by field. An assignment of the struct would take
+// the bytes between its fields along, and in a local those are whatever the stack held before: in the layout
+// they have to stay the zeros layout_parse() put there (layout.h).
+static void take_limit(layout_limit_t *limit, const layout_limit_t *read)
+{
+	limit->set = read->set;
+	limit->value = read->value;
+}
+
 // The texts of a state widget, {"1":"inaktiv","*":"aktiv"}. object is -1 if the item has none; map may be NULL.
 static bool read_map(reader_t *r, int object, layout_map_t *map, uint8_t *count)
 {
@@ -236,12 +245,12 @@ static bool read_item(reader_t *r, int object, layout_item_t *item)
 		item->decimals = (uint8_t)decimals;
 		item->widget = widget;
 		item->scale = scale.set ? scale.value : 1;
-		item->min = min;
-		item->max = max;
-		item->warn_lo = warn_lo;
-		item->warn_hi = warn_hi;
-		item->crit_lo = crit_lo;
-		item->crit_hi = crit_hi;
+		take_limit(&item->min, &min);
+		take_limit(&item->max, &max);
+		take_limit(&item->warn_lo, &warn_lo);
+		take_limit(&item->warn_hi, &warn_hi);
+		take_limit(&item->crit_lo, &crit_lo);
+		take_limit(&item->crit_hi, &crit_hi);
 		item->map_count = map_count;
 	}
 	return true;

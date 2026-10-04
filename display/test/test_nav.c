@@ -1050,8 +1050,13 @@ static void test_clear_dialog(void)
 	check(press() == NAV_DO_HOLD_CLOSE && at(NAV_DTC_LIST, 4), "clear dialog, short press on Abbrechen: back to the list with the focus on Fehler löschen, the hold dialog is closed");
 
 	open_clear_dialog(3);
-	check(tap(1) == NAV_DO_NOTHING && at(NAV_DTC_CONFIRM, 1), "clear dialog, a tap on Löschen from Abbrechen: the focus goes there, nothing else");
+	before = nav;
+	check(tap(1) == NAV_DO_NOTHING && stays(&before) && at(NAV_DTC_CONFIRM, 0), "clear dialog, a tap on Löschen from Abbrechen: ignored, the focus stays on Abbrechen - the knob alone moves it");
+	check(nav.last_input_ms == now, "clear dialog, a tap on Löschen that is ignored: an input for the idle time all the same");
 	check(tap(0) == NAV_DO_HOLD_CLOSE && at(NAV_DTC_LIST, 4), "clear dialog, a tap on Abbrechen: back to the list, the hold dialog is closed");
+	open_clear_dialog(3);
+	turn(1);
+	check(tap(0) == NAV_DO_HOLD_CLOSE && at(NAV_DTC_LIST, 4), "clear dialog, a tap on Abbrechen with the focus on Löschen: back to the list as well");
 	open_clear_dialog(3);
 	check(turn(7) == NAV_DO_NOTHING && at(NAV_DTC_CONFIRM, 1) && turn(INT_MIN) == NAV_DO_NOTHING && at(NAV_DTC_CONFIRM, 0) && turn(INT_MAX) == NAV_DO_NOTHING && at(NAV_DTC_CONFIRM, 1),
 	      "clear dialog: any number of detents ends on one of its two rows");
@@ -1284,7 +1289,10 @@ static void test_info(void)
 static void test_settings(void)
 {
 	static const nav_do_t actions[5] = {NAV_DO_NOTHING, NAV_DO_NOTHING, NAV_DO_REBOOT, NAV_DO_PREVIOUS_FIRMWARE, NAV_DO_FACTORY_RESET};
+	//                                        idle  read sent reading list  clear sent clearing cleared failed unknown no phase
+	static const bool asks[PHASES + 1] = {true, false,    false,  true, false,     false,   true,   true,  true,   true};
 	nav_t before;
+	int wrong = 0;
 
 	open_settings(0);
 	before = nav;
@@ -1322,30 +1330,33 @@ static void test_settings(void)
 	// The dialog for each of the three, opened with row 2, 3 and 4
 	for(int row = 2; row <= 4; row++)
 	{
-		static const char *const texts[5][7] =
+		static const char *const texts[5][8] =
 		{
 			{NULL}, {NULL},
 			{"dialog for the restart, turning: the focus moves between Abbrechen and Ausführen, hard ends",
 			 "dialog for the restart, short press on Abbrechen: the settings with the focus on Neustart, nothing waits any more",
 			 "dialog for the restart, long press on Ausführen: the settings with the focus on Neustart, nothing is carried out",
 			 "dialog for the restart, short press on Ausführen: the restart is to be carried out, the value pages are shown",
-			 "dialog for the restart, a tap on Ausführen: the restart is to be carried out",
+			 "dialog for the restart, a tap on Ausführen: ignored, the focus stays on Abbrechen and the dialog waits on",
 			 "dialog for the restart, a tap on Abbrechen: the settings with the focus on Neustart",
-			 "dialog for the restart: a tap on a row that does not exist, a swipe and the hold are nothing"},
+			 "dialog for the restart: a tap on a row that does not exist, a swipe and the hold are nothing",
+			 "dialog for the restart, a tap on Ausführen with the focus on it: ignored as well, nothing is carried out"},
 			{"dialog for the previous version, turning: the focus moves between Abbrechen and Ausführen, hard ends",
 			 "dialog for the previous version, short press on Abbrechen: the settings with the focus on Vorherige Version, nothing waits any more",
 			 "dialog for the previous version, long press on Ausführen: the settings with the focus on Vorherige Version, nothing is carried out",
 			 "dialog for the previous version, short press on Ausführen: the other firmware is to be started, the value pages are shown",
-			 "dialog for the previous version, a tap on Ausführen: the other firmware is to be started",
+			 "dialog for the previous version, a tap on Ausführen: ignored, the focus stays on Abbrechen and the dialog waits on",
 			 "dialog for the previous version, a tap on Abbrechen: the settings with the focus on Vorherige Version",
-			 "dialog for the previous version: a tap on a row that does not exist, a swipe and the hold are nothing"},
+			 "dialog for the previous version: a tap on a row that does not exist, a swipe and the hold are nothing",
+			 "dialog for the previous version, a tap on Ausführen with the focus on it: ignored as well, nothing is carried out"},
 			{"dialog for the factory reset, turning: the focus moves between Abbrechen and Ausführen, hard ends",
 			 "dialog for the factory reset, short press on Abbrechen: the settings with the focus on Werkseinstellungen, nothing waits any more",
 			 "dialog for the factory reset, long press on Ausführen: the settings with the focus on Werkseinstellungen, nothing is carried out",
 			 "dialog for the factory reset, short press on Ausführen: the reset is to be carried out, the value pages are shown",
-			 "dialog for the factory reset, a tap on Ausführen: the reset is to be carried out",
+			 "dialog for the factory reset, a tap on Ausführen: ignored, the focus stays on Abbrechen and the dialog waits on",
 			 "dialog for the factory reset, a tap on Abbrechen: the settings with the focus on Werkseinstellungen",
-			 "dialog for the factory reset: a tap on a row that does not exist, a swipe and the hold are nothing"},
+			 "dialog for the factory reset: a tap on a row that does not exist, a swipe and the hold are nothing",
+			 "dialog for the factory reset, a tap on Ausführen with the focus on it: ignored as well, nothing is carried out"},
 		};
 
 		open_ask(row);
@@ -1359,7 +1370,12 @@ static void test_settings(void)
 		turn(1);
 		check(press() == actions[row] && page_is(2) && nav.confirm == NAV_DO_NOTHING, texts[row][3]);
 		open_ask(row);
-		check(tap(1) == actions[row] && page_is(2) && nav.confirm == NAV_DO_NOTHING, texts[row][4]);
+		before = nav;
+		check(tap(1) == NAV_DO_NOTHING && stays(&before) && at(NAV_CONFIRM, 0) && nav.confirm == actions[row], texts[row][4]);
+		open_ask(row);
+		turn(1);
+		before = nav;
+		check(tap(1) == NAV_DO_NOTHING && stays(&before) && at(NAV_CONFIRM, 1) && nav.confirm == actions[row], texts[row][7]);
 		open_ask(row);
 		turn(1);
 		check(tap(0) == NAV_DO_NOTHING && at(NAV_SETTINGS, row) && nav.confirm == NAV_DO_NOTHING, texts[row][5]);
@@ -1372,6 +1388,51 @@ static void test_settings(void)
 
 	open_ask(4);
 	check(long_press() == NAV_DO_NOTHING && at(NAV_SETTINGS, 4), "dialog for the factory reset, long press on Abbrechen: the settings");
+
+	// While the own request is under way nothing leads to a restart
+	open_settings(4);
+	world.flow = DTC_FLOW_CLEARING;
+	before = nav;
+	check(press() == NAV_DO_NOTHING && stays(&before), "settings, short press on Werkseinstellungen while the own clear runs: nothing, no dialog opens");
+	world.flow = DTC_FLOW_CLEARED;
+	check(press() == NAV_DO_NOTHING && at(NAV_CONFIRM, 0) && nav.confirm == NAV_DO_FACTORY_RESET, "settings, short press on Werkseinstellungen when the clear has ended: the dialog opens");
+	open_settings(0);
+	world.flow = DTC_FLOW_READING;
+	before = nav;
+	before.row = 2;
+	check(tap(2) == NAV_DO_NOTHING && stays(&before), "settings, a tap on Neustart while the own read runs: the focus goes there, nothing else");
+	for(int i = 0; i <= PHASES; i++)
+	{
+		for(int row = 2; row <= 4; row++)
+		{
+			for(int by_tap = 0; by_tap < 2; by_tap++)
+			{
+				nav_do_t action;
+				bool right;
+
+				open_settings(by_tap ? 0 : row);
+				world.previous_firmware = true;
+				world.flow = phases[i];
+				action = by_tap ? tap(row) : press();
+				right = asks[i] ? at(NAV_CONFIRM, 0) && nav.confirm == actions[row] : at(NAV_SETTINGS, row) && nav.confirm == NAV_DO_NOTHING;
+				if(action != NAV_DO_NOTHING || !right || nav.page != 2)
+				{
+					printf("  flow %s, row %d, %s: action %d, screen %d row %d, waits %d\n", phase_names[i], row, by_tap ? "tap" : "short press", (int)action, (int)nav.screen, nav.row, (int)nav.confirm);
+					wrong++;
+				}
+			}
+		}
+	}
+	check(wrong == 0, "settings, a short press and a tap on Neustart, Vorherige Version and Werkseinstellungen in every phase of the flow: the dialog opens, "
+	                  "but not while the own request is under way (four phases) - then nothing waits and the settings stay");
+	wrong = 0;
+	for(int i = 0; i <= PHASES; i++)
+	{
+		open_settings(0);
+		world.flow = phases[i];
+		if(press() != NAV_DO_REVERSE_TOGGLE || turn(1) != NAV_DO_NOTHING || press() != NAV_DO_AP_TOGGLE || !at(NAV_SETTINGS, 1) || tap(5) != NAV_DO_NOTHING || !at(NAV_MENU, 5)) wrong++;
+	}
+	check(wrong == 0, "settings in every phase of the flow: Drehrichtung, Hotspot and Zurück do what they always do");
 	open_ask(3);
 	world.previous_firmware = false;
 	check(turn(1) == NAV_DO_NOTHING && press() == NAV_DO_PREVIOUS_FIRMWARE && page_is(2),
@@ -1623,6 +1684,10 @@ static void test_idle(void)
 	input = now;
 	nav_tap(&nav, 0, &world, now = input + 100000);
 	check(tick_at(input + 219999) == NAV_DO_NOTHING && at(NAV_BRIGHTNESS, 0) && tick_at(input + 220000) == NAV_DO_SETTINGS_STORE && page_is(2), "a tap on a screen without rows starts the idle time anew");
+	reach(NAV_CONFIRM, false);
+	input = now;
+	nav_tap(&nav, 1, &world, now = input + 100000);
+	check(tick_at(input + 219999) == NAV_DO_NOTHING && at(NAV_CONFIRM, 0) && tick_at(input + 220000) == NAV_DO_NOTHING && page_is(2), "a tap on Ausführen that is ignored starts the idle time anew");
 	reach(NAV_INFO, false);
 	input = now;
 	nav_swipe(&nav, 1, &world, now = input + 100000);
@@ -2169,7 +2234,7 @@ enum
 
 typedef enum
 {
-	ALWAYS, CAN_READ, CAN_CLEAR, UNDER_WAY, NOT_UNDER_WAY, HAS_LIST, HAS_CLEARED, HAS_FAILED, HAS_OLD, RELEASED, NOT_RELEASED, HAS_PREVIOUS,
+	ALWAYS, CAN_READ, CAN_CLEAR, UNDER_WAY, NOT_UNDER_WAY, HAS_LIST, HAS_CLEARED, HAS_FAILED, HAS_OLD, RELEASED, NOT_RELEASED, PREVIOUS_AND_NOT_UNDER_WAY,
 } when_t;
 
 typedef struct
@@ -2237,9 +2302,9 @@ static const rule_t rules[] =
 
 	{NAV_SETTINGS,    's', 0,          ALWAYS,        STAY,            0,         NAV_DO_REVERSE_TOGGLE, NAV_DO_NOTHING},
 	{NAV_SETTINGS,    's', 1,          ALWAYS,        STAY,            0,         NAV_DO_AP_TOGGLE,      NAV_DO_NOTHING},
-	{NAV_SETTINGS,    's', 2,          ALWAYS,        NAV_CONFIRM,     0,         NAV_DO_NOTHING,        NAV_DO_REBOOT},
-	{NAV_SETTINGS,    's', 3,          HAS_PREVIOUS,  NAV_CONFIRM,     0,         NAV_DO_NOTHING,        NAV_DO_PREVIOUS_FIRMWARE},
-	{NAV_SETTINGS,    's', 4,          ALWAYS,        NAV_CONFIRM,     0,         NAV_DO_NOTHING,        NAV_DO_FACTORY_RESET},
+	{NAV_SETTINGS,    's', 2,          NOT_UNDER_WAY, NAV_CONFIRM,     0,         NAV_DO_NOTHING,        NAV_DO_REBOOT},
+	{NAV_SETTINGS,    's', 3,          PREVIOUS_AND_NOT_UNDER_WAY, NAV_CONFIRM, 0, NAV_DO_NOTHING,       NAV_DO_PREVIOUS_FIRMWARE},
+	{NAV_SETTINGS,    's', 4,          NOT_UNDER_WAY, NAV_CONFIRM,     0,         NAV_DO_NOTHING,        NAV_DO_FACTORY_RESET},
 	{NAV_SETTINGS,    's', 5,          ALWAYS,        NAV_MENU,        5,         NAV_DO_NOTHING,        NAV_DO_NOTHING},
 	{NAV_SETTINGS,    'l', ANY,        ALWAYS,        NAV_MENU,        5,         NAV_DO_NOTHING,        NAV_DO_NOTHING},
 
@@ -2268,7 +2333,7 @@ static bool model_when(const seen_t *seen, when_t when)
 		case HAS_OLD:       return seen->old > 0;
 		case RELEASED:      return seen->release_open;
 		case NOT_RELEASED:  return !seen->release_open;
-		case HAS_PREVIOUS:  return seen->previous_firmware;
+		case PREVIOUS_AND_NOT_UNDER_WAY: return seen->previous_firmware && !model_under_way(seen);
 	}
 	return false;
 }
@@ -2434,11 +2499,17 @@ static nav_do_t model_long(model_t *model, const seen_t *seen)
 	return model_press(model, seen, 'l');
 }
 
+// The rows of a screen a finger reaches, counted from its first one: of the two dialogs the first answer alone
+static int model_touchable(nav_screen_t screen, const seen_t *seen)
+{
+	return screen == NAV_DTC_CONFIRM || screen == NAV_CONFIRM ? 1 : model_rows(screen, seen);
+}
+
 static nav_do_t model_tap(model_t *model, const seen_t *seen, int row)
 {
 	if(seen->over == NAV_OVER_NONE && model->screen != NAV_DTC_FAILED)
 	{
-		if(row < 0 || row >= model_rows(model->screen, seen)) return NAV_DO_NOTHING;
+		if(row < 0 || row >= model_touchable(model->screen, seen)) return NAV_DO_NOTHING;
 		model->row = row;
 	}
 	return model_short(model, seen);
@@ -2552,7 +2623,10 @@ static struct
 	long under[4];                      // inputs under each overlay (0: none)
 	long steps_back, ends_of_idle, beyond, searches, no_page, huge_lists, strange_phases;
 	// What must not happen
-	long differences, clears, dialogs, dangerous, overlays, rows, values, trapped;
+	long differences, clears, reads, dialogs, dangerous, touched, overlays, rows, values, trapped;
+	// What the walk reached of the rules for the dialogs
+	long taps_ignored[2];               // taps on the second answer of the clear dialog and of the dialog of the settings
+	long asks_refused;                  // short presses and taps on a row of the settings that asks first, while a request is under way
 } walked;
 
 static uint32_t walk_state;
@@ -2798,7 +2872,7 @@ static void walk(uint32_t seed)
 		hold_event_t event = HOLD_WAITING;
 		int given = 0, followed = -1, rows, last, pressed_row;
 		bool applies[TICK_RULES] = {false, false, false, false, false, false};
-		bool input, same, entered, left, dangerous, beyond;
+		bool input, same, entered, left, dangerous, beyond, under_way, in_dialog;
 		bool end_of_idle = false;
 		nav_t before;
 
@@ -2940,9 +3014,16 @@ static void walk(uint32_t seed)
 		last = model_rows(nav.screen, &seen) - 1;
 		if(last < 0) last = 0;
 
+		under_way = world.flow == DTC_FLOW_READ_SENT || world.flow == DTC_FLOW_READING || world.flow == DTC_FLOW_CLEAR_SENT || world.flow == DTC_FLOW_CLEARING;
+		in_dialog = before.screen == NAV_DTC_CONFIRM || before.screen == NAV_CONFIRM;
+
 		// Clearing: asked for only by a confirmed hold in the dialog with nothing lying over it
 		if(action == NAV_DO_CLEAR && !(call == CALL_HOLD && event == HOLD_CONFIRMED && before.screen == NAV_DTC_CONFIRM && seen.over == NAV_OVER_NONE &&
 		                               nav.screen == NAV_DTC_BUSY)) walked.clears++;
+		// Reading: asked for only from the fault memory and from its list, while it is allowed. So a request
+		// begins on one of three screens, and the progress follows: none begins below the dialog of the settings.
+		if(action == NAV_DO_READ && !((before.screen == NAV_DTC || before.screen == NAV_DTC_LIST) && pressed_row >= 0 && world.can_read &&
+		                              seen.over == NAV_OVER_NONE && nav.screen == NAV_DTC_BUSY)) walked.reads++;
 
 		// The dialog: entered only from the list by a short press or tap on Fehler löschen while clearing is
 		// allowed, and never left without the hold dialog being closed
@@ -2952,17 +3033,31 @@ static void walk(uint32_t seed)
 		   !(call == CALL_HOLD && (event == HOLD_CONFIRMED || event == HOLD_CANCELLED || event == HOLD_STUCK))) walked.dialogs++;
 		if(action == NAV_DO_HOLD_CLOSE && !left) walked.dialogs++;
 
-		// Restart, previous firmware and factory reset: only from Ausführen of their dialog, and the dialog only
-		// from its row of the settings
-		if(dangerous && !(before.screen == NAV_CONFIRM && pressed_row == 1 && seen.over == NAV_OVER_NONE && action == before.confirm && nav.screen == NAV_PAGES)) walked.dangerous++;
+		// Restart, previous firmware and factory reset: only from a short press of the knob on Ausführen of their
+		// dialog, never from a tap; and the dialog only from its row of the settings, while no request is under way
+		if(dangerous && !(before.screen == NAV_CONFIRM && call == CALL_SHORT && before.row == 1 && seen.over == NAV_OVER_NONE && action == before.confirm &&
+		                  nav.screen == NAV_PAGES)) walked.dangerous++;
 		if(nav.screen == NAV_CONFIRM && before.screen != NAV_CONFIRM)
 		{
 			nav_do_t asked = pressed_row == 2 ? NAV_DO_REBOOT : pressed_row == 3 ? NAV_DO_PREVIOUS_FIRMWARE : NAV_DO_FACTORY_RESET;
 
 			if(before.screen != NAV_SETTINGS || pressed_row < 2 || pressed_row > 4 || nav.confirm != asked || action != NAV_DO_NOTHING ||
-			   seen.over != NAV_OVER_NONE || (pressed_row == 3 && !world.previous_firmware)) walked.dangerous++;
+			   seen.over != NAV_OVER_NONE || (pressed_row == 3 && !world.previous_firmware) || under_way) walked.dangerous++;
 		}
 		if((nav.screen == NAV_CONFIRM) != (nav.confirm != NAV_DO_NOTHING)) walked.dangerous++;
+		if(before.screen == NAV_SETTINGS && pressed_row >= 2 && pressed_row <= 4 && under_way && seen.over == NAV_OVER_NONE)
+		{
+			if(nav.screen != NAV_SETTINGS || action != NAV_DO_NOTHING) walked.dangerous++;
+			walked.asks_refused++;
+		}
+
+		// The focus of the two dialogs: moved by the knob alone, and a tap on the second answer changes nothing
+		if(in_dialog && nav.screen == before.screen && nav.row != before.row && call != CALL_TURN) walked.touched++;
+		if(in_dialog && call == CALL_TAP && given == 1 && seen.over == NAV_OVER_NONE)
+		{
+			if(action != NAV_DO_NOTHING || !stays(&before)) walked.touched++;
+			walked.taps_ignored[before.screen == NAV_CONFIRM]++;
+		}
 
 		// Under an overlay an input changes nothing below it and returns only what the overlay names
 		if(input && seen.over != NAV_OVER_NONE)
@@ -3037,6 +3132,8 @@ static void test_walk(void)
 	printf("  inputs under: nothing %ld, upload %ld, question %ld, update question %ld\n", walked.under[0], walked.under[1], walked.under[2], walked.under[3]);
 	printf("  steps back %ld, ends of the idle time %ld, focus beyond the last row %ld, searches for a way back %ld, no page %ld, huge lists %ld, strange phases %ld\n",
 	       walked.steps_back, walked.ends_of_idle, walked.beyond, walked.searches, walked.no_page, walked.huge_lists, walked.strange_phases);
+	printf("  taps on the second answer: clear dialog %ld, dialog of the settings %ld; rows of the settings that ask first, pressed while a request is under way: %ld\n",
+	       walked.taps_ignored[0], walked.taps_ignored[1], walked.asks_refused);
 
 	for(int i = 0; i < CALLS; i++) reached = reached && walked.calls[i] >= 200;
 	for(int i = 0; i < SCREENS; i++) reached = reached && walked.screens[i] >= 1000;
@@ -3046,14 +3143,20 @@ static void test_walk(void)
 	reached = reached && walked.both[2][4] >= 100 && walked.both[2][5] >= 25 && walked.both[4][5] >= 8;
 	reached = reached && walked.steps_back >= 50000 && walked.ends_of_idle >= 50000 && walked.beyond >= 90 && walked.no_page >= 100000 &&
 	          walked.huge_lists >= 2500 && walked.strange_phases >= 10000;
+	reached = reached && walked.taps_ignored[0] >= 40 && walked.taps_ignored[1] >= 100 && walked.asks_refused >= 100;
 	check(reached, "the walk reaches every screen, every action, every call, every rule of the tick and every pair of them that can apply at once, all overlays, "
-	               "steps back of the time, the end of the idle time, lists that became shorter, no page at all, the largest lists and phases outside the enum, in numbers");
+	               "steps back of the time, the end of the idle time, lists that became shorter, no page at all, the largest lists and phases outside the enum, "
+	               "taps on the second answer of both dialogs and the settings while a request is under way, in numbers");
 
 	check(walked.differences == 0, "48 random walks of 40000 calls: screen, page, row, value, what waits, the times, the rows and the returned action are those of the model after every call");
 	check(walked.clears == 0, "in the walk a clear is asked for only by a confirmed hold in the clear dialog with nothing lying over it, and the progress follows");
+	check(walked.reads == 0, "in the walk a read is asked for only from the fault memory and from its list while reading is allowed, and the progress follows: "
+	                         "no request begins while the dialog of the settings shows");
 	check(walked.dialogs == 0, "in the walk the clear dialog is entered only from the list by a short press or tap on Fehler löschen while clearing is allowed, "
 	                           "and is never left without the hold dialog being closed");
-	check(walked.dangerous == 0, "in the walk restart, previous firmware and factory reset are returned only from Ausführen of their dialog, which is entered only from their row of the settings");
+	check(walked.dangerous == 0, "in the walk restart, previous firmware and factory reset are returned only from a short press of the knob on Ausführen of their dialog, "
+	                             "which is entered only from their row of the settings and never while a request is under way");
+	check(walked.touched == 0, "in the walk the focus of the two dialogs is moved by the knob alone, and a tap on their second answer changes nothing");
 	check(walked.overlays == 0, "in the walk an input under an overlay changes nothing below it and returns only what the overlay names; the hold returns nothing there, the tick at most the closing of the hold dialog");
 	check(walked.rows == 0, "in the walk the focus is never negative and lies beyond the last row only while nothing moved it since a list became shorter, never after a tick or a turn");
 	check(walked.values == 0, "in the walk the brightness being set stays within 5 and 100, and a store is asked for only when the brightness screen is left");

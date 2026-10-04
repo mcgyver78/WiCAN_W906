@@ -30,13 +30,14 @@
  *   long press   one level back; on a value page: back to the first page
  * The value pages are passive: no page in the rotation of the knob has an action.
  * Touch is an addition: a swipe on a value page is a turn of one detent, a tap on a row is focus plus
- * short press. Everything works with the knob alone.
+ * short press. Everything works with the knob alone. In the two dialogs (NAV_DTC_CONFIRM, NAV_CONFIRM) the
+ * knob alone moves the focus and confirms: a touch only cancels there.
  *
  * Screens and their rows (the focus starts on the row marked *):
  *   NAV_PAGES        the value pages; `page` is the one shown, -1 if the layout has none to show
  *   NAV_MENU         *0 Fehlerspeicher, 1 Helligkeit, 2 Nachtmodus, 3 Web-Zugriff, 4 Info, 5 Einstellungen,
  *                    6 Zurück
- *   NAV_DTC          *0 Lesen, 1 Liste ansehen, 2 Zuletzt gelöscht, 3 Zurück
+ *   NAV_DTC          *0 Lesen, 1 Liste ansehen, 2 Liste vor dem Löschen, 3 Zurück
  *   NAV_DTC_BUSY     no rows: progress of the own request
  *   NAV_DTC_LIST     *0 .. lines-1 the lines of the list, then Erneut lesen, Fehler löschen, Zurück
  *   NAV_DTC_CONFIRM  *0 Abbrechen, 1 Löschen
@@ -198,10 +199,12 @@ int nav_rows(const nav_t *nav, const nav_world_t *world);
  * NAV_DTC_CONFIRM the knob switch belongs to hold.h here: the caller samples it and reports the outcome
  *                 with nav_hold(). Long presses are not a way back on this screen. While an overlay lies
  *                 over it, the caller passes on_action false to hold_sample().
- *   turn          moves the focus between 0 Abbrechen and 1 Löschen (the caller also calls hold_activity())
+ *   turn          moves the focus between 0 Abbrechen and 1 Löschen (the caller also calls hold_activity()).
+ *                 Nothing else moves it: the caller keeps swipes away from this screen
  *   short on      0 -> NAV_DTC_LIST (focus on Fehler löschen) and NAV_DO_HOLD_CLOSE;  1: nothing
  *   long          nothing
- *   tap on        0 as short; 1: nothing (clearing cannot be confirmed by touch)
+ *   tap on        0 as short; 1: nothing at all, the focus stays where it is (a touch neither confirms the
+ *                 clear nor puts the focus on it)
  * NAV_DTC_CLEARED rows: cleared_lines, then Fertig
  *   short on      a line: nothing;  Fertig -> NAV_DO_DISMISS and NAV_DTC
  *   long          -> NAV_DTC (the outcome stays to be looked at again)
@@ -225,11 +228,18 @@ int nav_rows(const nav_t *nav, const nav_world_t *world);
  *                 2 -> NAV_CONFIRM for NAV_DO_REBOOT;
  *                 3: if previous_firmware -> NAV_CONFIRM for NAV_DO_PREVIOUS_FIRMWARE, else nothing;
  *                 4 -> NAV_CONFIRM for NAV_DO_FACTORY_RESET;  5 -> NAV_MENU (row 5)
+ *                 2, 3 and 4 do nothing while the own request is under way (READ_SENT, READING, CLEAR_SENT,
+ *                 CLEARING): a restart would leave a read without its list and a clear without its outcome
  *   long          -> NAV_MENU (row 5)
- * NAV_CONFIRM
+ * NAV_CONFIRM     Restart, previous firmware and factory reset are confirmed with the knob alone.
  *   short on      0 -> NAV_SETTINGS (focus on the row it came from);
  *                 1 -> the action in `confirm`, and NAV_PAGES
  *   long          -> NAV_SETTINGS (focus on the row it came from)
+ *   tap on        0 as short; 1: nothing at all, the focus stays where it is
+ *                 The dialog is not left when the own request begins, because none begins while it shows:
+ *                 a request is asked for from NAV_DTC and NAV_DTC_LIST (NAV_DO_READ) and from
+ *                 NAV_DTC_CONFIRM (NAV_DO_CLEAR) alone, and each of them leads to NAV_DTC_BUSY. A caller
+ *                 that starts one in another way has to see to this dialog itself.
  *
  * Turning on a screen with rows moves the focus by n and keeps it within 0 and rows - 1. Where a screen is
  * entered and no focus is named above, the focus is on row 0. A short press while the focus lies beyond the
@@ -241,7 +251,8 @@ nav_do_t nav_long(nav_t *nav, const nav_world_t *world, uint64_t now_ms);
 
 // A tap on row `row` of the screen: the focus goes there, then as a short press. A row that does not
 // exist is ignored. On NAV_PAGES and on screens without rows a tap is ignored (row is not looked at),
-// except NAV_DTC_FAILED, where it counts as a short press.
+// except NAV_DTC_FAILED, where it counts as a short press. In NAV_DTC_CONFIRM and NAV_CONFIRM a tap on row
+// 1 is ignored as well, and moves no focus: a touch happens too easily for what these dialogs ask.
 nav_do_t nav_tap(nav_t *nav, int row, const nav_world_t *world, uint64_t now_ms);
 
 // A swipe: on NAV_PAGES a turn of one detent in that direction (positive = next page; 0 is ignored), on

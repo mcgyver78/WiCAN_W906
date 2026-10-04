@@ -4,7 +4,7 @@ title: Fehlerspeicher
 note: Scan läuft bereits
 row: > action | Lesen |  | disabled
 row: - action | Liste ansehen |  | disabled
-row: - action | Zuletzt gelöscht |  | disabled
+row: - action | Liste vor dem Löschen |  | disabled
 row: - action | Zurück |  | enabled
 first: 0
 total: 4

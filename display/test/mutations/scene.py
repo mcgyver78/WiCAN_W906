@@ -25,6 +25,10 @@ LOW = "\tif(part <= 0) return 0;\n"
 HIGH = "\tif(part >= 1000) return 1000;\n"
 
 # One value
+# What the display has of a value: during a scan it is held, whatever its age
+BY_AGE = "layout_item_state(item, catalog, input->values, input->now_ms)"
+HELD = "view == CONN_VIEW_SCAN && value != NULL"
+STATE = "\tlayout_item_state_t state = " + HELD + " ? LAYOUT_ITEM_OLD : " + BY_AGE + ";"
 IS_SHOWN = "\tbool shown = (state == LAYOUT_ITEM_LIVE || state == LAYOUT_ITEM_OLD) && layout_item_text(item, value, out->text, sizeof(out->text));"
 LABEL = "\tif(item->label[0] != '\\0') append(out->label, sizeof(out->label), item->label);\n"
 MADE_LABEL = "\telse if(!fmt_label(item->key, out->label, sizeof(out->label))) memset(out->label, 0, sizeof(out->label));"
@@ -34,7 +38,7 @@ IF_NOT_SHOWN = "\tif(!shown)\n\t{\n"
 MISSED = "\t\tif(state != LAYOUT_ITEM_UNAVAILABLE) *old = true;\n"
 LEVEL = "\tif(item_level > *level) *level = item_level;\n"
 OLD = "\tif(state == LAYOUT_ITEM_OLD) *old = true;\n"
-LIVE_TONE = "\tif(state == LAYOUT_ITEM_LIVE && view != CONN_VIEW_SCAN)"
+LIVE_TONE = "\tif(state == LAYOUT_ITEM_LIVE)\n\t{"
 TONE = "\t\tout->tone = item_level >= 2 ? SCENE_TONE_ALARM : item_level == 1 ? SCENE_TONE_WARN : SCENE_TONE_NORMAL;"
 UNIT = "\tif(out->widget != LAYOUT_WIDGET_STATE) append(out->unit, sizeof(out->unit), layout_item_unit(item, catalog));"
 PERMILLE = "\tif(out->widget == LAYOUT_WIDGET_ARC || out->widget == LAYOUT_WIDGET_BAR) out->permille = range_permille(item, value);"
@@ -68,7 +72,8 @@ MENU_WEB = "\t\t{\"Web-Zugriff\", world->release_open ? \"frei\" : \"gesperrt\",
 OUTCOME = "\tbool outcome = world->flow == DTC_FLOW_LIST || world->flow == DTC_FLOW_CLEARED || world->flow == DTC_FLOW_FAILED || world->flow == DTC_FLOW_UNKNOWN;"
 DTC_READ = "\t\t{\"Lesen\", \"\", world->can_read},\n"
 DTC_VIEW = "\t\t{\"Liste ansehen\", \"\", outcome},\n"
-DTC_OLD = "\t\t{\"Zuletzt gelöscht\", \"\", world->old_lines > 0},\n"
+DTC_OLD_WHY = "\t\t// Not \"gelöscht\": the adapter can accept a clear and refuse it afterwards, at its own engine check\n"
+DTC_OLD = "\t\t{\"Liste vor dem Löschen\", \"\", world->old_lines > 0},\n"
 
 # The progress
 ACCEPTED = "\tbool accepted = flow->phase == DTC_FLOW_READING || flow->phase == DTC_FLOW_CLEARING;"
@@ -162,7 +167,7 @@ OWN_ARC = "\tif((input->nav->screen == NAV_DTC_BUSY || input->nav->screen == NAV
 RING_OFF = "\t\tscene->ring.kind = RING_NONE;\n"
 OVERLAY = "\tbuild_overlay(input, scene);\n"
 CLEARED = "\t\t\tset_title(scene, \"Gelöscht\");\n\t\t\tbuild_rows(input, input->cleared, NULL, done, COUNT(done), scene);"
-OLD_LIST = "\t\t\tset_title(scene, \"Zuletzt gelöscht\");\n\t\t\tbuild_rows(input, input->old, NULL, back, COUNT(back), scene);"
+OLD_LIST = "\t\t\tset_title(scene, \"Vor dem Löschen\");\n\t\t\tbuild_rows(input, input->old, NULL, back, COUNT(back), scene);"
 INFO = "\t\t\tset_title(scene, \"Info\");\n\t\t\tbuild_rows(input, NULL, input->info, NULL, 0, scene);"
 NO_SCREEN = "\t\tdefault:\n\t\t\tscene->kind = SCENE_NOTICE;\n\t\t\tbreak;"
 
@@ -342,9 +347,50 @@ MUTATIONS = [
     ("scene_item_old_not_told", T, F, OLD, "\t(void)old;\n"),
     ("scene_item_old_of_last_value", T, F, OLD, "\t*old = state == LAYOUT_ITEM_OLD;\n"),
     ("scene_item_every_value_old", T, F, OLD, "\t*old = true;\n"),
-    ("scene_item_old_value_in_its_tone", T, F, LIVE_TONE, "\tif(view != CONN_VIEW_SCAN)"),
-    ("scene_item_scan_does_not_dim", T, F, LIVE_TONE, "\t(void)view;\n\tif(state == LAYOUT_ITEM_LIVE)"),
-    ("scene_item_no_api_dims", T, F, LIVE_TONE, "\tif(state == LAYOUT_ITEM_LIVE && view == CONN_VIEW_LIVE)"),
+    ("scene_item_old_value_in_its_tone", T, F, LIVE_TONE, "\tif(view != CONN_VIEW_SCAN)\n\t{"),
+    ("scene_item_no_api_dims", T, F, LIVE_TONE, "\tif(state == LAYOUT_ITEM_LIVE && view == CONN_VIEW_LIVE)\n\t{"),
+    # during a scan the display holds its values: each is an old value, whatever its age
+    ("scene_item_scan_does_not_dim", T, F, STATE, STATE.replace(HELD, HELD + " && " + BY_AGE + " != LAYOUT_ITEM_LIVE")),
+    ("scene_scan_values_grow_old", T, F, STATE, "\tlayout_item_state_t state = ((void)view, " + BY_AGE + ");"),
+    ("scene_scan_only_dims", T, F, STATE, STATE.replace(HELD, "view == CONN_VIEW_SCAN && " + BY_AGE + " == LAYOUT_ITEM_LIVE")),
+    ("scene_scan_holds_what_never_was", T, F, STATE, STATE.replace(HELD, "view == CONN_VIEW_SCAN")),
+    ("scene_scan_forgets_what_the_profile_lacks", T, F, STATE, STATE.replace(HELD, HELD + " && " + BY_AGE + " != LAYOUT_ITEM_UNAVAILABLE")),
+    ("scene_scan_forgets_what_the_profile_has", T, F, STATE, STATE.replace(HELD, HELD + " && " + BY_AGE + " != LAYOUT_ITEM_NO_VALUE")),
+    ("scene_scan_holds_only_what_the_profile_has", T, F, STATE, STATE.replace(HELD, HELD + " && catalog_find(catalog, item->key) >= 0")),
+    ("scene_scan_holds_less_than_35_s", T, F, STATE, STATE.replace(HELD, HELD + " && input->now_ms - value->seen_ms < 35000")),
+    ("scene_scan_holds_up_to_35_s", T, F, STATE, STATE.replace(HELD, HELD + " && input->now_ms - value->seen_ms <= 35000")),
+    ("scene_scan_holds_for_a_minute", T, F, STATE, STATE.replace(HELD, HELD + " && input->now_ms - value->seen_ms <= 60000")),
+    ("scene_scan_holds_for_an_hour", T, F, STATE, STATE.replace(HELD, HELD + " && input->now_ms - value->seen_ms <= 3600000")),
+    ("scene_scan_holds_for_a_day", T, F, STATE, STATE.replace(HELD, HELD + " && input->now_ms - value->seen_ms <= 86400000")),
+    ("scene_scan_not_with_the_clock_back", T, F, STATE, STATE.replace(HELD, HELD + " && input->now_ms >= value->seen_ms")),
+    ("scene_scan_holds_as_fresh", T, F, STATE, STATE.replace("? LAYOUT_ITEM_OLD :", "? LAYOUT_ITEM_LIVE :")),
+    ("scene_scan_holds_as_missing", T, F, STATE, STATE.replace("? LAYOUT_ITEM_OLD :", "? LAYOUT_ITEM_NO_VALUE :")),
+    ("scene_scan_holds_only_while_running", T, F, STATE, STATE.replace(HELD, HELD + " && conn_state(input->conn)->dtc.phase == WICAN_DTC_RUNNING")),
+    ("scene_no_api_holds_values", T, F, STATE, STATE.replace("view == CONN_VIEW_SCAN", "(view == CONN_VIEW_SCAN || view == CONN_VIEW_NO_API)")),
+    ("scene_every_view_holds_values", T, F, STATE, STATE.replace("view == CONN_VIEW_SCAN && value != NULL", "((void)view, value != NULL)")),
+    ("scene_live_holds_values_scan_does_not", T, F, STATE, STATE.replace("view == CONN_VIEW_SCAN", "view != CONN_VIEW_SCAN")),
+    # nothing but the view decides whether the values are held
+    ("scene_scan_holds_only_without_pass_counter", T, F, STATE, STATE.replace(HELD, HELD + " && !input->values->has_pass")),
+    ("scene_scan_holds_only_if_nothing_was_dropped", T, F, STATE, STATE.replace(HELD, HELD + " && input->values->dropped == 0")),
+    ("scene_scan_holds_only_if_asked_over_http", T, F, STATE, STATE.replace(HELD, HELD + " && conn_state(input->conn)->dtc.from_http")),
+    ("scene_scan_holds_only_after_a_good_round", T, F, STATE, STATE.replace(HELD, HELD + " && input->conn->failed_rounds == 0")),
+    ("scene_scan_holds_only_for_a_read", T, F, STATE, STATE.replace(HELD, HELD + " && !conn_state(input->conn)->dtc.clear")),
+    ("scene_scan_holds_only_for_the_own_request", T, F, STATE, STATE.replace(HELD, HELD + " && conn_state(input->conn)->dtc.seq == input->flow->seq")),
+    ("scene_scan_holds_only_for_another_request", T, F, STATE, STATE.replace(HELD, HELD + " && input->flow->phase == DTC_FLOW_IDLE")),
+    # ... and nothing else the adapter says of itself: each of these was green until the made-up value pages
+    # made up the rest of the state too
+    ("scene_scan_holds_only_with_13_values", T, F, STATE, STATE.replace(HELD, HELD + " && conn_state(input->conn)->pids == 13")),
+    ("scene_scan_holds_only_at_pass_5", T, F, STATE, STATE.replace(HELD, HELD + " && conn_state(input->conn)->pass == 5")),
+    ("scene_scan_holds_only_at_one_rx_age", T, F, STATE, STATE.replace(HELD, HELD + " && conn_state(input->conn)->rx_age_ms == 140")),
+    ("scene_scan_holds_only_at_one_uptime", T, F, STATE, STATE.replace(HELD, HELD + " && conn_state(input->conn)->up_s == 600")),
+    ("scene_scan_holds_only_at_one_boot", T, F, STATE, STATE.replace(HELD, HELD + " && conn_state(input->conn)->boot == 77")),
+    ("scene_scan_holds_only_without_mqtt", T, F, STATE, STATE.replace(HELD, HELD + " && conn_state(input->conn)->mqtt == WICAN_MQTT_OFF")),
+    ("scene_scan_holds_only_if_supported", T, F, STATE, STATE.replace(HELD, HELD + " && conn_state(input->conn)->dtc.supported")),
+    ("scene_scan_holds_only_with_request", T, F, STATE, STATE.replace(HELD, HELD + " && conn_state(input->conn)->dtc.has_request")),
+    ("scene_scan_holds_only_without_count", T, F, STATE, STATE.replace(HELD, HELD + " && conn_state(input->conn)->dtc.count == 0")),
+    ("scene_scan_holds_only_without_result", T, F, STATE, STATE.replace(HELD, HELD + " && conn_state(input->conn)->dtc.result_seq == 0")),
+    ("scene_scan_holds_only_without_result_age", T, F, STATE, STATE.replace(HELD, HELD + " && conn_state(input->conn)->dtc.age_s == 0")),
+    ("scene_scan_holds_only_without_reason", T, F, STATE, STATE.replace(HELD, HELD + " && conn_state(input->conn)->dtc.reason[0] == '\\0'")),
     ("scene_item_warn_is_alarm", T, F, TONE, "\t\tout->tone = item_level >= 1 ? SCENE_TONE_ALARM : SCENE_TONE_NORMAL;"),
     ("scene_item_alarm_is_warn", T, F, TONE, "\t\tout->tone = item_level >= 1 ? SCENE_TONE_WARN : SCENE_TONE_NORMAL;"),
     ("scene_item_warn_is_normal", T, F, TONE, "\t\tout->tone = item_level >= 2 ? SCENE_TONE_ALARM : SCENE_TONE_NORMAL;"),
@@ -552,7 +598,10 @@ MUTATIONS = [
          "\tset_title(scene, \"Fehler\");\n\tset_note(scene, text_block(input->read_block));"),
     text("scene_text_dtc_read", "{\"Lesen\", \"\", world->can_read}", "{\"Lesen …\", \"\", world->can_read}"),
     text("scene_text_dtc_view", "{\"Liste ansehen\", \"\", outcome}", "{\"Liste\", \"\", outcome}"),
-    text("scene_text_dtc_old", "{\"Zuletzt gelöscht\", \"\", world->old_lines > 0}", "{\"Zuletzt geloescht\", \"\", world->old_lines > 0}"),
+    text("scene_text_dtc_old", "{\"Liste vor dem Löschen\", \"\", world->old_lines > 0}", "{\"Liste vor dem Loeschen\", \"\", world->old_lines > 0}"),
+    # the list from before a clear is not always one that was cleared: the words must not say so
+    text("scene_text_dtc_old_called_cleared", "{\"Liste vor dem Löschen\", \"\", world->old_lines > 0}", "{\"Zuletzt gelöscht\", \"\", world->old_lines > 0}"),
+    text("scene_text_dtc_old_is_the_title", "{\"Liste vor dem Löschen\", \"\", world->old_lines > 0}", "{\"Vor dem Löschen\", \"\", world->old_lines > 0}"),
     text("scene_text_dtc_back", DTC_OLD + "\t\t{\"Zurück\", \"\", true},", DTC_OLD + "\t\t{\"Zurueck\", \"\", true},"),
     ("scene_dtc_read_always_offered", T, F, DTC_READ, "\t\t{\"Lesen\", \"\", true},\n"),
     ("scene_dtc_read_by_block", T, F, DTC_READ, "\t\t{\"Lesen\", \"\", input->read_block == DTC_FLOW_ALLOWED},\n"),
@@ -574,18 +623,18 @@ MUTATIONS = [
      "phase == DTC_FLOW_FAILED || phase == DTC_FLOW_UNKNOWN;"),
     ("scene_dtc_view_always", T, F, OUTCOME, "\tbool outcome = true;"),
     ("scene_dtc_view_by_lines", T, F, OUTCOME, "\tbool outcome = world->list_lines > 0;"),
-    ("scene_dtc_old_always", T, F, DTC_OLD, "\t\t{\"Zuletzt gelöscht\", \"\", true},\n"),
-    ("scene_dtc_old_without_lines", T, F, DTC_OLD, "\t\t{\"Zuletzt gelöscht\", \"\", world->old_lines >= 0},\n"),
-    ("scene_dtc_old_with_negative_lines", T, F, DTC_OLD, "\t\t{\"Zuletzt gelöscht\", \"\", world->old_lines != 0},\n"),
-    ("scene_dtc_old_needs_two_lines", T, F, DTC_OLD, "\t\t{\"Zuletzt gelöscht\", \"\", world->old_lines > 1},\n"),
-    ("scene_dtc_old_needs_the_lines", T, F, DTC_OLD, "\t\t{\"Zuletzt gelöscht\", \"\", world->old_lines > 0 && input->old != NULL},\n"),
-    ("scene_dtc_old_by_lines_of_outcome", T, F, DTC_OLD, "\t\t{\"Zuletzt gelöscht\", \"\", world->cleared_lines > 0},\n"),
-    ("scene_dtc_old_by_lines_of_list", T, F, DTC_OLD, "\t\t{\"Zuletzt gelöscht\", \"\", world->list_lines > 0},\n"),
+    ("scene_dtc_old_always", T, F, DTC_OLD, "\t\t{\"Liste vor dem Löschen\", \"\", true},\n"),
+    ("scene_dtc_old_without_lines", T, F, DTC_OLD, "\t\t{\"Liste vor dem Löschen\", \"\", world->old_lines >= 0},\n"),
+    ("scene_dtc_old_with_negative_lines", T, F, DTC_OLD, "\t\t{\"Liste vor dem Löschen\", \"\", world->old_lines != 0},\n"),
+    ("scene_dtc_old_needs_two_lines", T, F, DTC_OLD, "\t\t{\"Liste vor dem Löschen\", \"\", world->old_lines > 1},\n"),
+    ("scene_dtc_old_needs_the_lines", T, F, DTC_OLD, "\t\t{\"Liste vor dem Löschen\", \"\", world->old_lines > 0 && input->old != NULL},\n"),
+    ("scene_dtc_old_by_lines_of_outcome", T, F, DTC_OLD, "\t\t{\"Liste vor dem Löschen\", \"\", world->cleared_lines > 0},\n"),
+    ("scene_dtc_old_by_lines_of_list", T, F, DTC_OLD, "\t\t{\"Liste vor dem Löschen\", \"\", world->list_lines > 0},\n"),
     ("scene_dtc_without_note", T, F, "\tset_note(scene, text_block(input->read_block));\n", ""),
     ("scene_dtc_note_of_clear", T, F, "\tset_note(scene, text_block(input->read_block));", "\tset_note(scene, text_block(input->clear_block));"),
     ("scene_dtc_note_only_when_blocked_by_world", T, F,
      "\tset_note(scene, text_block(input->read_block));", "\tif(!world->can_read) set_note(scene, text_block(input->read_block));"),
-    ("scene_dtc_rows_swapped", T, F, DTC_VIEW + DTC_OLD, DTC_OLD + DTC_VIEW),
+    ("scene_dtc_rows_swapped", T, F, DTC_VIEW + DTC_OLD_WHY + DTC_OLD, DTC_OLD_WHY + DTC_OLD + DTC_VIEW),
     ("scene_dtc_stand_by_world", T, F, STAND, "\tswitch(world->flow)\n"),
     ("scene_dtc_stand_by_low_byte", T, F, STAND, "\tswitch((dtc_flow_phase_t)((unsigned)input->flow->phase & 0xFFu))\n"),
     ("scene_dtc_stand_only_when_read_allowed", T, F, STAND, "\tif(world->can_read) switch(input->flow->phase)\n"),
@@ -1179,11 +1228,13 @@ MUTATIONS = [
     ("scene_cleared_lines_of_old_list", T, F, CLEARED, "\t\t\tset_title(scene, \"Gelöscht\");\n\t\t\tbuild_rows(input, input->old, NULL, done, COUNT(done), scene);"),
     ("scene_cleared_lines_of_list", T, F, CLEARED, "\t\t\tset_title(scene, \"Gelöscht\");\n\t\t\tbuild_rows(input, input->list, NULL, done, COUNT(done), scene);"),
     ("scene_cleared_ends_with_back", T, F, CLEARED, "\t\t\t(void)done;\n\t\t\tset_title(scene, \"Gelöscht\");\n\t\t\tbuild_rows(input, input->cleared, NULL, back, COUNT(back), scene);"),
-    text("scene_text_old_title", "\t\t\tset_title(scene, \"Zuletzt gelöscht\");", "\t\t\tset_title(scene, \"Gelöscht\");"),
+    text("scene_text_old_title", "\t\t\tset_title(scene, \"Vor dem Löschen\");", "\t\t\tset_title(scene, \"Gelöscht\");"),
+    text("scene_text_old_title_called_cleared", "\t\t\tset_title(scene, \"Vor dem Löschen\");", "\t\t\tset_title(scene, \"Zuletzt gelöscht\");"),
+    text("scene_text_old_title_is_the_row", "\t\t\tset_title(scene, \"Vor dem Löschen\");", "\t\t\tset_title(scene, \"Liste vor dem Löschen\");"),
     text("scene_text_old_back", "{{\"Zurück\", \"\", true}}", "{{\"Zurueck\", \"\", true}}"),
-    ("scene_old_lines_of_outcome", T, F, OLD_LIST, "\t\t\tset_title(scene, \"Zuletzt gelöscht\");\n\t\t\tbuild_rows(input, input->cleared, NULL, back, COUNT(back), scene);"),
-    ("scene_old_lines_of_list", T, F, OLD_LIST, "\t\t\tset_title(scene, \"Zuletzt gelöscht\");\n\t\t\tbuild_rows(input, input->list, NULL, back, COUNT(back), scene);"),
-    ("scene_old_ends_with_done", T, F, OLD_LIST, "\t\t\t(void)back;\n\t\t\tset_title(scene, \"Zuletzt gelöscht\");\n\t\t\tbuild_rows(input, input->old, NULL, done, COUNT(done), scene);"),
+    ("scene_old_lines_of_outcome", T, F, OLD_LIST, "\t\t\tset_title(scene, \"Vor dem Löschen\");\n\t\t\tbuild_rows(input, input->cleared, NULL, back, COUNT(back), scene);"),
+    ("scene_old_lines_of_list", T, F, OLD_LIST, "\t\t\tset_title(scene, \"Vor dem Löschen\");\n\t\t\tbuild_rows(input, input->list, NULL, back, COUNT(back), scene);"),
+    ("scene_old_ends_with_done", T, F, OLD_LIST, "\t\t\t(void)back;\n\t\t\tset_title(scene, \"Vor dem Löschen\");\n\t\t\tbuild_rows(input, input->old, NULL, done, COUNT(done), scene);"),
     text("scene_text_info_title", "\"Info\");\n\t\t\tbuild_rows(input, NULL, input->info", "\"Infos\");\n\t\t\tbuild_rows(input, NULL, input->info"),
     ("scene_info_ends_with_back", T, F, INFO, "\t\t\tset_title(scene, \"Info\");\n\t\t\tbuild_rows(input, NULL, input->info, back, COUNT(back), scene);"),
     ("scene_info_without_title", T, F, INFO, "\t\t\tbuild_rows(input, NULL, input->info, NULL, 0, scene);"),

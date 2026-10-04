@@ -162,8 +162,12 @@ static void close_dialog(nav_t *nav, const nav_world_t *world)
 	enter(nav, NAV_DTC_LIST, lines_of(world->list_lines) + LIST_CLEAR);
 }
 
-static void ask(nav_t *nav, nav_do_t action)
+// The dialog of the settings. Not while the own request is under way: a restart then would leave a read
+// without its list and a clear without its outcome.
+static void ask(nav_t *nav, nav_do_t action, const nav_world_t *world)
 {
+	if(under_way(world->flow)) return;
+
 	enter(nav, NAV_CONFIRM, CHOICE_CANCEL);
 	nav->confirm = action;
 }
@@ -289,13 +293,13 @@ static nav_do_t press_settings(nav_t *nav, const nav_world_t *world)
 		case SETTINGS_AP:
 			return NAV_DO_AP_TOGGLE;
 		case SETTINGS_REBOOT:
-			ask(nav, NAV_DO_REBOOT);
+			ask(nav, NAV_DO_REBOOT, world);
 			break;
 		case SETTINGS_PREVIOUS:
-			if(world->previous_firmware) ask(nav, NAV_DO_PREVIOUS_FIRMWARE);
+			if(world->previous_firmware) ask(nav, NAV_DO_PREVIOUS_FIRMWARE, world);
 			break;
 		case SETTINGS_RESET:
-			ask(nav, NAV_DO_FACTORY_RESET);
+			ask(nav, NAV_DO_FACTORY_RESET, world);
 			break;
 		case SETTINGS_BACK:
 			return back(nav, world);
@@ -450,6 +454,9 @@ nav_do_t nav_tap(nav_t *nav, int row, const nav_world_t *world, uint64_t now_ms)
 	{
 		// A screen without rows has no row that exists
 		if(row < 0 || row >= nav_rows(nav, world)) return NAV_DO_NOTHING;
+		// What the two dialogs ask for is confirmed with the knob alone, and the knob alone moves their focus:
+		// a touch happens too easily
+		if((nav->screen == NAV_DTC_CONFIRM || nav->screen == NAV_CONFIRM) && row != CHOICE_CANCEL) return NAV_DO_NOTHING;
 		nav->row = row;
 	}
 	return press(nav, world);

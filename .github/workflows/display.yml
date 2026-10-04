@@ -38,20 +38,20 @@ jobs:
         run: python redproof.py --selftest
         working-directory: display/test
 
-  # Every removed rule has to make a test fail. Thousands of builds: four parts side by side.
+  # Every removed rule has to make a test fail. Thousands of builds: eight parts side by side.
   red-proof:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        part: [0, 1, 2, 3]
+        part: [0, 1, 2, 3, 4, 5, 6, 7]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Red proof, part ${{ matrix.part }} of 4
-        run: python redproof.py --shard ${{ matrix.part }}/4
+      - name: Red proof, part ${{ matrix.part }} of 8
+        run: python redproof.py --shard ${{ matrix.part }}/8
         working-directory: display/test
 
   # Every kind of screen, drawn by LVGL without a display and checked (display/host/render.c). The log shows

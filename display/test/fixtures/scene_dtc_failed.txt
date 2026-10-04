@@ -4,7 +4,7 @@ title: Fehlerspeicher
 note: Motor läuft – nur bei Motor aus
 row: - action | Lesen |  | disabled
 row: > action | Liste ansehen |  | enabled
-row: - action | Zuletzt gelöscht |  | disabled
+row: - action | Liste vor dem Löschen |  | disabled
 row: - action | Zurück |  | enabled
 first: 0
 total: 4

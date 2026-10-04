@@ -291,11 +291,11 @@ static int backlight(const app_t *app, const nav_world_t *world, uint64_t now)
 	return guard_brightness(app->heat, settings_backlight(&settings, showing(app, world, now), passed(now, app->last_input_ms)));
 }
 
-// An input arrived. true if it only woke the screen: nobody acts on a screen he cannot see. A screen the
-// heat keeps dark cannot be woken, there every input counts.
-static bool wakes(app_t *app, const nav_world_t *world, uint64_t now)
+// An input arrived. true if it is not passed on: nobody acts on a screen he cannot see. It restarts the idle
+// time, which wakes a screen that is dark by the standby rule; one the heat keeps dark stays dark.
+static bool in_the_dark(app_t *app, const nav_world_t *world, uint64_t now)
 {
-	bool dark = backlight(app, world, now) == 0 && guard_brightness(app->heat, SETTINGS_BRIGHTNESS_MAX) > 0;
+	bool dark = backlight(app, world, now) == 0;
 
 	app->last_input_ms = now;
 	return dark;
@@ -382,10 +382,8 @@ void app_init(app_t *app, const app_boot_t *boot, uint64_t now_ms)
 	}
 	// In safe mode the stored layout is not even read: it may be what crashed the display
 	if(!app->safe_mode && boot->layout_text != NULL &&
-	   layout_parse(boot->layout_text, boot->layout_length, &app->stored, NULL, app->work, app->work_count))
+	   layout_parse(boot->layout_text, boot->layout_length, &app->layout, NULL, app->work, app->work_count))
 	{
-		app->has_stored = true;
-		app->layout = app->stored;
 		app->source = APP_LAYOUT_STORED;
 		// layout_parse() takes no text that is longer than the room here
 		memcpy(app->layout_text, boot->layout_text, boot->layout_length);
@@ -418,7 +416,7 @@ void app_button(app_t *app, bool pressed, bool read_ok, uint64_t now_ms)
 	hold_event = hold_sample(&app->hold, pressed, read_ok, on_action, now);
 
 	// A press begins. What the knob reports of it later is dropped if it began in the dark.
-	if(!was_pressed && knob_is_pressed(&app->knob)) app->woke = wakes(app, &world, now);
+	if(!was_pressed && knob_is_pressed(&app->knob)) app->woke = in_the_dark(app, &world, now);
 
 	if(knob_event != KNOB_NONE && !app->woke)
 	{
@@ -436,7 +434,7 @@ void app_encoder(app_t *app, int counts, uint64_t now_ms)
 	if(detents == 0) return;
 
 	app_world(app, &world, now);
-	if(wakes(app, &world, now)) return;
+	if(in_the_dark(app, &world, now)) return;
 
 	if(app->nav.screen == NAV_DTC_CONFIRM) hold_activity(&app->hold, now);
 	app_do(app, nav_turn(&app->nav, detents, &world, now), now);
@@ -448,7 +446,7 @@ void app_tap(app_t *app, int row, uint64_t now_ms)
 	nav_world_t world;
 
 	app_world(app, &world, now);
-	if(wakes(app, &world, now)) return;
+	if(in_the_dark(app, &world, now)) return;
 
 	if(app->nav.screen == NAV_DTC_CONFIRM) hold_activity(&app->hold, now);
 	app_do(app, nav_tap(&app->nav, row, &world, now), now);
@@ -457,15 +455,18 @@ void app_tap(app_t *app, int row, uint64_t now_ms)
 void app_swipe(app_t *app, int dx, int dy, uint64_t now_ms)
 {
 	uint64_t now = advance(app, now_ms);
+	// In the two dialogs the knob alone moves the focus: a finger that slips must not put it on the answer
+	// that acts
+	bool dialog = app->nav.screen == NAV_DTC_CONFIRM || app->nav.screen == NAV_CONFIRM;
 	nav_world_t world;
 	nav_do_t what;
 
 	app_world(app, &world, now);
-	if(wakes(app, &world, now)) return;
+	if(in_the_dark(app, &world, now)) return;
 
 	if(app->nav.screen == NAV_DTC_CONFIRM) hold_activity(&app->hold, now);
 	// The finger goes where the content goes: up brings the rows below, left the next page
-	if(dx == 0 && dy != 0 && nav_rows(&app->nav, &world) > 0) what = nav_turn(&app->nav, dy < 0 ? APP_SWIPE_ROWS : -APP_SWIPE_ROWS, &world, now);
+	if(dx == 0 && dy != 0 && !dialog && nav_rows(&app->nav, &world) > 0) what = nav_turn(&app->nav, dy < 0 ? APP_SWIPE_ROWS : -APP_SWIPE_ROWS, &world, now);
 	else what = nav_swipe(&app->nav, dx < 0 ? 1 : dx > 0 ? -1 : 0, &world, now);
 	app_do(app, what, now);
 }
@@ -478,8 +479,13 @@ void app_tick(app_t *app, uint64_t now_ms)
 	app_world(app, &world, now);
 	app_do(app, nav_tick(&app->nav, &world, now), now);
 
-	// The boot loader takes back an update that was not confirmed before the restart
-	if(app->update_pending && now >= app->update_until_ms) app->events |= APP_EVENT_REBOOT;
+	// The boot loader takes back an update that was not confirmed before the restart. Asked for once: the
+	// platform restarts when it has carried out what waits.
+	if(app->update_pending && !app->update_given_up && now >= app->update_until_ms)
+	{
+		app->update_given_up = true;
+		app->events |= APP_EVENT_REBOOT;
+	}
 	// An upload that stalls must not lock the display, which takes no input while it runs
 	if(app->uploading && passed(now, app->upload_ms) >= APP_UPLOAD_IDLE_MS) app->uploading = false;
 	// The question ended by its time or with the release, which nobody reports
@@ -489,9 +495,20 @@ void app_tick(app_t *app, uint64_t now_ms)
 
 void app_temperature(app_t *app, int celsius, bool valid)
 {
+	nav_world_t world;
+
 	app->heat = guard_heat(app->heat, celsius, valid);
 	app->has_temp = valid;
 	if(valid) app->temp_c = celsius;
+
+	// Nobody sees a dialog on a screen the heat switched off, and nobody may confirm a clear there: it is
+	// left as by a hold that was cancelled
+	if(app->heat == GUARD_HEAT_OFF && app->nav.screen == NAV_DTC_CONFIRM)
+	{
+		hold_close(&app->hold);
+		app_world(app, &world, app->clock_ms);
+		nav_hold(&app->nav, HOLD_CANCELLED, &world, app->clock_ms);
+	}
 }
 
 void app_platform(app_t *app, const app_platform_t *platform)

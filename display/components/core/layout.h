@@ -91,8 +91,12 @@ typedef struct
 } layout_page_t;
 
 // layout_parse() and layout_from_catalog() fill a layout completely: counts within their limits, texts
-// terminated, every byte they do not use zero. The functions that read a layout expect its counts to be
-// within their limits and its texts to be terminated.
+// terminated, every byte they do not use zero. That is every byte of the memory: what lies behind the end of
+// a text, pages, items and map entries beyond their count, the value of a limit that is not set, and the
+// bytes that lie between the fields of the structs (padding) and belong to no field. So the same text, and
+// the same catalogue, give the same memory every time: two layouts can be compared with memcmp().
+// The functions that read a layout expect its counts to be within their limits and its texts to be
+// terminated.
 typedef struct
 {
 	char name[LAYOUT_NAME_SIZE];

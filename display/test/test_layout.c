@@ -23,6 +23,18 @@
 #define NONE    NAN
 #define ROOM    64      // largest buffer tried for the text of an item, behind it more guard bytes
 
+// Asked by the address sanitizer when the test starts. With detect_stack_use_after_return on, the sanitizer
+// keeps the locals of a function off the stack, in memory of its own that is zero when it is first used. What
+// a function copies out of a local it did not fill is then zero by chance, and test_every_byte() cannot fail:
+// measured 2026-10-04 with clang on macOS, where switching it on hid every byte that test looks for. On Linux
+// it is said to be on by default (release notes of clang 15 and of gcc 13; not measured here). With this the
+// locals lie on the stack, as they do on the target.
+const char *__asan_default_options(void);
+const char *__asan_default_options(void)
+{
+	return "detect_stack_use_after_return=0";
+}
+
 // The layout lies between guard bytes. Behind it there is room for two pages: a page written behind the
 // last one lands there and is seen, where the address sanitizer would only stop the program without
 // naming a rule.
@@ -1981,39 +1993,11 @@ static void model_layout(void)
 	}
 }
 
-static bool same_limit(const layout_limit_t *a, const layout_limit_t *b)
-{
-	return a->set == b->set && a->value == b->value;
-}
-
-// Field by field: the bytes between the fields belong to nobody. Texts with all their bytes, so that
-// nothing may stand behind a text either, and maps with all their entries.
+// Every byte: nothing stands behind a text, in a page, an item or a map entry that is not used, or between the
+// fields of the structs. layout.h promises zeros there, so two layouts that say the same are the same memory.
 static bool same_layout(const layout_t *a, const layout_t *b)
 {
-	int p, i;
-
-	if(memcmp(a->name, b->name, sizeof(a->name)) != 0 || memcmp(a->profile_hint, b->profile_hint, sizeof(a->profile_hint)) != 0) return false;
-	if(a->page_count != b->page_count) return false;
-	for(p = 0; p < LAYOUT_PAGES_MAX; p++)
-	{
-		const layout_page_t *pa = &a->pages[p];
-		const layout_page_t *pb = &b->pages[p];
-
-		if(memcmp(pa->title, pb->title, sizeof(pa->title)) != 0 || pa->hidden != pb->hidden || pa->item_count != pb->item_count) return false;
-		for(i = 0; i < LAYOUT_ITEMS_MAX; i++)
-		{
-			const layout_item_t *ia = &pa->items[i];
-			const layout_item_t *ib = &pb->items[i];
-
-			if(memcmp(ia->key, ib->key, sizeof(ia->key)) != 0 || memcmp(ia->label, ib->label, sizeof(ia->label)) != 0 ||
-			   memcmp(ia->unit, ib->unit, sizeof(ia->unit)) != 0 || ia->has_unit != ib->has_unit || ia->decimals != ib->decimals ||
-			   ia->widget != ib->widget || ia->scale != ib->scale || ia->map_count != ib->map_count ||
-			   memcmp(ia->map, ib->map, sizeof(ia->map)) != 0) return false;
-			if(!same_limit(&ia->min, &ib->min) || !same_limit(&ia->max, &ib->max) || !same_limit(&ia->warn_lo, &ib->warn_lo) ||
-			   !same_limit(&ia->warn_hi, &ib->warn_hi) || !same_limit(&ia->crit_lo, &ib->crit_lo) || !same_limit(&ia->crit_hi, &ib->crit_hi)) return false;
-		}
-	}
-	return true;
+	return memcmp(a, b, sizeof(*a)) == 0;
 }
 
 /*
@@ -2101,13 +2085,13 @@ static const char *page_of(const char *items)
 }
 
 // The layout comes back from its own text: written into LAYOUT_TEXT_MAX + 1 bytes, read without a problem
-// and without a warning, and the same field by field with every byte of its texts. Its text is left in
-// `written`.
+// and without a warning, and the same memory, byte for byte. Its text is left in `written`.
 static bool comes_back(const layout_t *layout)
 {
 	int length;
 
-	kept = *layout;
+	// Byte for byte: an assignment need not take the bytes between the fields along. Some callers pass `kept` itself.
+	memmove(&kept, layout, sizeof(kept));
 	length = write_watched(&kept, LAYOUT_TEXT_MAX + 1, LAYOUT_TEXT_MAX + 1);
 	if(length < 0 || !accepted_with(written, (size_t)length, 0, "", "") || !same_layout(&box.layout, &kept))
 	{
@@ -2187,7 +2171,8 @@ static void test_parse_model(void)
 			}
 		}
 	}
-	check(read > 2500 && wrong == 0, "model: more than 2500 layouts made at random are read as the layout they describe, with their warnings");
+	check(read > 2500 && wrong == 0, "model: more than 2500 layouts made at random are read as the layout they describe, with their warnings: "
+	      "each is, byte for byte, the memory the model filled field by field over zeros");
 	check(long_ones > 20 && wrong_long == 0, "model: those that came out longer than 16384 bytes are refused as too long");
 	check(broken_accepted > 100 && broken_refused > 1500 && wrong_broken == 0,
 	      "model: each of them with one byte replaced is accepted without a problem or refused with one, and a refused one leaves the layout untouched");
@@ -4961,6 +4946,174 @@ static void test_to_json_default_layout(void)
 	      "to_json: default: it fits into LAYOUT_TEXT_MAX + 1 bytes, is shorter than the file and begins with the engine speed");
 }
 
+/*
+ * Every byte of a layout, also those that belong to no field
+ */
+
+// The bytes of a layout that belong to a field hold 0xFF here, the bytes between the fields 0
+static layout_t fields;
+
+#define MARK(field) memset(&(field), 0xFF, sizeof(field))
+
+static void mark_limit(layout_limit_t *limit)
+{
+	MARK(limit->set);
+	MARK(limit->value);
+}
+
+// Returns how many bytes of a layout belong to no field
+static size_t mark_fields(void)
+{
+	const unsigned char *bytes = (const unsigned char *)&fields;
+	size_t between = 0;
+	size_t n;
+	int p, i, m;
+
+	memset(&fields, 0, sizeof(fields));
+	MARK(fields.name);
+	MARK(fields.profile_hint);
+	MARK(fields.page_count);
+	for(p = 0; p < LAYOUT_PAGES_MAX; p++)
+	{
+		layout_page_t *page = &fields.pages[p];
+
+		MARK(page->title);
+		MARK(page->hidden);
+		MARK(page->item_count);
+		for(i = 0; i < LAYOUT_ITEMS_MAX; i++)
+		{
+			layout_item_t *item = &page->items[i];
+
+			MARK(item->key);
+			MARK(item->label);
+			MARK(item->unit);
+			MARK(item->has_unit);
+			MARK(item->decimals);
+			MARK(item->widget);
+			MARK(item->scale);
+			mark_limit(&item->min);
+			mark_limit(&item->max);
+			mark_limit(&item->warn_lo);
+			mark_limit(&item->warn_hi);
+			mark_limit(&item->crit_lo);
+			mark_limit(&item->crit_hi);
+			for(m = 0; m < LAYOUT_MAP_MAX; m++)
+			{
+				MARK(item->map[m].raw);
+				MARK(item->map[m].text);
+			}
+			MARK(item->map_count);
+		}
+	}
+	for(n = 0; n < sizeof(fields); n++)
+	{
+		if(bytes[n] == 0) between++;
+	}
+	return between;
+}
+
+// How many of the bytes between the fields of a layout are not zero
+static size_t stray_bytes(const layout_t *layout)
+{
+	const unsigned char *bytes = (const unsigned char *)layout;
+	const unsigned char *field = (const unsigned char *)&fields;
+	size_t stray = 0;
+	size_t n;
+
+	for(n = 0; n < sizeof(*layout); n++)
+	{
+		if(field[n] == 0 && bytes[n] != 0) stray++;
+	}
+	if(stray > 0) printf("  %lu bytes between the fields are not zero\n", (unsigned long)stray);
+	return stray;
+}
+
+static size_t bytes_differing(const layout_t *a, const layout_t *b)
+{
+	const unsigned char *first = (const unsigned char *)a;
+	const unsigned char *second = (const unsigned char *)b;
+	size_t differing = 0;
+	size_t n;
+
+	for(n = 0; n < sizeof(*a); n++)
+	{
+		if(first[n] != second[n]) differing++;
+	}
+	if(differing > 0) printf("  %lu of %lu bytes differ\n", (unsigned long)differing, (unsigned long)sizeof(*a));
+	return differing;
+}
+
+// Leaves `byte` in the 64 KB of stack the calls that follow work in: what they find in a local they do not fill
+static void __attribute__((noinline)) fill_stack(unsigned char byte)
+{
+	volatile unsigned char room[65536];
+	size_t n;
+
+	for(n = 0; n < sizeof(room); n++) room[n] = byte;
+}
+
+// layout_parse() from 1000 bytes deeper on the stack: every address a call leaves behind in its locals is another
+static bool __attribute__((noinline)) parse_deeper(const char *json, size_t length, layout_t *layout, json_token_t *tokens)
+{
+	volatile unsigned char room[1000];
+	bool result;
+
+	room[0] = 1;
+	result = layout_parse(json, length, layout, NULL, tokens, LAYOUT_TOKENS);
+	return result && room[0] == 1;
+}
+
+// The reader keeps what it read in locals before it fills the layout. What it takes over from a local as a
+// whole struct brings along the bytes between the fields of that local, which are whatever the stack held:
+// seen as bytes that are not zero, and as two layouts of one text that differ.
+static void test_every_byte(void)
+{
+	static char file[LAYOUT_TEXT_MAX + 1];
+	static char moved[3 + LAYOUT_TEXT_MAX + 1];
+	static json_token_t other_work[LAYOUT_TOKENS];
+	static layout_t second;
+	size_t between = mark_fields();
+	size_t length;
+
+	check(between > 0 && sizeof(layout_limit_t) > sizeof(bool) + sizeof(double),
+	      "every byte: on this machine a layout has bytes between its fields, and a limit has some - the checks that follow have something to look at");
+
+	check(read_fixture("../layouts/w906_default.json", file, sizeof(file)), "every byte: the built-in layout is there");
+	length = strlen(file);
+	fill_stack(0x5A);
+	check(accepted(file) && box.layout.page_count == 7, "every byte: the built-in layout is read over a stack full of 0x5A");
+	check(stray_bytes(&box.layout) == 0, "every byte: layout_parse() leaves zero in every byte between the fields of the layout, whatever the stack held");
+
+	// Once more, with everything changed that must not matter
+	memcpy(moved + 3, file, length + 1);
+	memset(&second, STALE, sizeof(second));
+	fill_stack(0xC3);
+	check(parse_deeper(moved + 3, length, &second, other_work),
+	      "every byte: the same text is read a second time - from another address, with other room for the reader, deeper on a stack full of 0xC3");
+	check(bytes_differing(&box.layout, &second) == 0 && memcmp(&box.layout, &second, sizeof(second)) == 0,
+	      "every byte: the same text gives the same memory both times - memcmp() over the two layouts finds no difference");
+
+	check(read_fixture("fixtures/layout_every_member.json", file, sizeof(file)), "every byte: the fixture with every member is there");
+	length = strlen(file);
+	fill_stack(0x5A);
+	check(accepted(file) && stray_bytes(&box.layout) == 0, "every byte: a layout whose items have every limit and a map has zero in every byte between its fields too");
+	memcpy(moved + 3, file, length + 1);
+	memset(&second, STALE, sizeof(second));
+	fill_stack(0xC3);
+	check(parse_deeper(moved + 3, length, &second, other_work) && bytes_differing(&box.layout, &second) == 0,
+	      "every byte: and it is the same memory when it is read a second time from another place");
+
+	fill_catalog(9);
+	fill_stack(0x5A);
+	from_catalog();
+	check(box.layout.page_count == 3 && box.layout.pages[2].item_count == 2 && stray_bytes(&box.layout) == 0 && guards_intact(),
+	      "every byte: layout_from_catalog() leaves zero in every byte between the fields of the layout it makes");
+	memset(&second, STALE, sizeof(second));
+	fill_stack(0xC3);
+	layout_from_catalog(&catalog, &second);
+	check(bytes_differing(&box.layout, &second) == 0, "every byte: the same catalogue gives the same memory a second time, over other bytes on the stack");
+}
+
 int main(void)
 {
 	memset(work_between_guards, 0x5A, sizeof(work_between_guards));
@@ -5008,6 +5161,8 @@ int main(void)
 	test_to_json_largest();
 	test_to_json_longer_than_read();
 	test_to_json_default_layout();
+
+	test_every_byte();
 
 	// After the examples, so that a rule that is broken is named by its example first
 	test_parse_model();

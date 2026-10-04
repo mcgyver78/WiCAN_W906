@@ -4,7 +4,7 @@ title: Fehlerspeicher
 note:
 row: - action | Lesen |  | enabled
 row: > action | Liste ansehen |  | enabled
-row: - action | Zuletzt gelöscht |  | enabled
+row: - action | Liste vor dem Löschen |  | enabled
 row: - action | Zurück |  | enabled
 first: 0
 total: 4

@@ -203,7 +203,20 @@ typedef struct
  *     NO_VALUE     text SCENE_DASH, tone DIM
  *     UNAVAILABLE  text SCENE_UNAVAILABLE, tone DIM
  *     A value whose text cannot be made (layout_item_text() false) counts as NO_VALUE.
- *     In the view SCAN every tone that is not DIM becomes DIM (the values stand still).
+ *     In the view SCAN the adapter delivers no values (a scan took 35 s on the vehicle, measured 2026-10-04,
+ *     more than three times VALUE_KEPT_MS), and the age of a value does not count: a value the display holds
+ *     (values_find() finds it) counts as OLD however long ago it was seen - its text, tone DIM, unit and
+ *     permille as for every old value, and as NO_VALUE if its text cannot be made. A value the display never
+ *     had is what layout_item_state() says, the dash or SCENE_UNAVAILABLE. So during a scan no value has
+ *     another tone than DIM (the values stand still), and none turns into a dash because the scan lasts.
+ *     What the driver sees of it:
+ *       - "holds" is every value since the last values_clear() (values.h). A value that was a dash before
+ *         the scan began, because the vehicle had stopped answering it, comes back with its last number for
+ *         the time of the scan, dimmed like the others: the scene does not know when the scan began.
+ *       - when the scan is over the rule ends at once, in every other view the age counts as before: the
+ *         values are then as old as the scan took, so the page shows dashes and the yellow ring until the
+ *         first answer of GET /autopid_data that renews them (values.h) is there. conn.h asks for one in the
+ *         round in which the state no longer shows the scan.
  *     label = the label of the item, or fmt_label() of the key if it has none (empty if that does not fit).
  *     unit = layout_item_unit(); empty for a state widget and when the text is the dash or SCENE_UNAVAILABLE.
  *     widget as in the layout (what is no member of the enum becomes number, as layout.h shows it).
@@ -221,8 +234,11 @@ typedef struct
  *                "Nachtmodus" detail "an" / "aus"; "Web-Zugriff" detail "frei" / "gesperrt"
  *                (world->release_open); "Info"; "Einstellungen"; "Zurück"
  * NAV_DTC        SCENE_LIST "Fehlerspeicher": "Lesen" (enabled if can_read); "Liste ansehen" (enabled if
- *                world->flow is LIST, CLEARED, FAILED or UNKNOWN); "Zuletzt gelöscht" (enabled if old_lines > 0);
- *                "Zurück". note = text_block(read_block), empty if allowed.
+ *                world->flow is LIST, CLEARED, FAILED or UNKNOWN); "Liste vor dem Löschen" (enabled if
+ *                old_lines > 0); "Zurück". note = text_block(read_block), empty if allowed.
+ *                The third row and the title of NAV_DTC_OLD do not say "gelöscht": the list is kept when the
+ *                adapter accepts a clear, and the adapter can still refuse that clear at its own engine check.
+ *                What is kept is the list from before a clear, not always one that was cleared.
  *                One line says where things stand, by the phase of `flow`:
  *                  IDLE                  "Noch nicht gelesen"
  *                  READ_SENT, READING    "Lesen läuft …"
@@ -259,7 +275,7 @@ typedef struct
  *                this reason both while it starts and when it is about to sleep). Flow UNKNOWN: title "Stand unbekannt", line 1 "Stand
  *                des Löschens unbekannt – bitte erneut lesen". Any other phase: title "Fehlerspeicher", no
  *                line. note "Knopf drücken" in every phase.
- * NAV_DTC_OLD    SCENE_LIST "Zuletzt gelöscht": the lines of `old`, then "Zurück"
+ * NAV_DTC_OLD    SCENE_LIST "Vor dem Löschen": the lines of `old`, then "Zurück"
  * NAV_BRIGHTNESS SCENE_LEVEL "Helligkeit", in night mode "Helligkeit (Nacht)"; big "80 %" (nav->value);
  *                permille = nav->value * 10, kept within 0..1000; note "Drehen zum Ändern, Drücken zum
  *                Speichern"

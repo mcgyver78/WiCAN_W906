@@ -19,24 +19,29 @@ SHOWN_VIEW = "\tif(view == CONN_VIEW_LIVE || view == CONN_VIEW_SCAN) return true
 SHOWN_VALUE = "\t\tif(values_age(&values->items[i], now) != VALUE_AGE_GONE) return true;"
 PREVIEW = "\t\tif(settings.night_mode) settings.night = (uint8_t)app->brightness_preview;\n\t\telse settings.brightness = (uint8_t)app->brightness_preview;"
 LIGHT = "\treturn guard_brightness(app->heat, settings_backlight(&settings, showing(app, world, now), passed(now, app->last_input_ms)));"
-DARK = "\tbool dark = backlight(app, world, now) == 0 && guard_brightness(app->heat, SETTINGS_BRIGHTNESS_MAX) > 0;"
+DARK = "\tbool dark = backlight(app, world, now) == 0;"
 CHOICE = "app->has_builtin && layout_suits(&app->builtin, catalog) ? APP_LAYOUT_BUILTIN : APP_LAYOUT_GENERATED;"
 FIRST_PAGE = "\tif(source != app->source) app->nav.page = layout_first_page(&app->layout, catalog);"
 UNTIL = "\tapp->update_until_ms = now_ms > UINT64_MAX - APP_UPDATE_CONFIRM_MS ? UINT64_MAX : now_ms + APP_UPDATE_CONFIRM_MS;"
 PROFILES = "\tif(boot->profiles != NULL && boot->profile_count > 0 && boot->profile_count <= NET_PROFILES_MAX)"
 STORED = "\tif(!app->safe_mode && boot->layout_text != NULL &&"
 ON_ACTION = "\ton_action = app->nav.screen == NAV_DTC_CONFIRM && app->nav.row == ROW_CLEAR && nav_overlay(&world) == NAV_OVER_NONE;"
-WOKE = "\tif(!was_pressed && knob_is_pressed(&app->knob)) app->woke = wakes(app, &world, now);"
+WOKE = "\tif(!was_pressed && knob_is_pressed(&app->knob)) app->woke = in_the_dark(app, &world, now);"
 KNOB = "\tif(knob_event != KNOB_NONE && !app->woke)"
 KNOB_DO = "\t\tapp_do(app, knob_event == KNOB_SHORT ? nav_short(&app->nav, &world, now) : nav_long(&app->nav, &world, now), now);"
 HOLD_DO = "\tapp_do(app, nav_hold(&app->nav, hold_event, &world, now), now);"
-ENCODER_WAKE = "\tapp_world(app, &world, now);\n\tif(wakes(app, &world, now)) return;\n\n\tif(app->nav.screen == NAV_DTC_CONFIRM) hold_activity(&app->hold, now);\n\tapp_do(app, nav_turn("
-TAP_WAKE = "\tapp_world(app, &world, now);\n\tif(wakes(app, &world, now)) return;\n\n\tif(app->nav.screen == NAV_DTC_CONFIRM) hold_activity(&app->hold, now);\n\tapp_do(app, nav_tap("
-SWIPE_WAKE = "\tapp_world(app, &world, now);\n\tif(wakes(app, &world, now)) return;\n\n\tif(app->nav.screen == NAV_DTC_CONFIRM) hold_activity(&app->hold, now);\n\t// The finger"
-VERTICAL = "\tif(dx == 0 && dy != 0 && nav_rows(&app->nav, &world) > 0) what = nav_turn(&app->nav, dy < 0 ? APP_SWIPE_ROWS : -APP_SWIPE_ROWS, &world, now);"
+ENCODER_WAKE = "\tapp_world(app, &world, now);\n\tif(in_the_dark(app, &world, now)) return;\n\n\tif(app->nav.screen == NAV_DTC_CONFIRM) hold_activity(&app->hold, now);\n\tapp_do(app, nav_turn("
+TAP_WAKE = "\tapp_world(app, &world, now);\n\tif(in_the_dark(app, &world, now)) return;\n\n\tif(app->nav.screen == NAV_DTC_CONFIRM) hold_activity(&app->hold, now);\n\tapp_do(app, nav_tap("
+SWIPE_WAKE = "\tapp_world(app, &world, now);\n\tif(in_the_dark(app, &world, now)) return;\n\n\tif(app->nav.screen == NAV_DTC_CONFIRM) hold_activity(&app->hold, now);\n\t// The finger"
+DIALOG = "\tbool dialog = app->nav.screen == NAV_DTC_CONFIRM || app->nav.screen == NAV_CONFIRM;"
+VERTICAL = "\tif(dx == 0 && dy != 0 && !dialog && nav_rows(&app->nav, &world) > 0) what = nav_turn(&app->nav, dy < 0 ? APP_SWIPE_ROWS : -APP_SWIPE_ROWS, &world, now);"
 HORIZONTAL = "\telse what = nav_swipe(&app->nav, dx < 0 ? 1 : dx > 0 ? -1 : 0, &world, now);"
 TICK_NAV = "\tapp_do(app, nav_tick(&app->nav, &world, now), now);"
-TICK_UPDATE = "\tif(app->update_pending && now >= app->update_until_ms) app->events |= APP_EVENT_REBOOT;"
+TICK_UPDATE_IF = "\tif(app->update_pending && !app->update_given_up && now >= app->update_until_ms)"
+TICK_UPDATE_DO = "\t\tapp->update_given_up = true;\n\t\tapp->events |= APP_EVENT_REBOOT;\n"
+HEAT_IF = "\tif(app->heat == GUARD_HEAT_OFF && app->nav.screen == NAV_DTC_CONFIRM)"
+HEAT_CLOSE = "\t\thold_close(&app->hold);\n\t\tapp_world(app, &world, app->clock_ms);\n"
+HEAT_LEAVE = "\t\tnav_hold(&app->nav, HOLD_CANCELLED, &world, app->clock_ms);"
 TICK_UPLOAD = "\tif(app->uploading && passed(now, app->upload_ms) >= APP_UPLOAD_IDLE_MS) app->uploading = false;"
 TICK_DROP = "\tif(world.asking == ACCESS_ASK_NONE) drop_asked(app);"
 NET_WIFI = "\tpoll_wifi(&app->poll, link_up(&app->link), now);"
@@ -215,8 +220,10 @@ MUTATIONS = [
     # a dark screen
     ("app_dark_screen_takes_inputs", T, F, "\tapp->last_input_ms = now;\n\treturn dark;", "\tapp->last_input_ms = now;\n\treturn dark && false;"),
     ("app_lit_screen_takes_no_inputs", T, F, "\tapp->last_input_ms = now;\n\treturn dark;", "\tapp->last_input_ms = now;\n\treturn dark || true;"),
-    ("app_dark_by_heat_can_be_woken", T, F, DARK, "\tbool dark = backlight(app, world, now) == 0;"),
-    ("app_dimmed_by_heat_takes_inputs_in_the_dark", T, F, DARK, "\tbool dark = backlight(app, world, now) == 0 && guard_brightness(app->heat, SETTINGS_BRIGHTNESS_MAX) > GUARD_DIM_PERCENT;"),
+    ("app_dark_by_heat_takes_inputs", T, F, DARK, "\tbool dark = backlight(app, world, now) == 0 && guard_brightness(app->heat, SETTINGS_BRIGHTNESS_MAX) > 0;"),
+    ("app_dark_by_heat_takes_inputs_while_something_shows", T, F, DARK, "\tbool dark = backlight(app, world, now) == 0 && !(app->heat == GUARD_HEAT_OFF && showing(app, world, now));"),
+    ("app_dimmed_by_heat_takes_inputs_in_the_dark", T, F, DARK, "\tbool dark = backlight(app, world, now) == 0 && guard_brightness(app->heat, SETTINGS_BRIGHTNESS_MAX) != GUARD_DIM_PERCENT;"),
+    ("app_only_dark_by_heat_takes_no_inputs", T, F, DARK, "\tbool dark = guard_brightness(app->heat, SETTINGS_BRIGHTNESS_MAX) == 0 + 0 * backlight(app, world, now);"),
     ("app_input_does_not_restart_idle_time", T, F, "\tapp->last_input_ms = now;\n\treturn dark;", "\treturn dark;"),
     ("app_input_restarts_idle_time_only_in_the_dark", T, F, "\tapp->last_input_ms = now;\n\treturn dark;", "\tif(dark) app->last_input_ms = now;\n\treturn dark;"),
     ("app_input_restarts_idle_time_only_when_lit", T, F, "\tapp->last_input_ms = now;\n\treturn dark;", "\tif(!dark) app->last_input_ms = now;\n\treturn dark;"),
@@ -240,7 +247,7 @@ MUTATIONS = [
 
     # the start
     ("app_init_keeps_events", T, F, "\tmemset(app, 0, sizeof(*app));\n\tapp->clock_ms = now_ms;",
-     "\tuint32_t events = app->events;\n\n\tmemset(app, 0, sizeof(*app));\n\tapp->events = events;\n\tapp->clock_ms = now_ms;"),
+     "\tuint32_t events = app->events;\n\n\tmemset(app, 0, sizeof(*app));\n\tapp->events = events & APP_EVENT_STORE_WIFI;\n\tapp->clock_ms = now_ms;"),
     ("app_init_keeps_the_lines_of_a_list", T, F, "\tmemset(app, 0, sizeof(*app));\n\tapp->clock_ms = now_ms;",
      "\tint lines = app->list_lines;\n\n\tmemset(app, 0, sizeof(*app));\n\tapp->list_lines = lines;\n\tapp->clock_ms = now_ms;"),
     ("app_init_keeps_the_upload_percent", T, F, "\tmemset(app, 0, sizeof(*app));\n\tapp->clock_ms = now_ms;",
@@ -259,6 +266,9 @@ MUTATIONS = [
     ("app_init_update_time_counts_from_zero", T, F, UNTIL, "\tapp->update_until_ms = APP_UPDATE_CONFIRM_MS;"),
     ("app_init_update_time_wraps_around", T, F, UNTIL, "\tapp->update_until_ms = now_ms + APP_UPDATE_CONFIRM_MS;"),
     ("app_init_update_time_is_over_at_once", T, F, UNTIL, "\tapp->update_until_ms = now_ms;"),
+    # read as a byte: what stood in the memory before the start need not be a bool
+    ("app_init_keeps_that_an_update_was_given_up", T, F, "\tmemset(app, 0, sizeof(*app));\n\tapp->clock_ms = now_ms;",
+     "\tunsigned char given_up;\n\n\tmemcpy(&given_up, &app->update_given_up, 1);\n\tmemset(app, 0, sizeof(*app));\n\tapp->update_given_up = given_up != 0;\n\tapp->clock_ms = now_ms;"),
     ("app_init_brightness_being_set_at_zero", T, F, "\tapp->brightness_preview = -1;\n\tfor(int i = 0; i < APP_INFO_LINES; i++)", "\tfor(int i = 0; i < APP_INFO_LINES; i++)"),
     ("app_init_info_lines_lead_nowhere", T, F, "\tfor(int i = 0; i < APP_INFO_LINES; i++) app->info_lines[i] = app->info[i];\n", ""),
     ("app_init_last_info_line_leads_nowhere", T, F, "\tfor(int i = 0; i < APP_INFO_LINES; i++) app->info_lines[i] = app->info[i];", "\tfor(int i = 0; i < APP_INFO_LINES - 1; i++) app->info_lines[i] = app->info[i];"),
@@ -297,9 +307,9 @@ MUTATIONS = [
     ("app_init_built_in_length_ends_with_its_zero", T, F, "layout_parse(boot->builtin_layout, boot->builtin_length, &app->builtin,", "layout_parse(boot->builtin_layout, strlen(boot->builtin_layout), &app->builtin,"),
     ("app_init_stored_layout_read_in_safe_mode", T, F, STORED, "\tif(boot->layout_text != NULL &&"),
     ("app_init_stored_layout_never_read", T, F, STORED, "\tif(app->safe_mode && boot->layout_text != NULL &&"),
-    ("app_init_stored_layout_ends_with_its_zero", T, F, "layout_parse(boot->layout_text, boot->layout_length, &app->stored,", "layout_parse(boot->layout_text, strlen(boot->layout_text), &app->stored,"),
-    ("app_init_stored_layout_not_noted", T, F, "\t\tapp->has_stored = true;\n", ""),
-    ("app_init_stored_layout_not_in_use", T, F, "\t\tapp->has_stored = true;\n\t\tapp->layout = app->stored;\n", "\t\tapp->has_stored = true;\n"),
+    ("app_init_stored_layout_ends_with_its_zero", T, F, "layout_parse(boot->layout_text, boot->layout_length, &app->layout,", "layout_parse(boot->layout_text, strlen(boot->layout_text), &app->layout,"),
+    ("app_init_stored_layout_not_in_use", T, F, "layout_parse(boot->layout_text, boot->layout_length, &app->layout,", "layout_parse(boot->layout_text, boot->layout_length, &app->checked,"),
+    ("app_init_stored_layout_left_in_the_room_for_the_browser", T, F, "\t\tapp->source = APP_LAYOUT_STORED;\n", "\t\tapp->source = APP_LAYOUT_STORED;\n\t\tapp->checked = app->layout;\n"),
     ("app_init_stored_layout_named_built_in", T, F, "\t\tapp->source = APP_LAYOUT_STORED;", "\t\tapp->source = APP_LAYOUT_BUILTIN;"),
     ("app_init_stored_text_not_taken", T, F, "\t\tmemcpy(app->layout_text, boot->layout_text, boot->layout_length);\n", ""),
     ("app_init_stored_text_length_not_taken", T, F, "\t\tapp->layout_length = boot->layout_length;\n", ""),
@@ -316,6 +326,7 @@ MUTATIONS = [
     ("app_button_hold_counts_under_an_upload", T, F, ON_ACTION, "\ton_action = app->nav.screen == NAV_DTC_CONFIRM && app->nav.row == ROW_CLEAR && nav_overlay(&world) != NAV_OVER_ASK;"),
     ("app_button_hold_counts_under_a_question", T, F, ON_ACTION, "\ton_action = app->nav.screen == NAV_DTC_CONFIRM && app->nav.row == ROW_CLEAR && nav_overlay(&world) != NAV_OVER_UPLOAD;"),
     ("app_button_hold_counts_on_the_other_row", T, F, "#define ROW_CLEAR       1", "#define ROW_CLEAR       0"),
+    ("app_button_hold_counts_only_behind_a_press_on_a_lit_screen", T, F, ON_ACTION, ON_ACTION.replace(";", " && !app->woke;")),
     ("app_button_hold_never_counts", T, F, ON_ACTION, "\ton_action = app->nav.screen == NAV_DTC_CONFIRM && app->nav.row == ROW_CLEAR && nav_overlay(&world) == NAV_OVER_ASK;"),
     ("app_button_knob_not_sampled", T, F, "\tknob_event = knob_sample(&app->knob, pressed, read_ok, now);", "\tknob_event = KNOB_NONE;"),
     ("app_button_knob_trusts_failed_readings", T, F, "\tknob_event = knob_sample(&app->knob, pressed, read_ok, now);", "\tknob_event = knob_sample(&app->knob, pressed, true, now);"),
@@ -323,16 +334,18 @@ MUTATIONS = [
     ("app_button_hold_trusts_failed_readings", T, F, "\thold_event = hold_sample(&app->hold, pressed, read_ok, on_action, now);", "\thold_event = hold_sample(&app->hold, pressed, true, on_action, now);"),
     ("app_button_hold_sampled_only_in_the_dialog", T, F, "\thold_event = hold_sample(&app->hold, pressed, read_ok, on_action, now);",
      "\thold_event = app->hold.open ? hold_sample(&app->hold, pressed, read_ok, on_action, now) : HOLD_WAITING;"),
-    ("app_button_every_reading_is_an_input", T, F, WOKE, "\tif(was_pressed || !was_pressed) app->woke = wakes(app, &world, now);"),
-    ("app_button_every_pressed_reading_is_an_input", T, F, WOKE, "\tif((was_pressed || !was_pressed) && knob_is_pressed(&app->knob)) app->woke = wakes(app, &world, now);"),
-    ("app_button_release_is_the_input", T, F, WOKE, "\tif(was_pressed && !knob_is_pressed(&app->knob)) app->woke = wakes(app, &world, now);"),
+    ("app_button_every_reading_is_an_input", T, F, WOKE, "\tif(was_pressed || !was_pressed) app->woke = in_the_dark(app, &world, now);"),
+    ("app_button_every_pressed_reading_is_an_input", T, F, WOKE, "\tif((was_pressed || !was_pressed) && knob_is_pressed(&app->knob)) app->woke = in_the_dark(app, &world, now);"),
+    ("app_button_release_is_the_input", T, F, WOKE, "\tif(was_pressed && !knob_is_pressed(&app->knob)) app->woke = in_the_dark(app, &world, now);"),
     ("app_button_press_is_no_input", T, F, WOKE, "\tif(!was_pressed && knob_is_pressed(&app->knob)) app->woke = false;"),
-    ("app_button_press_in_the_dark_not_noted", T, F, WOKE, "\tif(!was_pressed && knob_is_pressed(&app->knob)) wakes(app, &world, now);"),
-    ("app_button_press_in_the_dark_noted_for_ever", T, F, WOKE, "\tif(!was_pressed && knob_is_pressed(&app->knob) && wakes(app, &world, now)) app->woke = true;"),
+    ("app_button_press_in_the_dark_not_noted", T, F, WOKE, "\tif(!was_pressed && knob_is_pressed(&app->knob)) in_the_dark(app, &world, now);"),
+    ("app_button_press_in_the_dark_noted_for_ever", T, F, WOKE, "\tif(!was_pressed && knob_is_pressed(&app->knob) && in_the_dark(app, &world, now)) app->woke = true;"),
     ("app_button_press_in_the_dark_passed_on", T, F, KNOB, "\tif(knob_event != KNOB_NONE)"),
     ("app_button_only_presses_in_the_dark_passed_on", T, F, KNOB, "\tif(knob_event != KNOB_NONE && app->woke)"),
     ("app_button_long_press_in_the_dark_passed_on", T, F, KNOB, "\tif(knob_event != KNOB_NONE && (!app->woke || knob_event == KNOB_LONG))"),
     ("app_button_short_press_in_the_dark_passed_on", T, F, KNOB, "\tif(knob_event != KNOB_NONE && (!app->woke || knob_event == KNOB_SHORT))"),
+    ("app_button_press_dropped_when_the_screen_is_dark_at_its_end", T, F, KNOB, "\tif(knob_event != KNOB_NONE && !app->woke && backlight(app, &world, now) != 0)"),
+    ("app_button_press_in_the_dark_passed_on_when_the_screen_is_lit_at_its_end", T, F, KNOB, "\tif(knob_event != KNOB_NONE && (!app->woke || guard_brightness(app->heat, SETTINGS_BRIGHTNESS_MAX) > 0))"),
     ("app_button_short_press_not_passed_on", T, F, KNOB, "\tif(knob_event == KNOB_LONG && !app->woke)"),
     ("app_button_long_press_not_passed_on", T, F, KNOB, "\tif(knob_event == KNOB_SHORT && !app->woke)"),
     ("app_button_short_and_long_swapped", T, F, KNOB_DO, "\t\tapp_do(app, knob_event == KNOB_LONG ? nav_short(&app->nav, &world, now) : nav_long(&app->nav, &world, now), now);"),
@@ -348,23 +361,44 @@ MUTATIONS = [
     # the encoder
     ("app_encoder_counts_without_detent_are_an_input", T, F, "\tif(detents == 0) return;\n", ""),
     ("app_encoder_counts_not_made_detents", T, F, "\tint detents = knob_turn(&app->knob, counts, now);", "\tint detents = counts;"),
-    ("app_encoder_detent_in_the_dark_passed_on", T, F, ENCODER_WAKE, ENCODER_WAKE.replace("\tif(wakes(app, &world, now)) return;\n", "\twakes(app, &world, now);\n")),
-    ("app_encoder_detent_is_no_input", T, F, ENCODER_WAKE, ENCODER_WAKE.replace("\tif(wakes(app, &world, now)) return;\n", "")),
+    ("app_encoder_detent_in_the_dark_passed_on", T, F, ENCODER_WAKE, ENCODER_WAKE.replace("\tif(in_the_dark(app, &world, now)) return;\n", "\tin_the_dark(app, &world, now);\n")),
+    ("app_encoder_detent_passed_on_while_dark_by_heat", T, F, ENCODER_WAKE,
+     ENCODER_WAKE.replace("\tif(in_the_dark(app, &world, now)) return;\n", "\tif(in_the_dark(app, &world, now) && app->heat != GUARD_HEAT_OFF) return;\n")),
+    ("app_encoder_detent_is_no_input", T, F, ENCODER_WAKE, ENCODER_WAKE.replace("\tif(in_the_dark(app, &world, now)) return;\n", "")),
     ("app_encoder_detent_does_not_break_the_hold", T, F, ENCODER_WAKE, ENCODER_WAKE.replace("\tif(app->nav.screen == NAV_DTC_CONFIRM) hold_activity(&app->hold, now);\n", "")),
     ("app_encoder_turn_not_carried_out", T, F, "\tapp_do(app, nav_turn(&app->nav, detents, &world, now), now);\n}", "\tnav_turn(&app->nav, detents, &world, now);\n}"),
     ("app_encoder_one_detent_per_call", T, F, "\tapp_do(app, nav_turn(&app->nav, detents, &world, now), now);\n}", "\tapp_do(app, nav_turn(&app->nav, detents < 0 ? -1 : 1, &world, now), now);\n}"),
     ("app_encoder_direction_swapped", T, F, "\tapp_do(app, nav_turn(&app->nav, detents, &world, now), now);\n}", "\tapp_do(app, nav_turn(&app->nav, -detents, &world, now), now);\n}"),
 
     # the touch screen
-    ("app_tap_in_the_dark_passed_on", T, F, TAP_WAKE, TAP_WAKE.replace("\tif(wakes(app, &world, now)) return;\n", "\twakes(app, &world, now);\n")),
-    ("app_tap_is_no_input", T, F, TAP_WAKE, TAP_WAKE.replace("\tif(wakes(app, &world, now)) return;\n", "")),
+    ("app_tap_in_the_dark_passed_on", T, F, TAP_WAKE, TAP_WAKE.replace("\tif(in_the_dark(app, &world, now)) return;\n", "\tin_the_dark(app, &world, now);\n")),
+    ("app_tap_passed_on_while_dark_by_heat", T, F, TAP_WAKE,
+     TAP_WAKE.replace("\tif(in_the_dark(app, &world, now)) return;\n", "\tif(in_the_dark(app, &world, now) && app->heat != GUARD_HEAT_OFF) return;\n")),
+    ("app_tap_is_no_input", T, F, TAP_WAKE, TAP_WAKE.replace("\tif(in_the_dark(app, &world, now)) return;\n", "")),
     ("app_tap_does_not_break_the_hold", T, F, TAP_WAKE, TAP_WAKE.replace("\tif(app->nav.screen == NAV_DTC_CONFIRM) hold_activity(&app->hold, now);\n", "")),
     ("app_tap_not_carried_out", T, F, "\tapp_do(app, nav_tap(&app->nav, row, &world, now), now);", "\tnav_tap(&app->nav, row, &world, now);"),
     ("app_tap_always_on_the_first_row", T, F, "\tapp_do(app, nav_tap(&app->nav, row, &world, now), now);", "\tapp_do(app, nav_tap(&app->nav, 0 * row, &world, now), now);"),
     ("app_tap_is_a_short_press", T, F, "\tapp_do(app, nav_tap(&app->nav, row, &world, now), now);", "\t(void)row;\n\tapp_do(app, nav_short(&app->nav, &world, now), now);"),
-    ("app_swipe_in_the_dark_passed_on", T, F, SWIPE_WAKE, SWIPE_WAKE.replace("\tif(wakes(app, &world, now)) return;\n", "\twakes(app, &world, now);\n")),
-    ("app_swipe_is_no_input", T, F, SWIPE_WAKE, SWIPE_WAKE.replace("\tif(wakes(app, &world, now)) return;\n", "")),
+    ("app_swipe_in_the_dark_passed_on", T, F, SWIPE_WAKE, SWIPE_WAKE.replace("\tif(in_the_dark(app, &world, now)) return;\n", "\tin_the_dark(app, &world, now);\n")),
+    ("app_swipe_passed_on_while_dark_by_heat", T, F, SWIPE_WAKE,
+     SWIPE_WAKE.replace("\tif(in_the_dark(app, &world, now)) return;\n", "\tif(in_the_dark(app, &world, now) && app->heat != GUARD_HEAT_OFF) return;\n")),
+    ("app_swipe_is_no_input", T, F, SWIPE_WAKE, SWIPE_WAKE.replace("\tif(in_the_dark(app, &world, now)) return;\n", "")),
     ("app_swipe_does_not_break_the_hold", T, F, SWIPE_WAKE, SWIPE_WAKE.replace("\tif(app->nav.screen == NAV_DTC_CONFIRM) hold_activity(&app->hold, now);\n", "")),
+    ("app_swipe_moves_the_focus_in_both_dialogs", T, F, VERTICAL, VERTICAL.replace("!dialog", "(dialog || !dialog)")),
+    ("app_swipe_moves_the_focus_in_the_clear_dialog", T, F, DIALOG, "\tbool dialog = app->nav.screen == NAV_CONFIRM;"),
+    ("app_swipe_moves_the_focus_in_the_dialog_of_the_settings", T, F, DIALOG, "\tbool dialog = app->nav.screen == NAV_DTC_CONFIRM;"),
+    ("app_swipe_moves_the_focus_up_in_the_dialogs", T, F, VERTICAL, VERTICAL.replace("!dialog", "(!dialog || dy > 0)")),
+    ("app_swipe_moves_the_focus_down_in_the_dialogs", T, F, VERTICAL, VERTICAL.replace("!dialog", "(!dialog || dy < 0)")),
+    ("app_swipe_in_a_dialog_is_no_input_for_nav", T, F, HORIZONTAL, "\telse if(dialog) what = NAV_DO_NOTHING;\n" + HORIZONTAL),
+    ("app_swipe_ignored_on_every_screen_with_two_rows", T, F, DIALOG, "\tbool dialog = app->nav.screen == NAV_DTC_CONFIRM || app->nav.screen == NAV_CONFIRM || app->nav.screen == NAV_WEB;"),
+    ("app_swipe_ignored_in_the_settings", T, F, DIALOG, "\tbool dialog = app->nav.screen == NAV_DTC_CONFIRM || app->nav.screen >= NAV_SETTINGS;"),
+    ("app_swipe_ignored_in_the_list", T, F, DIALOG, DIALOG.replace(";", " || app->nav.screen == NAV_DTC_LIST;")),
+    ("app_swipe_ignored_in_the_fault_memory_menu", T, F, DIALOG, DIALOG.replace(";", " || app->nav.screen == NAV_DTC;")),
+    ("app_swipe_moves_the_focus_of_the_clear_dialog_while_the_knob_is_pressed", T, F,
+     DIALOG, "\tbool dialog = (app->nav.screen == NAV_DTC_CONFIRM && !knob_is_pressed(&app->knob)) || app->nav.screen == NAV_CONFIRM;"),
+    ("app_swipe_without_direction_is_no_activity", T, F,
+     "\tif(app->nav.screen == NAV_DTC_CONFIRM) hold_activity(&app->hold, now);\n\t// The finger",
+     "\tif(app->nav.screen == NAV_DTC_CONFIRM && (dx != 0 || dy != 0)) hold_activity(&app->hold, now);\n\t// The finger"),
     ("app_swipe_slanted_moves_the_focus", T, F, VERTICAL, VERTICAL.replace("dx == 0 && dy != 0", "dy != 0")),
     ("app_swipe_without_direction_moves_the_focus", T, F, VERTICAL, VERTICAL.replace("dx == 0 && dy != 0", "dx == 0")),
     ("app_swipe_vertical_turns_the_pages", T, F, VERTICAL, VERTICAL.replace(" && nav_rows(&app->nav, &world) > 0", "")),
@@ -381,11 +415,18 @@ MUTATIONS = [
     # the tick
     ("app_tick_nav_not_followed", T, F, TICK_NAV + "\n", ""),
     ("app_tick_nav_not_carried_out", T, F, TICK_NAV, "\tnav_tick(&app->nav, &world, now);"),
-    ("app_tick_restart_without_an_update", T, F, TICK_UPDATE, "\tif(now >= app->update_until_ms) app->events |= APP_EVENT_REBOOT;"),
-    ("app_tick_restart_one_ms_late", T, F, TICK_UPDATE, "\tif(app->update_pending && now > app->update_until_ms) app->events |= APP_EVENT_REBOOT;"),
-    ("app_tick_no_restart_of_an_unconfirmed_update", T, F, TICK_UPDATE + "\n", ""),
-    ("app_tick_restart_asked_for_once", T, F, TICK_UPDATE, "\tif(app->update_pending && now >= app->update_until_ms && app->update_until_ms != 0)\n\t{\n\t\tapp->events |= APP_EVENT_REBOOT;\n\t\tapp->update_until_ms = 0;\n\t}"),
-    ("app_tick_unconfirmed_update_boots_other_slot", T, F, TICK_UPDATE, "\tif(app->update_pending && now >= app->update_until_ms) app->events |= APP_EVENT_PREVIOUS_FIRMWARE;"),
+    ("app_tick_restart_without_an_update", T, F, TICK_UPDATE_IF, TICK_UPDATE_IF.replace("app->update_pending && ", "")),
+    ("app_tick_restart_one_ms_late", T, F, TICK_UPDATE_IF, TICK_UPDATE_IF.replace("now >= app->update_until_ms", "now > app->update_until_ms")),
+    ("app_tick_no_restart_of_an_unconfirmed_update", T, F, TICK_UPDATE_DO, "\t\tapp->update_given_up = true;\n"),
+    ("app_tick_restart_asked_for_with_every_tick", T, F, TICK_UPDATE_IF, TICK_UPDATE_IF.replace(" && !app->update_given_up", "")),
+    ("app_tick_restart_asked_for_again_while_another_event_waits", T, F, TICK_UPDATE_IF, TICK_UPDATE_IF.replace("!app->update_given_up", "(!app->update_given_up || app->events != 0)")),
+    ("app_tick_restart_asked_for_again_while_an_upload_runs", T, F, TICK_UPDATE_IF, TICK_UPDATE_IF.replace("!app->update_given_up", "(!app->update_given_up || app->uploading)")),
+    ("app_tick_restart_asked_for_not_noted", T, F, TICK_UPDATE_DO, "\t\tapp->events |= APP_EVENT_REBOOT;\n"),
+    ("app_tick_restart_asked_for_again_when_the_time_goes_on", T, F, TICK_UPDATE_DO, "\t\tapp->update_given_up = now == app->update_until_ms;\n\t\tapp->events |= APP_EVENT_REBOOT;\n"),
+    ("app_tick_restart_asked_for_twice", T, F, TICK_UPDATE_DO, "\t\tapp->update_given_up = app->events & APP_EVENT_REBOOT;\n\t\tapp->events |= APP_EVENT_REBOOT;\n"),
+    ("app_tick_update_given_up_before_its_time", T, F, TICK_UPDATE_IF + "\n\t{\n",
+     "\tif(app->update_pending) app->update_given_up = now + 1 >= app->update_until_ms;\n" + TICK_UPDATE_IF + "\n\t{\n"),
+    ("app_tick_unconfirmed_update_boots_other_slot", T, F, TICK_UPDATE_DO, TICK_UPDATE_DO.replace("APP_EVENT_REBOOT", "APP_EVENT_PREVIOUS_FIRMWARE")),
     ("app_tick_upload_never_ends", T, F, TICK_UPLOAD + "\n", ""),
     ("app_tick_upload_ends_one_ms_late", T, F, TICK_UPLOAD, "\tif(app->uploading && passed(now, app->upload_ms) > APP_UPLOAD_IDLE_MS) app->uploading = false;"),
     ("app_tick_upload_ends_at_once", T, F, TICK_UPLOAD, "\tif(app->uploading) app->uploading = false;"),
@@ -402,6 +443,19 @@ MUTATIONS = [
     ("app_event_install_is_the_previous_bit", T, H, "#define APP_EVENT_INSTALL_FIRMWARE  0x0800u", "#define APP_EVENT_INSTALL_FIRMWARE  0x0400u"),
 
     # temperature and platform
+    ("app_heat_leaves_the_clear_dialog_open", T, F, HEAT_IF, "\tif(app->heat == GUARD_HEAT_OFF && app->nav.screen == NAV_PAGES)"),
+    ("app_heat_that_dims_closes_the_clear_dialog", T, F, HEAT_IF, HEAT_IF.replace("app->heat == GUARD_HEAT_OFF", "app->heat != GUARD_HEAT_NORMAL")),
+    ("app_heat_closes_the_clear_dialog_with_a_failed_reading_only", T, F, HEAT_IF, HEAT_IF.replace("app->heat == GUARD_HEAT_OFF", "app->heat == GUARD_HEAT_OFF && !valid")),
+    ("app_heat_closes_the_clear_dialog_only_above_the_limit", T, F, HEAT_IF, HEAT_IF.replace("app->heat == GUARD_HEAT_OFF", "app->heat == GUARD_HEAT_OFF && celsius > GUARD_TEMP_OFF_C")),
+    ("app_heat_closes_the_clear_dialog_by_a_failed_reading", T, F, HEAT_IF, HEAT_IF.replace("app->heat == GUARD_HEAT_OFF", "celsius >= GUARD_TEMP_OFF_C")),
+    ("app_heat_leaves_the_clear_dialog_open_with_the_focus_on_abbrechen", T, F, HEAT_IF, HEAT_IF.replace("app->heat == GUARD_HEAT_OFF", "app->heat == GUARD_HEAT_OFF && app->nav.row == ROW_CLEAR")),
+    ("app_heat_leaves_the_hold_open", T, F, HEAT_CLOSE, "\t\tapp_world(app, &world, app->clock_ms);\n"),
+    ("app_heat_closes_the_hold_only", T, F, HEAT_LEAVE, HEAT_LEAVE.replace("HOLD_CANCELLED", "HOLD_WAITING")),
+    ("app_heat_confirms_the_hold", T, F, HEAT_LEAVE, HEAT_LEAVE.replace("HOLD_CANCELLED", "HOLD_CONFIRMED")),
+    ("app_heat_clears", T, F, HEAT_LEAVE, "\t\tapp_do(app, nav_hold(&app->nav, HOLD_CONFIRMED, &world, app->clock_ms), app->clock_ms);"),
+    ("app_heat_leaves_the_dialog_at_a_later_time", T, F, HEAT_LEAVE, HEAT_LEAVE.replace("&world, app->clock_ms", "&world, app->clock_ms + 1000")),
+    ("app_heat_leaving_the_dialog_is_an_input", T, F, HEAT_LEAVE, HEAT_LEAVE + "\n\t\tapp->last_input_ms = app->clock_ms;"),
+    ("app_heat_leaves_the_dialog_for_the_value_pages", T, F, HEAT_LEAVE, HEAT_LEAVE + "\n\t\tnav_init(&app->nav, &world, app->clock_ms);"),
     ("app_temperature_level_not_followed", T, F, "\tapp->heat = guard_heat(app->heat, celsius, valid);\n", ""),
     ("app_temperature_failed_reading_counts", T, F, "\tapp->heat = guard_heat(app->heat, celsius, valid);", "\tapp->heat = guard_heat(app->heat, celsius, true);"),
     ("app_temperature_level_always_from_normal", T, F, "\tapp->heat = guard_heat(app->heat, celsius, valid);", "\tapp->heat = guard_heat(GUARD_HEAT_NORMAL, celsius, valid);"),
@@ -499,7 +553,9 @@ MUTATIONS = [
     ("app_do_confirmed_firmware_resets", T, F, "\t\t\t\t\tapp->events |= APP_EVENT_INSTALL_FIRMWARE;", "\t\t\t\t\tapp->events |= APP_EVENT_FACTORY_RESET;"),
     ("app_do_confirmed_reset_not_done", T, F, "\t\t\t\tcase ACCESS_ASK_RESET:\n\t\t\t\t\tapp->events |= APP_EVENT_FACTORY_RESET;\n", "\t\t\t\tcase ACCESS_ASK_RESET:\n"),
     ("app_do_confirmed_reset_installs", T, F, "\t\t\t\tcase ACCESS_ASK_RESET:\n\t\t\t\t\tapp->events |= APP_EVENT_FACTORY_RESET;", "\t\t\t\tcase ACCESS_ASK_RESET:\n\t\t\t\t\tapp->events |= APP_EVENT_INSTALL_FIRMWARE;"),
-    ("app_do_confirmed_network_resets_as_well", T, F, "\t\t\t\t\tstore_wifi(app, now);\n\t\t\t\t\tbreak;\n", "\t\t\t\t\tstore_wifi(app, now);\n"),
+    # written without removing the break: a case that falls through does not build (-Wimplicit-fallthrough)
+    ("app_do_confirmed_network_installs_as_well", T, F, "\t\t\t\t\tstore_wifi(app, now);\n\t\t\t\t\tbreak;\n",
+     "\t\t\t\t\tstore_wifi(app, now);\n\t\t\t\t\tapp->events |= APP_EVENT_INSTALL_FIRMWARE;\n\t\t\t\t\tbreak;\n"),
     ("app_do_press_too_soon_drops_what_was_asked", T, F, "\t\t\t\tdefault:\n\t\t\t\t\treturn;", "\t\t\t\tdefault:\n\t\t\t\t\tbreak;"),
     ("app_do_confirmed_question_keeps_what_was_asked", T, F, "\t\t\t\tdefault:\n\t\t\t\t\treturn;\n\t\t\t}\n\t\t\tdrop_asked(app);\n", "\t\t\t\tdefault:\n\t\t\t\t\treturn;\n\t\t\t}\n"),
     ("app_do_confirm_at_time_zero", T, F, "\t\t\tswitch(access_confirm(&app->access, now))", "\t\t\tswitch(access_confirm(&app->access, 0))"),
@@ -628,7 +684,7 @@ for name, text in [
     ("catalog", "\tif(events & POLL_EVENT_CATALOG) app->events |= APP_EVENT_STORE_CATALOG;"),
     ("old_list", "\tif(events & POLL_EVENT_OLD) app->events |= APP_EVENT_STORE_OLD;"),
     ("network", "\tapp->events |= APP_EVENT_STORE_WIFI;"),
-    ("unconfirmed_update", TICK_UPDATE),
+    ("unconfirmed_update", TICK_UPDATE_DO),
     ("brightness", "\t\t\tapp->brightness_preview = -1;\n\t\t\tapp->events |= APP_EVENT_STORE_SETTINGS;"),
     ("night_mode", "\t\t\tapp->settings.night_mode = !app->settings.night_mode;\n\t\t\tapp->events |= APP_EVENT_STORE_SETTINGS;"),
     ("direction", "\t\t\tknob_set_reverse(&app->knob, app->settings.reverse);\n\t\t\tapp->events |= APP_EVENT_STORE_SETTINGS;"),
@@ -645,8 +701,8 @@ for name, text in [
 # takes the time over as well, so that leaving it out there changes nothing that can be seen.
 MUTATIONS += clock("button", "app_button", "\tuint64_t now = advance(app, now_ms);\n\tbool was_pressed")[:1]
 MUTATIONS += clock("encoder", "app_encoder", "\tuint64_t now = advance(app, now_ms);\n\tint detents")
-MUTATIONS += clock("tap", "app_tap", "\tuint64_t now = advance(app, now_ms);\n\tnav_world_t world;\n\n\tapp_world(app, &world, now);\n\tif(wakes(app, &world, now)) return;\n\n\tif(app->nav.screen == NAV_DTC_CONFIRM) hold_activity(&app->hold, now);\n\tapp_do(app, nav_tap(")
-MUTATIONS += clock("swipe", "app_swipe", "\tuint64_t now = advance(app, now_ms);\n\tnav_world_t world;\n\tnav_do_t what;")
+MUTATIONS += clock("tap", "app_tap", "\tuint64_t now = advance(app, now_ms);\n\tnav_world_t world;\n\n\tapp_world(app, &world, now);\n\tif(in_the_dark(app, &world, now)) return;\n\n\tif(app->nav.screen == NAV_DTC_CONFIRM) hold_activity(&app->hold, now);\n\tapp_do(app, nav_tap(")
+MUTATIONS += clock("swipe", "app_swipe", "\tuint64_t now = advance(app, now_ms);\n\t// In the two dialogs the knob alone")
 MUTATIONS += clock("tick", "app_tick", "\tuint64_t now = advance(app, now_ms);\n\tnav_world_t world;\n\n\tapp_world(app, &world, now);\n\tapp_do(app, nav_tick(")[:1]
 MUTATIONS += clock("net", "app_net", "\tuint64_t now = advance(app, now_ms);\n\tconn_view_t view;")
 MUTATIONS += clock("do", "app_do", "\tuint64_t now = advance(app, now_ms);\n\tnav_world_t world;\n\n\tswitch(what)")

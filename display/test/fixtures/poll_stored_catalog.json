@@ -1,0 +1,1 @@
+{"@BATT_V":{"unit":"V","class":"","profile":false,"delivered":true},"ENGINE_RPM":{"unit":"RPM","class":"frequency","profile":true,"delivered":true},"OIL_TEMP_OLD":{"unit":"°C","class":"temperature","profile":true,"delivered":false}}

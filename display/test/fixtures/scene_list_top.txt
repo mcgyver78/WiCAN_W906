@@ -1,0 +1,11 @@
+kind: list
+ring: none
+title: Fehlerspeicher
+note: Löschen möglich: 9:12
+row: > head | 10 Fehler | 8 Steuergeräte · 36 s | enabled
+row: - line | Motorelektronik | 7E0 · 6 Fehler | enabled
+row: - sub | P0100-13 | aktiv | enabled
+row: - sub | P242F-FA | gespeichert | enabled
+row: - line | 4 Codes nicht übertragen |  | enabled
+first: 0
+total: 20

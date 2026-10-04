@@ -1,0 +1,4 @@
+kind: values
+ring: none
+title:
+note:

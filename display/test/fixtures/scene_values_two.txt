@@ -1,0 +1,7 @@
+kind: values
+ring: none
+title: Zwei
+note:
+item: Tank | 43 | L | normal | bar | 573
+item: Vorglühen | aus |  | normal | state | -1
+dots: 3/6

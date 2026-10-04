@@ -1,0 +1,11 @@
+kind: list
+ring: none
+title: Fehlerspeicher
+note: Keine Fehler zu löschen
+row: > head | 0 Fehler | 18 Steuergeräte · 35 s | enabled
+row: - line | 18 Steuergeräte ohne Fehler |  | enabled
+row: - action | Erneut lesen |  | enabled
+row: - action | Fehler löschen |  | disabled
+row: - action | Zurück |  | enabled
+first: 0
+total: 5

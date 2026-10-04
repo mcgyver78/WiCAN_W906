@@ -1,0 +1,8 @@
+kind: progress
+ring: none
+title: Fehlerspeicher lesen
+note:
+line:
+line: ca. 35 s – Live-Werte pausieren
+big: 18/18
+permille: 1000

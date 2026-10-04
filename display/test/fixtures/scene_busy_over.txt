@@ -1,0 +1,6 @@
+kind: progress
+ring: none
+title: Fehlerspeicher
+note:
+big: …
+permille: 0

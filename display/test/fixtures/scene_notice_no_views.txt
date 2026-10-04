@@ -1,0 +1,5 @@
+kind: notice
+ring: none
+title:
+note:
+line: Keine Ansicht mit verfügbaren Werten

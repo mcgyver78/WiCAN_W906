@@ -1,0 +1,10 @@
+kind: list
+ring: grey
+title: Fehlerspeicher
+note: Zündung aus – Motorsteuergerät offline
+row: - action | Lesen |  | disabled
+row: - action | Liste ansehen |  | disabled
+row: - action | Zuletzt gelöscht |  | disabled
+row: > action | Zurück |  | enabled
+first: 0
+total: 4

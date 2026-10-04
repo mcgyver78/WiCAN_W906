@@ -1,0 +1,11 @@
+kind: list
+ring: none
+title: Zuletzt gelöscht
+note:
+row: > head | 5 Fehler | 18 Steuergeräte · 34 s | enabled
+row: - line | Motorelektronik | 7E0 · 2 Fehler | enabled
+row: - sub | P0100-13 | aktiv | enabled
+row: - sub | P242F-FA | gespeichert | enabled
+row: - line | ESP | 784 · 1 Fehler | enabled
+first: 0
+total: 13

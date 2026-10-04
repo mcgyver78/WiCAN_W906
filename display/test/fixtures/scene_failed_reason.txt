@@ -1,0 +1,5 @@
+kind: notice
+ring: none
+title: Fehlgeschlagen
+note: Knopf drücken
+line: Motor läuft – nur bei Motor aus

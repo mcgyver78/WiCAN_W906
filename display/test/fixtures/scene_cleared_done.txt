@@ -1,0 +1,11 @@
+kind: list
+ring: none
+title: Gelöscht
+note:
+row: - sub | 9301 | Status 60 | enabled
+row: - line | Rückhaltesystem | 6BC · 1 Fehler | enabled
+row: - sub | 9100 | Status E0 | enabled
+row: - line | Collision Prevention Assist | keine Antwort | enabled
+row: > action | Fertig |  | enabled
+first: 3
+total: 8

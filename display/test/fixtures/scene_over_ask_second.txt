@@ -1,0 +1,9 @@
+kind: notice
+ring: red
+title:
+note:
+dots: 1/6
+line: WiCAN nicht gefunden – schläft, stromlos oder außer Reichweite
+over: ask
+over_line: WLAN speichern?
+over_line: Drücken = ja · lang = nein (0 s)

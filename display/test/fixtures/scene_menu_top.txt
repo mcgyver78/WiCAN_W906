@@ -1,0 +1,11 @@
+kind: list
+ring: none
+title: Menü
+note:
+row: > action | Fehlerspeicher |  | enabled
+row: - action | Helligkeit | 80 % | enabled
+row: - action | Nachtmodus | aus | enabled
+row: - action | Web-Zugriff | gesperrt | enabled
+row: - action | Info |  | enabled
+first: 0
+total: 7

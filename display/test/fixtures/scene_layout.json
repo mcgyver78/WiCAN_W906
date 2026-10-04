@@ -1,0 +1,33 @@
+{"format":"wican-display-layout","v":1,"name":"Szenen","pages":[
+{"title":"Motor","items":[
+ {"key":"ENGINE_RPM","label":"Drehzahl","unit":"1/min","widget":"arc","min":0,"max":5000,"warn_hi":4000,"crit_hi":4500},
+ {"key":"COOLANT_TMP","label":"Kühlwasser","warn_hi":105,"crit_hi":115},
+ {"key":"BOOST_PRESSURE","label":"Ladedruck","unit":"bar","scale":0.001,"dec":2},
+ {"key":"ACCEL_PEDAL","widget":"bar","min":0,"max":100},
+ {"key":"DPF_REGEN_STATUS","label":"Regeneration","widget":"state","map":{"1":"inaktiv","*":"aktiv"}},
+ {"key":"@BATT_V","label":"Bordnetz","dec":1,"warn_lo":11.8,"crit_lo":11}]},
+{"title":"Eins","items":[
+ {"key":"COOLANT_TMP","label":"Kühlwasser","unit":"°C","widget":"arc","min":40,"max":130}]},
+{"title":"Zwei","items":[
+ {"key":"FUEL_L","label":"Tank","widget":"bar","min":0,"max":75,"warn_lo":10,"crit_lo":5},
+ {"key":"GLOW_PLUG","label":"Vorglühen","widget":"state","map":{"on":"an","off":"aus"}}]},
+{"title":"Drei","items":[
+ {"key":"OIL_LEVEL","label":"Ölstand","dec":1},
+ {"key":"LAMBDA","dec":2},
+ {"key":"ENGINE_OIL_TEMP","label":"Motoröl"}]},
+{"title":"Vier","items":[
+ {"key":"ENGINE_RPM","label":"Drehzahl"},
+ {"key":"COOLANT_TMP","label":"Kühlwasser","widget":"arc","min":40,"max":130},
+ {"key":"ACCEL_PEDAL","label":"Fahrpedal","widget":"bar","min":0,"max":100},
+ {"key":"DPF_REGEN_STATUS","label":"Regeneration","widget":"state","map":{"1":"inaktiv","*":"aktiv"}}]},
+{"title":"Fünf","items":[
+ {"key":"EGT_PRE_TURBO","label":"Abgas vor Turbo","unit":"°C"},
+ {"key":"EGT_PRE_DPF","label":"Abgas vor DPF"},
+ {"key":"TRANS_TEMP","label":"Getriebeöl","unit":"°C"},
+ {"key":"DPF_SOOT_MASS","label":"Ruß","unit":"g","dec":1,"widget":"bar","min":0,"max":40},
+ {"key":"GLOW_PLUG","widget":"state","map":{"on":"an"}}]},
+{"title":"Versteckt","hidden":true,"items":[
+ {"key":"ENGINE_RPM","label":"Drehzahl"}]},
+{"title":"Fremd","items":[
+ {"key":"TRANS_TEMP","label":"Getriebeöl"},
+ {"key":"TURBO_SPEED"}]}]}

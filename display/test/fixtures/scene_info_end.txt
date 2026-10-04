@@ -1,0 +1,11 @@
+kind: list
+ring: none
+title: Info
+note:
+row: - line | WiCAN: a1b2c3d4e5f6 |  | enabled
+row: - line | Firmware: w906-display 0.1 |  | enabled
+row: - line | Ansichten: W906 OM651 Standard |  | enabled
+row: - line | Speicher: 61000 frei |  | enabled
+row: > line | Neustarts: 3 |  | enabled
+first: 2
+total: 7

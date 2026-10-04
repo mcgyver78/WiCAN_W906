@@ -1,0 +1,6 @@
+kind: values
+ring: none
+title: Versteckt
+note:
+item: Drehzahl | 812 | RPM | normal | number | -1
+dots: 0/6

@@ -17,6 +17,9 @@
 // Not "access": that is a function of unistd.h
 static access_t acc;
 
+// The text of a check that is made for each of the three questions
+static char text[300];
+
 static void released(void)
 {
 	access_init(&acc);
@@ -184,6 +187,8 @@ static void test_question_refused(void)
 	check(!access_is_open(&acc, 601000), "a question refused because the release ended does not bring it back");
 	released();
 	check(access_ask(&acc, ACCESS_ASK_WIFI, 600999) == 1, "a question in the last millisecond of the release is accepted");
+	check(access_asking(&acc, 660998) == ACCESS_ASK_WIFI && access_asking(&acc, 660999) == ACCESS_ASK_NONE && access_is_open(&acc, 660999),
+	      "a question in the last millisecond of the release waits its 60000 ms: it is not cut at the end the release had before");
 	released();
 	access_close(&acc, 1500);
 	check(access_ask(&acc, ACCESS_ASK_WIFI, 2000) == 0, "a question after the release was switched off is refused");
@@ -230,6 +235,10 @@ static void test_tickets(void)
 	      "of three tickets the second is known as refused, the third waits");
 	check(access_ticket(&acc, 0, 6000) == ACCESS_TICKET_UNKNOWN && access_ticket(&acc, 4, 6000) == ACCESS_TICKET_UNKNOWN &&
 	      access_ticket(&acc, UINT32_MAX, 6000) == ACCESS_TICKET_UNKNOWN, "with three tickets given the numbers 0, 4 and 2^32-1 are unknown");
+	check(access_ticket(&acc, 0x80000003u, 6000) == ACCESS_TICKET_UNKNOWN && access_ticket(&acc, 0x80000002u, 6000) == ACCESS_TICKET_UNKNOWN &&
+	      access_ticket(&acc, 0x10003u, 6000) == ACCESS_TICKET_UNKNOWN && access_ticket(&acc, 0x10002u, 6000) == ACCESS_TICKET_UNKNOWN &&
+	      access_ticket(&acc, 0x103u, 6000) == ACCESS_TICKET_UNKNOWN && access_ticket(&acc, 0x102u, 6000) == ACCESS_TICKET_UNKNOWN,
+	      "ticket numbers are compared in all 32 bit: numbers that differ from the last two only in bit 31, 16 or 8 are unknown");
 
 	// No test can ask for 4294967294 tickets: the number of the last one is written into the struct by hand
 	released();
@@ -253,6 +262,8 @@ static void test_tickets(void)
 	access_confirm(&acc, 3000);
 	check(access_ask(&acc, ACCESS_ASK_WIFI, 4000) == 0x80000000u && access_ticket(&acc, 0x7FFFFFFFu, 4000) == ACCESS_TICKET_CONFIRMED,
 	      "the numbers count on across 2^31");
+	check(access_ticket(&acc, 0x80000000u, 4000) == ACCESS_TICKET_WAITING && access_ticket(&acc, 0, 4000) == ACCESS_TICKET_UNKNOWN &&
+	      access_ticket(&acc, UINT32_MAX, 4000) == ACCESS_TICKET_UNKNOWN, "with the tickets 2^31-1 and 2^31 given the numbers 0 and 2^32-1 are unknown: bit 31 counts");
 }
 
 static void test_refuse(void)
@@ -354,6 +365,25 @@ static void test_ends_noticed_late(void)
 
 static void test_release_ends_with_a_question(void)
 {
+	static const struct
+	{
+		access_ask_t ask;
+		const char *rule;
+	} questions[] = {
+		{ACCESS_ASK_WIFI, "the release ends by itself while the question for the WiFi data waits: refused, nothing left to confirm"},
+		{ACCESS_ASK_FIRMWARE, "the release ends by itself while the question for the firmware waits: refused, nothing left to confirm"},
+		{ACCESS_ASK_RESET, "the release ends by itself while the question for the factory reset waits: refused, nothing left to confirm"},
+	};
+	size_t i;
+
+	for(i = 0; i < COUNT(questions); i++)
+	{
+		asked(questions[i].ask);
+		acc.open_until_ms = 30000;
+		check(access_asking(&acc, 29999) == questions[i].ask && access_asking(&acc, 30000) == ACCESS_ASK_NONE &&
+		      access_ticket(&acc, 1, 30000) == ACCESS_TICKET_REFUSED && access_confirm(&acc, 30000) == ACCESS_ASK_NONE, questions[i].rule);
+	}
+
 	asked_under_a_release_until(30000);
 	check(access_is_open(&acc, 29999) && access_asking(&acc, 29999) == ACCESS_ASK_WIFI && access_ticket(&acc, 1, 29999) == ACCESS_TICKET_WAITING,
 	      "1 ms before the release ends by itself the question waits");
@@ -385,6 +415,215 @@ static void test_release_ends_with_a_question(void)
 	asked_under_a_release_until(62001);
 	check(access_ticket(&acc, 1, 62000) == ACCESS_TICKET_EXPIRED && access_ticket(&acc, 1, 62001) == ACCESS_TICKET_EXPIRED,
 	      "the question runs out 1 ms before the release ends: expired");
+
+	// Other times than the two of the header, written into the struct by hand: the seconds are not cut short
+	released();
+	acc.open_until_ms = 1000 + 100000000ull;
+	check(access_seconds_left(&acc, 1000) == 100000 && access_seconds_left(&acc, 1001) == 100000 && access_seconds_left(&acc, 2001) == 99999,
+	      "a release that lasts 100000000 ms has 100000 s left: more than 16 bit hold");
+	asked(ACCESS_ASK_WIFI);
+	acc.open_until_ms = 2000 + 100000000ull;
+	acc.asking_until_ms = 2000 + 70000000ull;
+	check(access_ask_seconds_left(&acc, 2000) == 70000 && access_ask_seconds_left(&acc, 3001) == 69999,
+	      "a question that waits 70000000 ms has 70000 s left: more than 16 bit hold");
+	released();
+	acc.open_until_ms = 1000 + 4294967295000ull;
+	check(access_seconds_left(&acc, 1000) == 4294967295u && access_seconds_left(&acc, 1001) == 4294967295u && access_seconds_left(&acc, 2001) == 4294967294u,
+	      "a release that lasts 4294967295000 ms has 2^32-1 s left: the milliseconds are counted in 64 bit, the seconds in all 32");
+	asked(ACCESS_ASK_WIFI);
+	acc.open_until_ms = 2000 + 4294967295000ull;
+	acc.asking_until_ms = 2000 + 4294967295000ull;
+	check(access_ask_seconds_left(&acc, 2000) == 4294967295u && access_ask_seconds_left(&acc, 2001) == 4294967295u && access_ask_seconds_left(&acc, 3001) == 4294967294u,
+	      "a question that waits 4294967295000 ms has 2^32-1 s left: the milliseconds are counted in 64 bit, the seconds in all 32");
+}
+
+static const char *question_text(const char *name, const char *rule)
+{
+	snprintf(text, sizeof(text), "the question for %s %s", name, rule);
+	return text;
+}
+
+// What holds for one question holds for each of the three
+static void test_every_question(void)
+{
+	static const struct
+	{
+		access_ask_t ask;
+		const char *name;
+	} kinds[] = {{ACCESS_ASK_WIFI, "the WiFi data"}, {ACCESS_ASK_FIRMWARE, "the firmware"}, {ACCESS_ASK_RESET, "the factory reset"}};
+	size_t i;
+
+	for(i = 0; i < COUNT(kinds); i++)
+	{
+		access_ask_t ask = kinds[i].ask;
+		const char *name = kinds[i].name;
+
+		asked(ask);
+		check(access_ask_seconds_left(&acc, 2000) == 60 && access_asking(&acc, 61999) == ask && access_asking(&acc, 62000) == ACCESS_ASK_NONE &&
+		      access_ticket(&acc, 1, 61999) == ACCESS_TICKET_WAITING && access_ticket(&acc, 1, 62000) == ACCESS_TICKET_EXPIRED,
+		      question_text(name, "waits 60000 ms and has expired then"));
+		check(access_seconds_left(&acc, 2000) == 600 && access_is_open(&acc, 601999) && !access_is_open(&acc, 602000),
+		      question_text(name, "renews the release: 600 s are left while it waits, the release ends 600000 ms after the question"));
+
+		asked(ask);
+		check(access_confirm(&acc, 2000) == ask && access_ticket(&acc, 1, 2000) == ACCESS_TICKET_CONFIRMED && access_asking(&acc, 2000) == ACCESS_ASK_NONE,
+		      question_text(name, "is confirmed by a press in the millisecond it was asked: the ticket is confirmed, nothing waits"));
+		check(access_is_open(&acc, 2000) && access_is_open(&acc, 601999) && !access_is_open(&acc, 602000),
+		      question_text(name, "confirmed: the release goes on as it was"));
+
+		asked(ask);
+		access_refuse(&acc, 3000);
+		check(access_asking(&acc, 3000) == ACCESS_ASK_NONE && access_ticket(&acc, 1, 3000) == ACCESS_TICKET_REFUSED && access_confirm(&acc, 3000) == ACCESS_ASK_NONE,
+		      question_text(name, "refused at the device: nothing waits, the ticket is refused, a press confirms nothing"));
+		check(access_is_open(&acc, 3000) && access_is_open(&acc, 601999) && !access_is_open(&acc, 602000),
+		      question_text(name, "refused at the device: the release goes on as it was"));
+
+		asked(ask);
+		access_close(&acc, 3000);
+		check(!access_is_open(&acc, 3000) && !access_write(&acc, 3000) && access_asking(&acc, 3000) == ACCESS_ASK_NONE &&
+		      access_ticket(&acc, 1, 3000) == ACCESS_TICKET_REFUSED && access_confirm(&acc, 3000) == ACCESS_ASK_NONE,
+		      question_text(name, "waits when the release is switched off: closed, the ticket refused, a press confirms nothing"));
+
+		asked(ask);
+		check(access_write(&acc, 30000) && access_asking(&acc, 30000) == ask && access_ask_seconds_left(&acc, 30000) == 32 &&
+		      access_is_open(&acc, 629999) && !access_is_open(&acc, 630000),
+		      question_text(name, "waits when a change arrives: the change is accepted and renews the release, the question keeps its time"));
+
+		asked(ask);
+		check(access_ask(&acc, ACCESS_ASK_WIFI, 3000) == 0 && access_ask(&acc, ACCESS_ASK_FIRMWARE, 3000) == 0 && access_ask(&acc, ACCESS_ASK_RESET, 3000) == 0 &&
+		      access_asking(&acc, 3000) == ask && access_ticket(&acc, 1, 3000) == ACCESS_TICKET_WAITING && access_ticket(&acc, 2, 3000) == ACCESS_TICKET_UNKNOWN,
+		      question_text(name, "stays when each of the three is asked while it waits: they are refused and get no ticket"));
+
+		asked(ask);
+		access_open(&acc, 30000);
+		check(access_asking(&acc, 30000) == ask && access_ask_seconds_left(&acc, 30000) == 32 && access_asking(&acc, 62000) == ACCESS_ASK_NONE &&
+		      access_is_open(&acc, 629999) && !access_is_open(&acc, 630000),
+		      question_text(name, "stays with its time when the release is given again, the release starts anew"));
+	}
+}
+
+// Ticket 1 has ended as `first`, confirmed or refused at the device, and ticket 2 waits since 4000
+static void second_waits(access_ticket_t first)
+{
+	asked(ACCESS_ASK_WIFI);
+	if(first == ACCESS_TICKET_CONFIRMED) access_confirm(&acc, 3000);
+	else access_refuse(&acc, 3000);
+	access_ask(&acc, ACCESS_ASK_RESET, 4000);
+}
+
+static bool tickets_are(access_ticket_t first, access_ticket_t second, uint64_t now_ms)
+{
+	return access_ticket(&acc, 1, now_ms) == first && access_ticket(&acc, 2, now_ms) == second;
+}
+
+// What became of the ticket before the last one is not touched by anything that happens to the last one
+static void test_ticket_before_the_last(void)
+{
+	second_waits(ACCESS_TICKET_REFUSED);
+	check(tickets_are(ACCESS_TICKET_REFUSED, ACCESS_TICKET_WAITING, 4000), "the ticket before the last was refused, the last waits: reported so");
+	check(access_confirm(&acc, 5000) == ACCESS_ASK_RESET && tickets_are(ACCESS_TICKET_REFUSED, ACCESS_TICKET_CONFIRMED, 5000),
+	      "the last ticket confirmed: the one before stays refused");
+
+	second_waits(ACCESS_TICKET_CONFIRMED);
+	access_refuse(&acc, 5000);
+	check(tickets_are(ACCESS_TICKET_CONFIRMED, ACCESS_TICKET_REFUSED, 5000), "the last ticket refused at the device: the one before stays confirmed");
+
+	second_waits(ACCESS_TICKET_CONFIRMED);
+	access_close(&acc, 5000);
+	check(tickets_are(ACCESS_TICKET_CONFIRMED, ACCESS_TICKET_REFUSED, 5000), "the last ticket refused by the switch-off: the one before stays confirmed");
+
+	second_waits(ACCESS_TICKET_CONFIRMED);
+	check(tickets_are(ACCESS_TICKET_CONFIRMED, ACCESS_TICKET_WAITING, 63999) && tickets_are(ACCESS_TICKET_CONFIRMED, ACCESS_TICKET_EXPIRED, 64000),
+	      "the last ticket expires: the one before stays confirmed");
+	access_write(&acc, 100000);
+	check(tickets_are(ACCESS_TICKET_CONFIRMED, ACCESS_TICKET_EXPIRED, 100000), "the last ticket expired and a change came since: the one before stays confirmed");
+
+	second_waits(ACCESS_TICKET_CONFIRMED);
+	acc.open_until_ms = 30000;
+	check(tickets_are(ACCESS_TICKET_CONFIRMED, ACCESS_TICKET_REFUSED, 30000), "the last ticket refused by the end of the release: the one before stays confirmed");
+
+	second_waits(ACCESS_TICKET_CONFIRMED);
+	access_open(&acc, 5000);
+	check(tickets_are(ACCESS_TICKET_CONFIRMED, ACCESS_TICKET_WAITING, 5000), "the release given again while the last ticket waits: the one before stays confirmed");
+
+	second_waits(ACCESS_TICKET_CONFIRMED);
+	access_write(&acc, 5000);
+	check(tickets_are(ACCESS_TICKET_CONFIRMED, ACCESS_TICKET_WAITING, 5000), "a change while the last ticket waits: the one before stays confirmed");
+
+	asked(ACCESS_ASK_WIFI);
+	check(access_ask(&acc, ACCESS_ASK_FIRMWARE, 70000) == 2 && access_confirm(&acc, 71000) == ACCESS_ASK_FIRMWARE &&
+	      tickets_are(ACCESS_TICKET_EXPIRED, ACCESS_TICKET_CONFIRMED, 71000), "the last ticket confirmed: the one before stays expired");
+
+	asked(ACCESS_ASK_WIFI);
+	access_confirm(&acc, 3000);
+	access_close(&acc, 4000);
+	access_open(&acc, 5000);
+	check(access_is_open(&acc, 5000) && access_write(&acc, 5000) && access_ticket(&acc, 1, 5000) == ACCESS_TICKET_CONFIRMED,
+	      "the release given again after a ticket was confirmed and the release switched off: it holds, the ticket stays confirmed");
+}
+
+// More questions than a display ever sees, and enough to count across 2^16: the odd ones are confirmed,
+// the even ones refused at the device
+static void test_many_tickets(void)
+{
+	int wrong_number = 0, wrong_ticket = 0;
+	uint32_t n;
+
+	released();
+	for(n = 1; n <= 70000; n++)
+	{
+		uint64_t now = 2000 + (uint64_t)n * 10;
+
+		if(access_ask(&acc, ACCESS_ASK_WIFI, now) != n) wrong_number++;
+		if(access_ticket(&acc, n, now) != ACCESS_TICKET_WAITING || access_ticket(&acc, n + 1, now) != ACCESS_TICKET_UNKNOWN) wrong_ticket++;
+		if(n >= 2 && access_ticket(&acc, n - 1, now) != (n % 2 == 0 ? ACCESS_TICKET_CONFIRMED : ACCESS_TICKET_REFUSED)) wrong_ticket++;
+		if(n >= 3 && access_ticket(&acc, n - 2, now) != ACCESS_TICKET_UNKNOWN) wrong_ticket++;
+
+		if(n % 2 == 1)
+		{
+			if(access_confirm(&acc, now + 5) != ACCESS_ASK_WIFI) wrong_ticket++;
+		}
+		else
+		{
+			access_refuse(&acc, now + 5);
+		}
+	}
+	check(wrong_number == 0, "70000 questions in a row get the numbers 1 to 70000: each is one more than the one before");
+	check(wrong_ticket == 0, "with each of 70000 questions the last ticket waits, the one before is known as it ended, the one before that and the next one are unknown");
+}
+
+// The struct is part of the header: its fields are as the last call that changed them left them
+static void test_fields(void)
+{
+	released();
+	check(acc.open && acc.open_until_ms == 601000 && acc.clock_ms == 1000 && acc.asking == ACCESS_ASK_NONE && acc.ticket == 0 &&
+	      acc.ticket_end == ACCESS_TICKET_UNKNOWN && acc.previous_end == ACCESS_TICKET_UNKNOWN,
+	      "the fields after the release was given at 1000: open until 601000, the time seen 1000, nothing asked, no ticket");
+	access_ask(&acc, ACCESS_ASK_FIRMWARE, 2000);
+	check(acc.open && acc.open_until_ms == 602000 && acc.clock_ms == 2000 && acc.asking == ACCESS_ASK_FIRMWARE && acc.asking_until_ms == 62000 && acc.ticket == 1 &&
+	      acc.ticket_end == ACCESS_TICKET_WAITING && acc.previous_end == ACCESS_TICKET_UNKNOWN,
+	      "the fields after a question at 2000: it waits until 62000 with the ticket 1, the release is open until 602000");
+	check(access_asking(&acc, 700000) == ACCESS_ASK_NONE && !access_is_open(&acc, 700000) && access_ticket(&acc, 1, 700000) == ACCESS_TICKET_EXPIRED &&
+	      acc.open && acc.clock_ms == 2000 && acc.asking == ACCESS_ASK_FIRMWARE && acc.ticket_end == ACCESS_TICKET_WAITING,
+	      "the functions that only ask leave the fields alone: what ran out since the last call still stands there");
+	access_confirm(&acc, 3000);
+	check(acc.open && acc.open_until_ms == 602000 && acc.clock_ms == 3000 && acc.asking == ACCESS_ASK_NONE && acc.ticket == 1 &&
+	      acc.ticket_end == ACCESS_TICKET_CONFIRMED && acc.previous_end == ACCESS_TICKET_UNKNOWN,
+	      "the fields after the press of the knob at 3000: nothing asked, the ticket 1 confirmed, the release as it was");
+	access_ask(&acc, ACCESS_ASK_RESET, 4000);
+	check(acc.asking == ACCESS_ASK_RESET && acc.asking_until_ms == 64000 && acc.ticket == 2 && acc.ticket_end == ACCESS_TICKET_WAITING &&
+	      acc.previous_end == ACCESS_TICKET_CONFIRMED && acc.open_until_ms == 604000 && acc.clock_ms == 4000,
+	      "the fields after a second question at 4000: the ticket 2 waits, the end of the one before is kept");
+	access_write(&acc, 700000);
+	check(!acc.open && acc.clock_ms == 700000 && acc.asking == ACCESS_ASK_NONE && acc.ticket == 2 && acc.ticket_end == ACCESS_TICKET_EXPIRED &&
+	      acc.previous_end == ACCESS_TICKET_CONFIRMED,
+	      "the fields after a refused change at 700000: its time is taken over and what ran out by then is noted - closed, the ticket 2 expired");
+	access_open(&acc, 800000);
+	access_ask(&acc, ACCESS_ASK_WIFI, 800000);
+	access_close(&acc, 800001);
+	check(!acc.open && acc.clock_ms == 800001 && acc.asking == ACCESS_ASK_NONE && acc.ticket == 3 && acc.ticket_end == ACCESS_TICKET_REFUSED &&
+	      acc.previous_end == ACCESS_TICKET_EXPIRED,
+	      "the fields after the switch-off while the ticket 3 waited: closed, nothing asked, the ticket 3 refused, the one before expired");
 }
 
 static void test_clock(void)
@@ -482,6 +721,13 @@ static void test_largest_time(void)
 	check(access_is_open(&acc, UINT64_MAX - 2) && !access_is_open(&acc, UINT64_MAX - 1), "a release given 600001 ms before the largest time ends 1 ms before it");
 
 	access_init(&acc);
+	access_open(&acc, UINT64_MAX - 599999);
+	check(access_is_open(&acc, UINT64_MAX - 599999) && access_seconds_left(&acc, UINT64_MAX - 599999) == 600 && access_is_open(&acc, UINT64_MAX - 1) &&
+	      !access_is_open(&acc, UINT64_MAX), "a release given 599999 ms before the largest time ends there: the end that would be 2^64 does not wrap to 0");
+	check(access_write(&acc, UINT64_MAX - 599999) && access_is_open(&acc, UINT64_MAX - 1),
+	      "a change 599999 ms before the largest time renews the release up to there: the end that would be 2^64 does not wrap to 0");
+
+	access_init(&acc);
 	access_open(&acc, UINT64_MAX - 1000);
 	check(access_is_open(&acc, UINT64_MAX - 1000) && access_is_open(&acc, UINT64_MAX - 1), "a release given 1000 ms before the largest time holds up to there: no sum wraps");
 	check(access_seconds_left(&acc, UINT64_MAX - 1000) == 1 && access_seconds_left(&acc, UINT64_MAX - 1) == 1,
@@ -509,6 +755,21 @@ static void test_largest_time(void)
 	access_ask(&acc, ACCESS_ASK_WIFI, UINT64_MAX - 30000);
 	check(access_confirm(&acc, UINT64_MAX) == ACCESS_ASK_NONE && access_ticket(&acc, 1, UINT64_MAX) == ACCESS_TICKET_EXPIRED,
 	      "the knob pressed at the largest time confirms nothing");
+
+	access_init(&acc);
+	access_open(&acc, UINT64_MAX - 100000);
+	check(access_ask(&acc, ACCESS_ASK_WIFI, UINT64_MAX - 59999) == 1 && access_ask_seconds_left(&acc, UINT64_MAX - 59999) == 60 &&
+	      access_asking(&acc, UINT64_MAX - 1) == ACCESS_ASK_WIFI && access_asking(&acc, UINT64_MAX) == ACCESS_ASK_NONE,
+	      "a question 59999 ms before the largest time waits up to there: the end that would be 2^64 does not wrap to 0");
+	access_init(&acc);
+	access_open(&acc, UINT64_MAX - 100000);
+	check(access_ask(&acc, ACCESS_ASK_WIFI, UINT64_MAX - 60000) == 1 && access_asking(&acc, UINT64_MAX - 1) == ACCESS_ASK_WIFI &&
+	      access_ticket(&acc, 1, UINT64_MAX) == ACCESS_TICKET_EXPIRED, "a question 60000 ms before the largest time waits up to there and expires there");
+	access_init(&acc);
+	access_open(&acc, UINT64_MAX - 100000);
+	check(access_ask(&acc, ACCESS_ASK_WIFI, UINT64_MAX - 60001) == 1 && access_asking(&acc, UINT64_MAX - 2) == ACCESS_ASK_WIFI &&
+	      access_asking(&acc, UINT64_MAX - 1) == ACCESS_ASK_NONE && access_is_open(&acc, UINT64_MAX - 1),
+	      "a question 60001 ms before the largest time expires 1 ms before it, the release goes on");
 
 	access_init(&acc);
 	access_open(&acc, UINT64_MAX - 100000);
@@ -970,6 +1231,10 @@ int main(void)
 	test_switched_off_with_a_question();
 	test_ends_noticed_late();
 	test_release_ends_with_a_question();
+	test_every_question();
+	test_ticket_before_the_last();
+	test_many_tickets();
+	test_fields();
 	test_clock();
 	test_largest_time();
 	test_walk_against_the_model();

@@ -1,0 +1,11 @@
+kind: list
+ring: none
+title: Web-Zugriff
+note:
+row: > action | Freigabe | aus | enabled
+row: - action | Zurück |  | enabled
+first: 0
+total: 2
+line: http://192.168.4.1
+line: WLAN: WiCAN-Display
+line: Passwort: geheim1234

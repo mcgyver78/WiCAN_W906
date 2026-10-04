@@ -1,0 +1,10 @@
+kind: values
+ring: none
+title: Fünf
+note:
+item: Abgas vor Turbo | 412 | °C | normal | number | -1
+item: Abgas vor DPF | 289 | °C | normal | number | -1
+item: Getriebeöl | n. v. |  | dim | number | -1
+item: Ruß | 11,3 | g | normal | bar | 282
+item: Glow Plug | 0 |  | normal | state | -1
+dots: 6/6

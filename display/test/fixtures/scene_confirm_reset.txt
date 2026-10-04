@@ -1,0 +1,8 @@
+kind: choice
+ring: none
+title: Werkseinstellungen?
+note:
+line: WLAN, Kopplung und Einstellungen werden gelöscht.
+line: Die Ansichten bleiben.
+option: > Abbrechen
+option: - Ausführen

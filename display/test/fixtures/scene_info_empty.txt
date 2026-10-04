@@ -1,0 +1,4 @@
+kind: list
+ring: none
+title: Info
+note:

@@ -1,0 +1,6 @@
+kind: notice
+ring: grey
+title:
+note: WiCAN-Firmware ohne Display-API – nur Live-Werte
+dots: 0/6
+line: Keine Ansicht mit verfügbaren Werten

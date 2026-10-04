@@ -1,0 +1,1 @@
+{"state":"done","action":"read","duration_ms":35100,"dtc_count":2,"ecus":[{"name":"N10 SAM","id":"662","protocol":"KWP","status":"ok","dtcs":[{"code":"9301","status":"60"},{"code":"9302","status":"20"}]}]}

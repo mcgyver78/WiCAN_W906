@@ -1,0 +1,7 @@
+kind: list
+ring: none
+title: Gelöscht
+note:
+row: > action | Fertig |  | enabled
+first: 0
+total: 1

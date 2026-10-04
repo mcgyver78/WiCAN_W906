@@ -1,0 +1,11 @@
+kind: values
+ring: red
+title: Motor
+note:
+item: Drehzahl | 4500 | 1/min | alarm | arc | 900
+item: Kühlwasser | 115 | °C | alarm | number | -1
+item: Ladedruck | 1,01 | bar | normal | number | -1
+item: Accel Pedal | 120 | % | normal | bar | 1000
+item: Regeneration | inaktiv |  | normal | state | -1
+item: Bordnetz | 11,0 | V | alarm | number | -1
+dots: 1/6

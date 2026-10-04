@@ -1,0 +1,7 @@
+kind: values
+ring: none
+title: Fremd
+note:
+item: Getriebeöl | n. v. |  | dim | number | -1
+item: Turbo Speed | n. v. |  | dim | number | -1
+dots: 0/6

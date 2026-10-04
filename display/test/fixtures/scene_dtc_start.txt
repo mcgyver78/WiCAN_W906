@@ -1,0 +1,10 @@
+kind: list
+ring: none
+title: Fehlerspeicher
+note:
+row: > action | Lesen |  | enabled
+row: - action | Liste ansehen |  | disabled
+row: - action | Zuletzt gelöscht |  | disabled
+row: - action | Zurück |  | enabled
+first: 0
+total: 4

@@ -1,0 +1,7 @@
+kind: notice
+ring: grey
+title:
+note: Zu heiß – Anzeige gedimmt
+dots: 1/6
+line: Zündung aus – Motorsteuergerät offline
+line: Bordnetz 12,4 V

@@ -1,0 +1,9 @@
+kind: list
+ring: none
+title: Web-Zugriff
+note:
+row: > action | Freigabe | aus | enabled
+row: - action | Zurück |  | enabled
+first: 0
+total: 2
+line: http://192.168.88.37

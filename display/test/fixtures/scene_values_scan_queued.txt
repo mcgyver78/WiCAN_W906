@@ -1,0 +1,7 @@
+kind: values
+ring: progress 0
+title: Zwei
+note: Live-Werte angehalten (Fehlerspeicher-Scan)
+item: Tank | 43 | L | dim | bar | 573
+item: Vorglühen | aus |  | dim | state | -1
+dots: 3/6

@@ -1,0 +1,11 @@
+kind: list
+ring: red
+title: Menü
+note:
+row: - action | Helligkeit | 35 % | enabled
+row: - action | Nachtmodus | an | enabled
+row: > action | Web-Zugriff | frei | enabled
+row: - action | Info |  | enabled
+row: - action | Einstellungen |  | enabled
+first: 1
+total: 7

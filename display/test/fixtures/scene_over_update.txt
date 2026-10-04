@@ -1,0 +1,10 @@
+kind: values
+ring: none
+title: Eins
+note:
+item: Kühlwasser | 88 | °C | normal | arc | 537
+dots: 2/6
+over: update
+over_line: Update in Ordnung?
+over_line: Knopf drücken oder Bildschirm berühren
+over_line: sonst alte Version in 4:12

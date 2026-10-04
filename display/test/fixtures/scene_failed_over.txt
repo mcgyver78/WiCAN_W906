@@ -1,0 +1,4 @@
+kind: notice
+ring: none
+title: Fehlerspeicher
+note: Knopf drücken

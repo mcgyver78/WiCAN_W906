@@ -1,0 +1,11 @@
+kind: list
+ring: none
+title: Gelöscht
+note:
+row: > head | Gelöscht 3 von 5 | verbleibend 2 | enabled
+row: - line | Rückhaltesystem | Löschen nicht bestätigt | enabled
+row: - line | SAM | 662 · 1 Fehler | enabled
+row: - sub | 9301 | Status 60 | enabled
+row: - line | Rückhaltesystem | 6BC · 1 Fehler | enabled
+first: 0
+total: 8

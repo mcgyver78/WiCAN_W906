@@ -1,0 +1,9 @@
+kind: values
+ring: none
+title: Vier
+note:
+item: Drehzahl | 812 | RPM | normal | number | -1
+item: Kühlwasser | 88 | °C | normal | arc | 537
+item: Fahrpedal | 13 | % | normal | bar | 125
+item: Regeneration | inaktiv |  | normal | state | -1
+dots: 5/6

@@ -1,0 +1,10 @@
+kind: choice
+ring: none
+title: Fehler löschen?
+note: Auf Löschen drehen, Knopf 3 s halten
+line: 10 Fehler in 3 Steuergeräten
+line: Betrifft alle Steuergeräte, auch SRS und ESP.
+line: Zündung an, Motor aus, Fahrzeug steht.
+permille: 1000
+option: - Abbrechen
+option: > Löschen

@@ -1,0 +1,5 @@
+kind: notice
+ring: red
+title: Stand unbekannt
+note: Knopf drücken
+line: Stand des Löschens unbekannt – bitte erneut lesen

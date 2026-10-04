@@ -1,0 +1,11 @@
+kind: list
+ring: none
+title: Menü
+note:
+row: - action | Nachtmodus | aus | enabled
+row: - action | Web-Zugriff | gesperrt | enabled
+row: - action | Info |  | enabled
+row: - action | Einstellungen |  | enabled
+row: > action | Zurück |  | enabled
+first: 2
+total: 7

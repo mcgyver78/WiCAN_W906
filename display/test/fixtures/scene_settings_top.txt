@@ -1,0 +1,11 @@
+kind: list
+ring: none
+title: Einstellungen
+note:
+row: > action | Drehrichtung | normal | enabled
+row: - action | Hotspot | aus | enabled
+row: - action | Neustart |  | enabled
+row: - action | Vorherige Version |  | disabled
+row: - action | Werkseinstellungen |  | enabled
+first: 0
+total: 6

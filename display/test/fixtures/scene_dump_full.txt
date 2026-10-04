@@ -1,0 +1,21 @@
+kind: list
+ring: progress 277
+title: Titel
+note: Notiz
+item: Drehzahl | 812 | 1/min | normal | arc | 162
+item: Tank |  |  | alarm | bar | -1
+dots: 2/7
+row: > action | Lesen |  | enabled
+row: - sub | P242F-FA | gespeichert | disabled
+first: 3
+total: 12
+line: Erste Zeile
+line:
+big: 5/18
+permille: 277
+option: - Abbrechen
+option: > Löschen
+over: ask
+over_line: WLAN speichern?
+over_line: Werkstatt
+over_permille: 420

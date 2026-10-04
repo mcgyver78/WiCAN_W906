@@ -1,0 +1,9 @@
+kind: list
+ring: none
+title: Fehlerspeicher
+note: Erst lesen, dann löschen
+row: - action | Erneut lesen |  | enabled
+row: > action | Fehler löschen |  | disabled
+row: - action | Zurück |  | enabled
+first: 0
+total: 3

@@ -1,0 +1,6 @@
+kind: notice
+ring: grey
+title:
+note:
+dots: 1/6
+line: Zündung aus – Motorsteuergerät offline

@@ -1,0 +1,15 @@
+kind: list
+ring: none
+title: Menü
+note:
+row: > action | Fehlerspeicher |  | enabled
+row: - action | Helligkeit | 80 % | enabled
+row: - action | Nachtmodus | aus | enabled
+row: - action | Web-Zugriff | frei | enabled
+row: - action | Info |  | enabled
+first: 0
+total: 7
+over: ask
+over_line: WLAN speichern?
+over_line: Werkstatt
+over_line: Drücken = ja · lang = nein (42 s)

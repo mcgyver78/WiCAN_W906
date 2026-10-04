@@ -1,0 +1,6 @@
+kind: values
+ring: none
+title: Eins
+note:
+item: Kühlwasser | 88 | °C | normal | arc | 537
+dots: 2/6

@@ -46,10 +46,12 @@ typedef enum
 	ACCESS_TICKET_UNKNOWN,      // no such ticket (never given, or two newer ones were given since)
 	ACCESS_TICKET_WAITING,
 	ACCESS_TICKET_CONFIRMED,
-	ACCESS_TICKET_REFUSED,      // refused at the device, or the release was switched off
+	ACCESS_TICKET_REFUSED,      // refused at the device, or the release was switched off or ended while it waited
 	ACCESS_TICKET_EXPIRED,      // nobody pressed the knob in time
 } access_ticket_t;
 
+// The fields are as the last call that changed them left them: what ran out since then still stands here.
+// Read them through the functions below, which take the time into account.
 typedef struct
 {
 	bool open;
@@ -85,7 +87,8 @@ bool access_is_open(const access_t *access, uint64_t now_ms);
 uint32_t access_seconds_left(const access_t *access, uint64_t now_ms);
 
 // A change arrives. Returns true if it is allowed; the release then lasts ACCESS_OPEN_MS from now.
-// Returns false and changes nothing if the release is closed or has ended.
+// Returns false if the release is closed or has ended: nothing changes then, only the time is taken over
+// and what ran out by then is noted in the fields.
 bool access_write(access_t *access, uint64_t now_ms);
 
 // A change that needs the knob arrives. Returns the ticket number (1 or more, counting up, never 0; after
@@ -102,12 +105,15 @@ uint32_t access_ask_seconds_left(const access_t *access, uint64_t now_ms);
 
 // The knob was pressed while the question was shown. Returns the question that is confirmed by it, exactly
 // once: the caller carries it out. ACCESS_ASK_NONE if nothing waits, its time is over or the release ended.
+// The press is no change through the web: the release is neither renewed nor ended by it.
 access_ask_t access_confirm(access_t *access, uint64_t now_ms);
 
 // The question was refused at the device (long press, or the dialog was left). Nothing happens if none waits.
+// The release goes on as it was.
 void access_refuse(access_t *access, uint64_t now_ms);
 
-// What became of a ticket, for the browser. Known are the last ticket and the one before it.
+// What became of a ticket, for the browser. Known are the last ticket and the one before it. The numbers
+// begin again with 1 after a restart: a number from before it is then unknown or the number of a newer ticket.
 access_ticket_t access_ticket(const access_t *access, uint32_t ticket, uint64_t now_ms);
 
 #endif

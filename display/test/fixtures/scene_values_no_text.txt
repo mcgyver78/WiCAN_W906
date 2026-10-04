@@ -1,0 +1,11 @@
+kind: values
+ring: none
+title: Motor
+note:
+item: Drehzahl | – |  | dim | arc | -1
+item: Kühlwasser | 88 | °C | normal | number | -1
+item: Ladedruck | – |  | dim | number | -1
+item: Accel Pedal | 13 | % | normal | bar | 125
+item: Regeneration | inaktiv |  | normal | state | -1
+item: Bordnetz | 14,1 | V | normal | number | -1
+dots: 1/6

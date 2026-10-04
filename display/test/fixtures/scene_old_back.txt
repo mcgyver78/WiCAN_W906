@@ -1,0 +1,11 @@
+kind: list
+ring: none
+title: Zuletzt gelöscht
+note:
+row: - line | Rückhaltesystem | 6BC · 1 Fehler | enabled
+row: - sub | 9100 | Status E0 | enabled
+row: - line | Collision Prevention Assist | keine Antwort | enabled
+row: - line | 13 Steuergeräte ohne Fehler |  | enabled
+row: > action | Zurück |  | enabled
+first: 8
+total: 13

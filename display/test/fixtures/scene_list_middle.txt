@@ -1,0 +1,11 @@
+kind: list
+ring: none
+title: Fehlerspeicher
+note: Löschen möglich: 9:12
+row: - sub | 9302 |  | enabled
+row: - line | ESP | 784 · 2 Fehler | enabled
+row: > sub | U0100-87 | gespeichert | enabled
+row: - line | 1 Code nicht übertragen |  | enabled
+row: - line | ESP | abgelehnt (NRC 22) | enabled
+first: 7
+total: 20

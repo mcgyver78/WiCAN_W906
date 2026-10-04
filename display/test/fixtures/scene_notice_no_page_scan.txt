@@ -1,0 +1,6 @@
+kind: notice
+ring: progress 277
+title:
+note: Live-Werte angehalten (Fehlerspeicher-Scan)
+dots: 0/6
+line: Keine Ansicht mit verfügbaren Werten

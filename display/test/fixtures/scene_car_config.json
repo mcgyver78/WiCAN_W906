@@ -1,0 +1,6 @@
+{"ENGINE_RPM":{"class":"frequency","unit":"RPM"},"COOLANT_TMP":{"class":"temperature","unit":"°C"},
+"BOOST_PRESSURE":{"class":"pressure","unit":"hPa"},"ACCEL_PEDAL":{"class":"none","unit":"%"},
+"DPF_REGEN_STATUS":{"class":"none","unit":""},"FUEL_L":{"class":"none","unit":"L"},"GLOW_PLUG":{"class":"none"},
+"OIL_LEVEL":{"class":"distance","unit":"mm"},"LAMBDA":{"class":"none","unit":""},
+"ENGINE_OIL_TEMP":{"class":"temperature","unit":"°C"},"EGT_PRE_TURBO":{"class":"temperature","unit":"°C"},
+"EGT_PRE_DPF":{"class":"temperature","unit":"°C"},"DPF_SOOT_MASS":{"class":"none","unit":"g"}}

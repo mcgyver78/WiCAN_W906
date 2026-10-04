@@ -1,0 +1,6 @@
+kind: values
+ring: grey
+title: Eins
+note: Zu heiß – Anzeige gedimmt
+item: Kühlwasser | 88 | °C | normal | arc | 537
+dots: 2/6

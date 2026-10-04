@@ -1,0 +1,11 @@
+kind: list
+ring: none
+title: Fehlerspeicher
+note: Motor läuft – nur bei Motor aus
+row: - line | Radio | unbekannter Status | enabled
+row: - line | 1 Steuergerät ohne Fehler |  | enabled
+row: - action | Erneut lesen |  | disabled
+row: > action | Fehler löschen |  | disabled
+row: - action | Zurück |  | enabled
+first: 15
+total: 20

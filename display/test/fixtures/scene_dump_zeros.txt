@@ -1,0 +1,7 @@
+kind: values
+ring: none
+title:
+note:
+dots: 1/0
+permille: 0
+over_permille: 0

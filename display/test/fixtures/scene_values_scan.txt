@@ -1,0 +1,11 @@
+kind: values
+ring: progress 277
+title: Motor
+note: Live-Werte angehalten (Fehlerspeicher-Scan)
+item: Drehzahl | 4500 | 1/min | dim | arc | 900
+item: Kühlwasser | 115 | °C | dim | number | -1
+item: Ladedruck | 1,01 | bar | dim | number | -1
+item: Accel Pedal | 120 | % | dim | bar | 1000
+item: Regeneration | inaktiv |  | dim | state | -1
+item: Bordnetz | 11,0 | V | dim | number | -1
+dots: 1/6

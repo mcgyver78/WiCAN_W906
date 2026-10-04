@@ -1,0 +1,6 @@
+kind: values
+ring: progress 277
+title: Eins
+note: Sicherer Modus – eingebaute Ansichten
+item: Kühlwasser | 88 | °C | dim | arc | 537
+dots: 2/6

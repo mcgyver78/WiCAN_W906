@@ -1,0 +1,8 @@
+kind: values
+ring: grey
+title: Drei
+note: WiCAN-Firmware ohne Display-API – nur Live-Werte
+item: Ölstand | 61,3 | mm | normal | number | -1
+item: Lambda | 1,34 |  | normal | number | -1
+item: Motoröl | 94 | °C | normal | number | -1
+dots: 4/6

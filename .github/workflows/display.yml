@@ -54,6 +54,29 @@ jobs:
         run: python redproof.py --shard ${{ matrix.part }}/4
         working-directory: display/test
 
+  # Every kind of screen, drawn by LVGL without a display and checked (display/host/render.c). The log shows
+  # each screen as text; the pictures are kept, because whether a screen reads well is seen, not tested.
+  ui-render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: LVGL at the version of the firmware
+        # The one version is named in display/components/ui/idf_component.yml
+        run: |
+          version=$(sed -n 's/^ *version: "==\(.*\)"$/\1/p' display/components/ui/idf_component.yml)
+          test -n "$version"
+          git clone --depth 1 --branch "v$version" https://github.com/lvgl/lvgl.git "$RUNNER_TEMP/lvgl"
+      - name: Render and check the screens
+        run: make -j"$(nproc)" LVGL="$RUNNER_TEMP/lvgl"
+        working-directory: display/host
+      - name: Upload the pictures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wican-display-screens
+          path: display/host/build/out/*.png
+          if-no-files-found: ignore
+
   firmware:
     runs-on: ubuntu-latest
     steps:

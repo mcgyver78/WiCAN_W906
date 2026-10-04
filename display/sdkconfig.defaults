@@ -33,3 +33,36 @@ CONFIG_LCD_RGB_RESTART_IN_VSYNC=y
 # The interrupt of the RGB panel copies every line with the CPU, and LVGL draws with it: full speed, as the
 # maker's builds have it
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+
+# LVGL 9.5.0 (components/ui). What is set here is set in display/host/lv_conf.h as well, for the renderer on
+# the PC that checks the screens: whoever changes one of the two files changes the other.
+#
+# RGB565, as the panel is wired
+CONFIG_LV_COLOR_DEPTH_16=y
+# The heap of LVGL: its own allocator on a fixed pool, so that widgets and glyphs never compete with the
+# WiFi for the internal RAM. The Kconfig of LVGL 9.5.0 can only make the pool an array of the program (or
+# put it at a fixed address), and an array of 512 KB does not fit the internal RAM. So the array is small,
+# 16 KB for what lv_init() itself allocates, and the 512 KB are added from the PSRAM directly after lv_init():
+#   lv_mem_add_pool(heap_caps_malloc(512 * 1024, MALLOC_CAP_SPIRAM), 512 * 1024);
+# The second number only tells the allocator how large a pool it has to be able to take. Without the call
+# LVGL has 16 KB and stops at the first screen.
+CONFIG_LV_USE_BUILTIN_MALLOC=y
+CONFIG_LV_MEM_SIZE_KILOBYTES=16
+CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES=512
+# The fonts are made at run time from DejaVuSans.ttf, which comes with LVGL and is linked into the firmware
+# (components/ui/ui_font.c): the fonts built into LVGL have no umlauts. The file is in the flash and is
+# read from there, not from a file system. The fonts are made without kerning, so its cache is not needed.
+# The one built-in font that stays is Montserrat 14, the default of LVGL that every style falls back to.
+CONFIG_LV_USE_TINY_TTF=y
+CONFIG_LV_TINY_TTF_FILE_SUPPORT=n
+CONFIG_LV_TINY_TTF_CACHE_KERNING_CNT=0
+# No theme: components/ui sets every style it wants to see, and a theme costs heap for styles nobody uses
+CONFIG_LV_USE_THEME_DEFAULT=n
+CONFIG_LV_USE_THEME_SIMPLE=n
+# Warnings and errors of LVGL on the console: a character the font does not have, memory that ran out
+CONFIG_LV_USE_LOG=y
+CONFIG_LV_LOG_LEVEL_WARN=y
+CONFIG_LV_LOG_PRINTF=y
+# Not the examples and demos that come with LVGL: hundreds of files nobody calls
+CONFIG_LV_BUILD_EXAMPLES=n
+CONFIG_LV_BUILD_DEMOS=n

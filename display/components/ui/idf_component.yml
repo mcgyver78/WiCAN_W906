@@ -1,0 +1,14 @@
+# LVGL at exactly the version whose source was read while this component was written: every function, type
+# and option it uses was looked up at the tag v9.5.0, and nothing of it could be compiled before the first
+# build in the CI. "==" matters: a range would take 9.6.0, which is three weeks old and pulls four more
+# components (freetype, libjpeg-turbo, libpng, lz4).
+#
+# Why 9.5.0: it is the newest 9.x without further dependencies, espressif/esp_lvgl_port 2.9.0 (the latest
+# 2.x, which the firmware will use) asks for lvgl/lvgl ">=8,<10" and was released while 9.5.0 was the
+# newest, and it needs nothing of ESP-IDF beyond esp_timer and log. The renderer on the PC takes the same
+# tag (display/host/Makefile, .github/workflows/display.yml): whoever changes the version changes it there too.
+dependencies:
+  lvgl/lvgl:
+    version: "==9.5.0"
+    # ui.h hands out lv_display_t: whoever requires this component gets the headers of LVGL with it
+    public: true

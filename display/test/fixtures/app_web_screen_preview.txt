@@ -1,0 +1,7 @@
+kind: values
+ring: none
+title: Fahrt
+note:
+item: Drehzahl | 0 | 1/min | normal | number | -1
+item: Bordnetz | 12,4 | V | normal | number | -1
+dots: 1/2

@@ -1,0 +1,4 @@
+{"format":"wican-display-layout","v":1,"name":"Kaputt","pages":[
+ {"title":"Eins","items":[{"key":"ENGINE_RPM"}]},
+ {"title":"Zwei","items":[{"key":"COOLANT_TMP"}]},
+ {"title":"Drei","items":[{"key":"FUEL_L","widget":"bar","min":75,"max":75}]}]}

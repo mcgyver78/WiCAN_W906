@@ -21,6 +21,9 @@ device only and has not run anywhere yet.
   minutes after it was given or after the last accepted change, at the latest 30 minutes after it was
   switched on, when it is switched off at the display, and with a restart. Without it: `403`
   `{"error":"locked","hint":"Am Display: Menü > Web-Zugriff freigeben"}`.
+  "Accepted" means that the request found the release open: a request that is then refused for another
+  reason (a body that cannot be read, `busy`, an unknown network, a refused firmware file) has renewed it as
+  well. Only a question to the knob that is not asked (`busy`, `asking`, `body`) renews nothing.
 - Three changes also need a **press of the knob**, because they can lock the owner out or replace the
   firmware: storing a WiFi network, installing firmware, factory reset. The request is answered with
   `202 {"ticket":17,"hint":"Am Display bestätigen: Knopf drücken"}`, the display shows the question for 60
@@ -60,7 +63,8 @@ Paths are exact: no trailing slash, no upper case. A query string is only allowe
 
 ## Refusals
 
-Checked in this order; the first that applies is the answer. The body is `{"error":"<word>"}`.
+Checked in this order; the first that applies is the answer. The body is `{"error":"<word>"}`; `locked`
+comes with the hint shown above, the `body` of the settings with the name of the member.
 
 | Status | Word | When |
 |---|---|---|
@@ -73,9 +77,15 @@ Checked in this order; the first that applies is the answer. The body is `{"erro
 | 411 | `length` | not a `GET` and no `Content-Length` |
 | 413 | `too_large` | body above 16384 bytes (layout), above the app slot (firmware), above 512 bytes (everything else); an empty firmware |
 | 409 | `busy` | upload, restart or factory reset while the display reads or clears the fault memory, shows the clear dialog, or receives a firmware; a question to the knob while a firmware is received |
-| 409 | `asking` | a question to the knob while another one still waits |
-| 400 | `body` | the body is not what the request expects; for settings with `"member":"<name>"` |
+| 409 | `asking` | a question to the knob, or the begin of a firmware upload, while a question still waits |
+| 400 | `body` | the body is not what the request expects; for settings with `"member":"<name>"` (empty if the body is no JSON object) |
+| 404 | `not_found` | `POST /api/wifi/forget` for a network that is not stored |
 | 422 | see below | the firmware file is refused |
+| 500 | `too_large` | the answer has no room in the 20480 bytes the display has for it (a catalogue whose names are control characters), or the views in use have no text |
+| 500 | `upload` | the firmware upload broke, or the display had ended it |
+
+Between the first checks and the request itself the release can end and the display can become busy: `403
+locked` and `409 busy` are then answered by the request, in the order `locked`, `busy`, `asking`, the rest.
 
 ## Bodies
 
@@ -100,17 +110,22 @@ Numbers, texts and their order are fixed; texts are UTF-8.
 - `layout.source`: `stored`, `builtin`, `generated` (made from the catalogue for a vehicle nobody wrote
   views for) or `preview` (applied but not stored).
 - `heat`: `normal`, `dim`, `off` (backlight limited by the chip temperature).
+- `up`: seconds since the start. `temp_c`: the last reading that succeeded, 0 before the first.
+- `release.left_s`: seconds until the release ends, rounded up, 0 if it is closed.
+- `wican.fw` is empty until the adapter has answered. The password of the own access point is not part of
+  the answer; it is shown on the screen of the display (menu "Web-Zugriff").
 
 ### `GET /api/catalog`
 
 ```json
-{"ENGINE_RPM":{"unit":"rpm","class":"frequency","profile":true,"delivered":true},
- "@BATT_V":{"unit":"V","class":"","profile":false,"delivered":false}}
+{"@BATT_V":{"unit":"V","class":"","profile":false,"delivered":false},
+ "ENGINE_RPM":{"unit":"rpm","class":"frequency","profile":true,"delivered":true}}
 ```
 
-Every value the vehicle profile of the adapter names (`profile`) or that has arrived (`delivered`), in the
-order of the profile. `@BATT_V` is the battery voltage measured by the adapter. The last catalogue is kept
-on the display, so the views can be edited while the adapter sleeps.
+`@BATT_V`, the battery voltage measured by the adapter, comes first; then every value the vehicle profile
+of the adapter names (`profile`), in the order of the profile, then what has arrived without being named
+there (`delivered`). The last catalogue is kept on the display, so the views can be edited while the
+adapter sleeps.
 
 ### `GET /api/values` — `web_values.json`
 
@@ -134,14 +149,22 @@ At most 12 pages with 1 to 6 values each, 16384 bytes. The answer to a `PUT`:
 Status 200 if the layout is taken, 400 if not. `unknown` lists the keys that are not in the catalogue
 (they are shown as "n. v."); it is empty while no catalogue is loaded. `mode=check` needs no release.
 
+`mode=apply` shows the layout at once, from its first page, without storing it (`layout.source` is
+`preview`): a restart, a reset or a save ends the preview, and the page in the browser keeps the text it
+loaded if it wants to go back. `mode=save` stores it. `POST /api/layout/reset` removes the stored layout and
+answers the report of the views the display then uses by itself (the built-in ones, or views made from the
+catalogue of another vehicle); its body is not looked at. `GET /api/layout` answers the text of the views
+in use: for views the browser sent, the text that was sent, byte for byte.
+
 ### `GET /api/dtc/last` — `web_dtc_last.json`
 
 ```json
 {"read":<result or null>,"read_age_s":120,"before_clear":<result or null>}
 ```
 
-`read` is the list the display read itself and still shows, `before_clear` the list before the last clear
-that the adapter accepted. Both are the result text of the adapter (`tools/w906/API.md`, W906.md).
+`read` is the list the display read itself and still shows, `read_age_s` the seconds since that read
+ended (0 without a list), `before_clear` the list before the last clear that the adapter accepted or may
+have accepted. Both are the result text of the adapter (`tools/w906/API.md`, W906.md).
 
 ### WiFi — `web_wifi.json`, `web_wifi_request.json`, `web_forget_request.json`
 
@@ -158,9 +181,11 @@ the order is the priority.
 - `POST /api/wifi` with `{"ssid":"..","password":"..","host":".."}`. `host` is optional: empty means the
   display finds the adapter itself (the gateway in the access point of a WiCAN, else the service
   `_wican._tcp`). Without `password` the stored password of that SSID is kept; for a new SSID it means an
-  open network. A password has 8 to 64 bytes. Answer: `202` with a ticket.
+  open network - judged by what is stored when the knob is pressed. A password has 8 to 64 bytes. Answer:
+  `202` with a ticket; the display shows the SSID with its question.
 - `POST /api/wifi/forget` with `{"ssid":".."}`: `200 {"ok":true}`, `404` if no such network is stored.
-  Without any stored network the display opens its own access point.
+  Without any stored network the display opens its own access point. With every network that is forgotten
+  the display leaves the network it is in and looks for one anew, also when another one was named.
 
 ### `POST /api/settings` — `settings_*.json`
 
@@ -181,6 +206,8 @@ now in use.
 `state`: `waiting`, `confirmed`, `refused` (at the display, or the release ended), `expired` (nobody
 pressed the knob), `unknown`. The numbers start again at 1 after a restart of the display. After a
 confirmed firmware installation or factory reset the display restarts and cannot answer any more.
+A press in the first 1.5 seconds after the question does not count. Known are the last ticket and the one
+before it.
 
 ### `POST /api/ota`
 
@@ -192,3 +219,11 @@ WiCAN), `too_large`. A broken upload ends with `500 {"error":"upload"}`; an uplo
 shows the version of the file and asks for the knob. Only the press starts the new firmware. After its
 first start it asks "Update in Ordnung?" on the screen; without an answer within 5 minutes, or after any
 restart before that, the version before it runs again.
+
+An upload begins only while the release lasts another 5 minutes. The upload itself renews it, so `403
+locked` is answered only in the last 5 minutes of the 30 after which somebody has to give the release
+again at the display. While a question waits no upload begins (`409 asking`), while one runs no second
+one (`409 busy`), and none while the running firmware still waits for "Update in Ordnung?" (`409 busy`:
+the other slot holds the version the display goes back to if nobody confirms). If the release has ended
+when the upload is complete, the answer is `403 locked` and the file is not asked for. From the begin of
+an upload on the display no longer offers "Vorherige Version": the other slot is being overwritten.

@@ -1,0 +1,13 @@
+kind: values
+ring: none
+title: Motor
+note:
+item: Drehzahl | 0 | 1/min | normal | arc | 0
+item: Kühlwasser | 22 | °C | normal | number | -1
+item: Motoröl | 23 | °C | normal | number | -1
+item: Fahrpedal | 0 | % | normal | bar | 0
+dots: 1/7
+over: ask
+over_line: Firmware installieren?
+over_line: 0.2.0
+over_line: Drücken = ja · lang = nein (60 s)

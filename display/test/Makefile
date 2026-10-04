@@ -53,7 +53,7 @@ all: $(TESTS)
 	@set -e; for test in $(TESTS); do echo "== $$test"; ./$$test > $$test.log || { cat $$test.log; exit 1; }; tail -1 $$test.log; done
 
 .SECONDEXPANSION:
-test_%: test_%.c test.h $$(addprefix $(CORE)/,$$(SOURCES_$$*)) $(wildcard $(CORE)/*.h)
+test_%: test_%.c $(wildcard *.h) $$(addprefix $(CORE)/,$$(SOURCES_$$*)) $(wildcard $(CORE)/*.h)
 	$(CC) $(CFLAGS) $(EXTRA) -I$(CORE) $(addprefix $(CORE)/,$(SOURCES_$*)) $< -lm -o $@
 
 clean:

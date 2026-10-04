@@ -31,7 +31,8 @@ jobs:
       - name: Partition table
         run: python display/tools/check_partitions.py --partitions display/partitions.csv --flash-size 16M
       - name: Logic host tests
-        run: make
+        # -k: show what is wrong with every test, not only with the first
+        run: make -k
         working-directory: display/test
       - name: Red proof (every removed rule makes a test fail)
         run: python redproof.py

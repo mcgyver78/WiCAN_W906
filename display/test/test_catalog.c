@@ -152,7 +152,7 @@ static bool many_are(char prefix, int count, const char *unit, bool delivered)
 
 	for(i = 0; i < count; i++)
 	{
-		char name[8];
+		char name[16];	// room for any int: gcc refuses a snprintf() that might cut
 
 		snprintf(name, sizeof(name), "%c%03d", prefix, i);
 		if(!entry_is(i + 1, name, unit, "c", true, delivered)) return false;

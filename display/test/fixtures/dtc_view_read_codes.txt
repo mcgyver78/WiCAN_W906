@@ -1,0 +1,12 @@
+5 Fehler - 18 Steuergeräte · 34 s
+Motorelektronik - 7E0 · 2 Fehler
+  P0100-13 - aktiv
+  P242F-FA - gespeichert
+ESP - 784 · 1 Fehler
+  U0100-87 - gespeichert
+SAM - 662 · 1 Fehler
+  9301 - Status 60
+Rückhaltesystem - 6BC · 1 Fehler
+  9100 - Status E0
+Collision Prevention Assist - keine Antwort
+13 Steuergeräte ohne Fehler

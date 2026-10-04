@@ -170,6 +170,73 @@ static void test_choose_bytes(void)
 	check(net_choose(longest, 1, seen, 1) == -1, "an SSID of 32 bytes does not match 33 bytes without a terminating zero that begin with it");
 }
 
+// Every byte of an SSID counts, wherever it stands and however long the SSID is
+static void test_ssid_positions(void)
+{
+	static const char letters[] = "abcdefghijklmnopqrstuvwxyzABCDEF";
+	char seen[1][NET_SSID_SIZE];
+	int wrong_same = 0, wrong_differs = 0, wrong_forgotten = 0, wrong_longer = 0, wrong_shorter = 0, wrong_pairs = 0;
+	int stored, other;
+	size_t length, at;
+
+	for(length = 1; length <= NET_SSID_SIZE - 1; length++)
+	{
+		// In the list with its guard entries: a function that looks behind profile_count finds no SSID there
+		clear_room();
+		memset(&list[0], 0, sizeof(list[0]));
+		memcpy(list[0].ssid, letters, length);
+		memset(seen, 0, sizeof(seen));
+		memcpy(seen[0], letters, length);
+		if(net_choose(list, 1, seen, 1) != 0) wrong_same++;
+
+		for(at = 0; at < length; at++)
+		{
+			// a space, as a form may leave one in a field, and the letter in the other case
+			seen[0][at] = ' ';
+			if(net_choose(list, 1, seen, 1) != -1) wrong_differs++;
+			if(net_forget(list, 1, seen[0]) != 1 || list[0].ssid[0] != 'a') wrong_forgotten++;
+			seen[0][at] = (char)(letters[at] ^ 0x20);
+			if(net_choose(list, 1, seen, 1) != -1) wrong_differs++;
+			seen[0][at] = letters[at];
+		}
+
+		if(length == NET_SSID_SIZE - 1) continue;
+		// The same SSID with one byte more behind it, in the scan and in the list
+		seen[0][length] = ' ';
+		if(net_choose(list, 1, seen, 1) != -1) wrong_longer++;
+		seen[0][length] = letters[length];
+		if(net_choose(list, 1, seen, 1) != -1) wrong_longer++;
+		seen[0][length] = '\0';
+		list[0].ssid[length] = ' ';
+		if(net_choose(list, 1, seen, 1) != -1) wrong_shorter++;
+		if(net_forget(list, 1, seen[0]) != 1 || list[0].ssid[0] != 'a') wrong_forgotten++;
+		list[0].ssid[length] = letters[length];
+		if(net_choose(list, 1, seen, 1) != -1) wrong_shorter++;
+	}
+
+	// No byte equals another one: "Net", one byte and "work" in the list, the same with every other byte in the scan
+	clear_room();
+	memset(&list[0], 0, sizeof(list[0]));
+	memset(seen, 0, sizeof(seen));
+	strcpy(list[0].ssid, "Net?work");
+	strcpy(seen[0], "Net?work");
+	for(stored = 1; stored <= 255; stored++)
+	{
+		for(other = 1; other <= 255; other++)
+		{
+			list[0].ssid[3] = (char)stored;
+			seen[0][3] = (char)other;
+			if((net_choose(list, 1, seen, 1) == 0) != (stored == other)) wrong_pairs++;
+		}
+	}
+	check(wrong_same == 0, "an SSID of every length from 1 to 32 bytes matches itself");
+	check(wrong_pairs == 0, "of all 65025 pairs of bytes in the same place of two SSIDs only the 255 equal ones match");
+	check(wrong_differs == 0, "SSIDs of every length that differ in one byte, at every position, do not match");
+	check(wrong_longer == 0, "an SSID of every length does not match a network with one byte more, a space or a letter, behind the same bytes");
+	check(wrong_shorter == 0, "an SSID with one byte more, a space or a letter, does not match a network that is its beginning");
+	check(wrong_forgotten == 0, "a profile is not forgotten by an SSID that differs in one byte or lacks its last one");
+}
+
 // A scan may list any number of networks
 static void test_choose_long_scan(void)
 {
@@ -286,6 +353,38 @@ static void test_host_rule(void)
 	check(net_host_rule(&ap_open) == NET_HOST_GATEWAY, "in an access point of a WiCAN without a password it is the gateway as well");
 	check(net_host_rule(&router_search) == NET_HOST_MDNS && net_host_rule(&open) == NET_HOST_MDNS, "in another network without a stored host it is searched by mDNS");
 	check(net_host_rule(&ap_without_id) == NET_HOST_MDNS, "WiCAN_ without a character behind it is no access point of a WiCAN");
+}
+
+// Every combination of SSID, password and host. Expected from the places in the tables alone.
+static void test_host_rule_all(void)
+{
+	// The first two are access points of a WiCAN
+	static const char *const ssids[11] = {
+		"WiCAN_a1b2c3d4e5f6", "WiCAN_x", "WiCAN_", "WiCAN", "wican_a1b2", "WICAN_a1b2", "WiCAN-a1b2", " WiCAN_a1b2", "Home", "x", "",
+	};
+	static const char *const passwords[3] = {"", "@meatpi#", "another password"};
+	// The first is no host
+	static const char *const hosts[4] = {"", "x", "192.168.80.1", "wican.local"};
+	int wrong = 0, s, p, h;
+
+	for(s = 0; s < 11; s++)
+	{
+		for(p = 0; p < 3; p++)
+		{
+			for(h = 0; h < 4; h++)
+			{
+				net_host_rule_t expected = h > 0 ? NET_HOST_GIVEN : s < 2 ? NET_HOST_GATEWAY : NET_HOST_MDNS;
+				net_profile_t profile;
+
+				expected_profile(&profile, ssids[s], passwords[p], hosts[h]);
+				if(net_host_rule(&profile) != expected)
+				{
+					if(wrong++ < 5) printf("  \"%s\" with password \"%s\" and host \"%s\"\n", ssids[s], passwords[p], hosts[h]);
+				}
+			}
+		}
+	}
+	check(wrong == 0, "11 SSIDs with 3 passwords and 4 hosts: the stored host if there is one, else the gateway in an access point of a WiCAN, else mDNS");
 }
 
 static void test_wican_ap(void)
@@ -562,6 +661,138 @@ static void test_store_lengths(void)
 	check(wrong_stored == 0, "every other one is stored with its three texts: first in an empty and in a full list, in place where the SSID was known");
 }
 
+// `length` bytes that are anything but zero: in one of four cases one of the bytes that mean something to
+// a form, a shell or a URL
+static void random_text(char *text, size_t length)
+{
+	static const char special[] = {' ', '.', ':', '_', '\t', '"', '\200', '\377'};
+	size_t i;
+
+	for(i = 0; i < length; i++)
+	{
+		text[i] = random_next() % 4 == 0 ? special[random_next() % sizeof(special)] : (char)(1 + random_next() % 255);
+	}
+	text[length] = '\0';
+}
+
+// A length up to `limit`, more often one of those next to `limit`, the largest that is valid
+static size_t random_length(size_t limit)
+{
+	if(random_next() % 3 == 0) return limit - 1 + random_next() % 3;
+	return random_next() % (limit + 6);
+}
+
+// SSID, password and host are bytes. Nothing but their lengths decides whether a profile is stored, and
+// what was stored is found again byte for byte. The list that is expected is kept next to the real one.
+static void test_any_bytes(void)
+{
+	static const char *const beginnings[6] = {"", "", "", "WiCAN_", "wican_", "WiCAN"};
+	static net_profile_t model[NET_PROFILES_MAX];
+	net_profile_t before[ROOM];
+	char ssid[48], password[80], host[56];
+	char seen[2][NET_SSID_SIZE];
+	int wrong_refused = 0, wrong_changed = 0, wrong_count = 0, wrong_list = 0, wrong_chosen = 0, wrong_rule = 0, wrong_zeroed = 0;
+	int added = 0, dropped = 0, replaced = 0, refused = 0, forgotten = 0, missed = 0, gateways = 0;
+	int count = 0, i, k;
+
+	clear_room();
+	for(i = 0; i < 60000; i++)
+	{
+		const char *beginning = beginnings[random_next() % 6];
+		size_t ssid_length = random_length(NET_SSID_SIZE - 1), password_length = random_length(NET_PASSWORD_SIZE - 1);
+		size_t host_length = random_next() % 3 == 0 ? 0 : random_length(NET_HOST_SIZE - 1);
+		uint32_t what = random_next() % 8;
+		int known = -1, result;
+
+		if(random_next() % 4 == 0) password_length = random_next() % 10;
+		random_text(ssid, ssid_length);
+		if(strlen(beginning) <= ssid_length) memcpy(ssid, beginning, strlen(beginning));
+		random_text(password, password_length);
+		random_text(host, host_length);
+		// Every fourth time the SSID of a profile that is in the list
+		if(count > 0 && random_next() % 4 == 0) strcpy(ssid, model[random_next() % (uint32_t)count].ssid);
+		ssid_length = strlen(ssid);
+		for(k = 0; k < count; k++) if(strcmp(model[k].ssid, ssid) == 0) known = k;
+
+		memcpy(before, room, sizeof(room));
+		if(what < 5)
+		{
+			bool valid = ssid_length >= 1 && ssid_length <= 32 && (password_length == 0 || (password_length >= 8 && password_length <= 64)) && host_length <= 39;
+
+			result = net_store(list, count, ssid, password, host);
+			if(!valid)
+			{
+				refused++;
+				if(result != -1) wrong_refused++;
+				if(memcmp(before, room, sizeof(room)) != 0) wrong_changed++;
+				continue;
+			}
+			if(known >= 0)
+			{
+				replaced++;
+			}
+			else
+			{
+				if(count == NET_PROFILES_MAX) dropped++;
+				else count++;
+				for(k = count - 1; k > 0; k--) model[k] = model[k - 1];
+				known = 0;
+				added++;
+			}
+			expected_profile(&model[known], ssid, password, host);
+		}
+		else
+		{
+			result = net_forget(list, count, ssid);
+			if(known >= 0)
+			{
+				for(k = known; k < count - 1; k++) model[k] = model[k + 1];
+				count--;
+				forgotten++;
+				if(!entry_is_zero(count)) wrong_zeroed++;
+			}
+			else
+			{
+				missed++;
+				if(memcmp(before, room, sizeof(room)) != 0) wrong_changed++;
+			}
+		}
+		if(result != count) wrong_count++;
+		if(memcmp(list, model, (size_t)count * sizeof(model[0])) != 0 || !guards_intact()) wrong_list++;
+		if(count == 0) continue;
+
+		// One of the profiles in range behind a hidden network, and how the WiCAN is found there
+		k = (int)(random_next() % (uint32_t)count);
+		memset(seen, 0, sizeof(seen));
+		strcpy(seen[1], model[k].ssid);
+		if(net_choose(list, count, seen, 2) != k) wrong_chosen++;
+		if(model[k].host[0] != '\0')
+		{
+			if(net_host_rule(&list[k]) != NET_HOST_GIVEN) wrong_rule++;
+		}
+		else if(strlen(model[k].ssid) > 6 && memcmp(model[k].ssid, "WiCAN_", 6) == 0)
+		{
+			gateways++;
+			if(net_host_rule(&list[k]) != NET_HOST_GATEWAY) wrong_rule++;
+		}
+		else if(net_host_rule(&list[k]) != NET_HOST_MDNS)
+		{
+			wrong_rule++;
+		}
+	}
+	printf("  random bytes: %d added, %d of them into a full list, %d replaced, %d refused, %d forgotten, %d not found, %d access points of a WiCAN\n",
+	       added, dropped, replaced, refused, forgotten, missed, gateways);
+	check(added > 5000 && dropped > 1000 && replaced > 1000 && refused > 5000 && forgotten > 1000 && missed > 1000 && gateways > 300,
+	      "the walk with random bytes adds, fills the list, replaces, is refused, forgets and misses in numbers");
+	check(wrong_refused == 0, "60000 profiles of random bytes: exactly those with a length the header refuses are refused, whatever their bytes");
+	check(wrong_changed == 0, "nothing changes when one of them is refused or an SSID that is not in the list is forgotten");
+	check(wrong_count == 0, "storing and forgetting them returns the number of profiles of the list kept next to it");
+	check(wrong_list == 0, "after each of them the list is, byte for byte, the list kept next to it: new first, replaced in place, the last out of a full list");
+	check(wrong_zeroed == 0, "the entry that becomes free is zeroed whatever stood in it");
+	check(wrong_chosen == 0, "each profile of random bytes is chosen when its SSID is in range");
+	check(wrong_rule == 0, "for each of them the WiCAN is found by the stored host if there is one, else as the gateway in an access point of a WiCAN, else by mDNS");
+}
+
 static void test_forget(void)
 {
 	net_profile_t before[ROOM];
@@ -796,9 +1027,11 @@ int main(void)
 {
 	test_choose();
 	test_choose_bytes();
+	test_ssid_positions();
 	test_choose_long_scan();
 	test_choose_all();
 	test_host_rule();
+	test_host_rule_all();
 	test_wican_ap();
 	test_factory_password();
 	test_store();
@@ -806,6 +1039,7 @@ int main(void)
 	test_store_own_texts();
 	test_store_refused();
 	test_store_lengths();
+	test_any_bytes();
 	test_forget();
 	test_no_list();
 	test_exact_room();

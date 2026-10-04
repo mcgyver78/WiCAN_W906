@@ -18,6 +18,7 @@ MUTATIONS = [
     ("ota_112_bytes_too_short", T, F, SHORT, "\tif(length <= OTA_CHECK_BYTES) return OTA_CHECK_TOO_SHORT;\n"),
     ("ota_111_bytes_long_enough", T, F, SHORT, "\tif(length < OTA_CHECK_BYTES - 1) return OTA_CHECK_TOO_SHORT;\n"),
     ("ota_length_not_checked", T, F, SHORT, "\t(void)length;\n"),
+    ("ota_long_block_too_short", T, F, SHORT, "\tif(length < OTA_CHECK_BYTES || length > 300) return OTA_CHECK_TOO_SHORT;\n"),
     ("ota_check_bytes_changed", T, H, "#define OTA_CHECK_BYTES     112", "#define OTA_CHECK_BYTES     113"),
 
     # magic byte of the image
@@ -134,6 +135,7 @@ MUTATIONS = [
     ("ota_cut_one_byte_too_many", T, F, "\t\tlength = size - 1;\n", "\t\tlength = size - 2;\n"),
     ("ota_cut_not_cut", T, F, "\t\tlength = size - 1;\n", "\t\tlength = size;\n"),
     ("ota_cut_in_a_character", T, F, CUT + "\n", ""),
+    ("ota_cut_in_a_character_in_buffers_from_20", T, F, CUT, CUT.replace("length > 0", "length > 0 && size < 20")),
     ("ota_cut_only_one_byte_back", T, F, CUT, "\t\tif(length > 0 && ((unsigned char)text[length] & 0xC0) == 0x80) length--;"),
     ("ota_cut_three_bytes_back_at_most", T, F,
      CUT, "\t\tfor(int back = 0; back < 3 && length > 0 && ((unsigned char)text[length] & 0xC0) == 0x80; back++) length--;"),

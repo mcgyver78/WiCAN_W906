@@ -1,0 +1,9 @@
+{"state":"done","action":"read","duration_ms":35500,"dtc_count":10,"ecus":[
+{"name":"N3/28 Motorelektronik (CDID3)","id":"7E0","protocol":"UDS","status":"ok","dtcs":[{"code":"P0100-13","status":"2F","active":true},{"code":"P242F-FA","status":"68","active":false}],"dtcs_omitted":4},
+{"name":"N10 SAM","id":"662","protocol":"KWP","status":"ok","dtcs":[{"code":"9301","status":"60"},{"code":"9302","status":""}]},
+{"name":"N30/4 ESP","id":"784","protocol":"UDS","status":"nrc_22","dtcs":[{"code":"U0100-87","status":"28","active":false}],"dtcs_omitted":1},
+{"name":"B162 Collision Prevention Assist","id":"65E","protocol":"UDS","status":"no_response","dtcs":[]},
+{"name":"N2/14 Rückhaltesystem (SRS)","id":"6BC","protocol":"KWP","status":"pending_timeout","dtcs":[]},
+{"name":"N69/1 Fahrertür (TSG)","id":"6C8","protocol":"KWP","status":"incomplete","dtcs":[]},
+{"name":"Radio","id":"5D6","protocol":"UDS","status":"later_firmware","dtcs":[]},
+{"name":"A1 Kombiinstrument","id":"796","protocol":"KWP","status":"ok","dtcs":[]}]}

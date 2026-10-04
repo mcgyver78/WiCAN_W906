@@ -1,0 +1,7 @@
+2 Fehler - 18 Steuergeräte · 38 s
+SAM - 662 · 1 Fehler
+  9301 - Status 60
+Rückhaltesystem - 6BC · 1 Fehler
+  9100 - Status E0
+Collision Prevention Assist - keine Antwort
+15 Steuergeräte ohne Fehler

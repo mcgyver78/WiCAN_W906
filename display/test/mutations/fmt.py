@@ -9,6 +9,7 @@ ROUND = "\tnumber = (uint64_t)(magnitude * scales[decimals]);\n\tnumber = (numbe
 HALVES = "\tnumber = (number + 1) / 2;"
 # true where the value lies beyond the count of halves, false where it is that count exactly
 BEYOND = "(double)number != magnitude * scales[decimals]"
+LIMIT = "\tif(!(magnitude < MAGNITUDE_LIMIT)) return false;"
 BREAK = ("\t\t\tfirst = true;\n\t\t\tcontinue;\n\t\t}\n\n"
          "\t\t// One space between two words, however many breaks there were, and none before the first word.\n"
          "\t\t// Breaks at the end are never followed by a word and so leave nothing. There is room for the\n"
@@ -26,6 +27,10 @@ MUTATIONS = [
     ("fmt_number_limit_only_for_positive", T, F, "\tif(!(magnitude < MAGNITUDE_LIMIT)) return false;", "\tif(!(value < MAGNITUDE_LIMIT)) return false;"),
     ("fmt_number_nan_printed_as_zero", T, F,
      "\tmagnitude = value < 0 ? -value : value;", "\tmagnitude = value < 0 ? -value : value > 0 ? value : 0;"),
+    ("fmt_number_limit_not_checked_with_1_decimal", T, F, LIMIT, "\tif(!(magnitude < MAGNITUDE_LIMIT) && decimals != 1) return false;"),
+    ("fmt_number_limit_not_checked_with_2_decimals", T, F, LIMIT, "\tif(!(magnitude < MAGNITUDE_LIMIT) && decimals != 2) return false;"),
+    ("fmt_number_negative_limit_accepted_with_2_decimals", T, F,
+     LIMIT, "\tif(!(magnitude < MAGNITUDE_LIMIT) && !(decimals == 2 && value == -MAGNITUDE_LIMIT)) return false;"),
 
     # fmt_number: decimals
     ("fmt_number_negative_decimals_count_as_one", T, F, "\tif(decimals < 0) decimals = 0;", "\tif(decimals < 0) decimals = 1;"),
@@ -59,6 +64,11 @@ MUTATIONS = [
      "\tnumber = (uint64_t)(magnitude * scales[decimals]) / 2;\n"
      "\tif(__builtin_fma(magnitude, scales[decimals], -(double)(2 * number)) >= 1) number++;\n"),
     ("fmt_number_halves_not_halved", T, F, "{2, 20, 200, 2000};", "{1, 10, 100, 1000};"),
+    # the next double above each scale: the product of a number just below a half becomes the half
+    ("fmt_number_scale_of_0_decimals_one_step_higher", T, F, "{2, 20, 200, 2000};", "{2.0000000000000004, 20, 200, 2000};"),
+    ("fmt_number_scale_of_1_decimal_one_step_higher", T, F, "{2, 20, 200, 2000};", "{2, 20.000000000000004, 200, 2000};"),
+    ("fmt_number_scale_of_2_decimals_one_step_higher", T, F, "{2, 20, 200, 2000};", "{2, 20, 200.00000000000003, 2000};"),
+    ("fmt_number_scale_of_3_decimals_one_step_higher", T, F, "{2, 20, 200, 2000};", "{2, 20, 200, 2000.0000000000002};"),
 
     # fmt_number: sign
     ("fmt_number_minus_zero", T, F, "\tnegative = value < 0 && number != 0;", "\tnegative = value < 0;"),
@@ -105,6 +115,8 @@ MUTATIONS = [
     ("fmt_label_only_first_word_raised", T, F, "\t\tif(first && c >= 'a' && c <= 'z')", "\t\tif(length == 0 && c >= 'a' && c <= 'z')"),
     ("fmt_label_later_words_not_raised", T, F, "\t\tif(first && c >= 'a' && c <= 'z')", "\t\tif(first && length < 12 && c >= 'a' && c <= 'z')"),
     ("fmt_label_later_letters_not_lowered", T, F, "\t\tif(!first && c >= 'A' && c <= 'Z')", "\t\tif(!first && length < 12 && c >= 'A' && c <= 'Z')"),
+    ("fmt_label_words_from_40_bytes_not_raised", T, F, "\t\tif(first && c >= 'a' && c <= 'z')", "\t\tif(first && length < 40 && c >= 'a' && c <= 'z')"),
+    ("fmt_label_letters_from_40_bytes_not_lowered", T, F, "\t\tif(!first && c >= 'A' && c <= 'Z')", "\t\tif(!first && length < 40 && c >= 'A' && c <= 'Z')"),
     ("fmt_label_all_letters_raised", T, F,
      "\t\tif(!first && c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');", "\t\tif(!first && c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');"),
     ("fmt_label_a_not_raised", T, F, "\t\tif(first && c >= 'a' && c <= 'z')", "\t\tif(first && c > 'a' && c <= 'z')"),
@@ -123,6 +135,8 @@ MUTATIONS = [
     ("fmt_label_exact_fit_refused", T, F, "\t\tif(length + 1 >= size) break;", "\t\tif(length + 2 >= size) break;"),
     ("fmt_label_room_not_checked_at_20_bytes", T, F, "\t\tif(length + 1 >= size) break;", "\t\tif(length + 1 >= size && length != 20) break;"),
     ("fmt_label_exact_fit_refused_at_25_bytes", T, F, "\t\tif(length + 1 >= size) break;", "\t\tif(length + 1 >= size - (length == 25)) break;"),
+    ("fmt_label_room_not_checked_from_60_bytes", T, F, "\t\tif(length + 1 >= size) break;", "\t\tif(length + 1 >= size && size < 60) break;"),
+    ("fmt_label_refused_reported_as_fitting_from_61_bytes", T, F, "\treturn *name == '\\0';", "\treturn *name == '\\0' || size > 60;"),
     ("fmt_label_refused_not_emptied_in_large_buffer", T, F,
      "\tif(*name != '\\0') length = 0;\n", "\tif(*name != '\\0') length = size > 30 ? 1 : 0;\n"),
     ("fmt_label_refused_not_emptied", T, F, "\tif(*name != '\\0') length = 0;\n", ""),

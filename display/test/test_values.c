@@ -166,7 +166,8 @@ static void test_fixtures(void)
 	static char profile[16384];
 	char what[80];
 	int count, pids, i, j;
-	int names = 0, found = 0, same = 0;
+	int names = 0, found = 0, same = 0, wrong = 0;
+	size_t length, cut;
 
 	start();
 	check(read_fixture("../../tools/w906/fixtures/autopid_data_ignition_on.json", text, sizeof(text)), "fixture ignition on");
@@ -203,6 +204,23 @@ static void test_fixtures(void)
 		}
 	}
 	check(names == 35 && found == 35, "ignition on: every value of the vehicle profile is there");
+
+	// A body that the connection cut off is no answer, wherever it ends: an object is only whole with its last byte
+	remember();
+	cut = strlen(text);
+	for(length = 0; length < cut; length++)
+	{
+		if(values_apply(&box.values, text, length, 1235, 6000, work, VALUES_TOKENS) != VALUES_INVALID || !unchanged()) wrong++;
+	}
+	check(cut > 700 && wrong == 0, "ignition on: the answer cut off after any number of its bytes is invalid and changes nothing");
+	start();
+	remember();
+	for(length = 0; length < cut; length++)
+	{
+		if(values_apply(&box.values, text, length, 1235, 6000, work, VALUES_TOKENS) != VALUES_INVALID || !unchanged()) wrong++;
+	}
+	check(wrong == 0, "ignition on: the same as the first answer ever");
+	check(apply(text, 1234, 5000) == VALUES_RENEWED && box.values.count == 35, "ignition on: the whole answer is applied after the cut ones");
 
 	// Ignition off: the counter stands, later it moves again without any value
 	check(read_fixture("../../tools/w906/fixtures/autopid_data_ignition_off.json", text, sizeof(text)), "fixture ignition off");
@@ -271,7 +289,9 @@ static void test_kinds(void)
 	start();
 	check(apply("{\"a\":1e3,\"b\":-0,\"c\":0.25,\"d\":187432,\"e\":-2147483648,\"f\":1.7976931348623157e308,"
 	            "\"g\":12345678901234567890123456789012345678901234567,"
-	            "\"h\":123456789012345678901234567890123456789012345678,\"i\":1e999,\"j\":2.5E-1,\"k\":-1e999,\"l\":1e-305}", -1, 9) == VALUES_RENEWED,
+	            "\"h\":123456789012345678901234567890123456789012345678,\"i\":1e999,\"j\":2.5E-1,\"k\":-1e999,\"l\":1e-305,"
+	            "\"m\":-1234567890123456789012345678901234567890123456,"
+	            "\"n\":-12345678901234567890123456789012345678901234567}", -1, 9) == VALUES_RENEWED,
 	      "numbers in every notation are applied");
 	check(is_number("a", 1000, 9), "number with an exponent");
 	check(is_number("b", 0, 9), "minus zero");
@@ -281,13 +301,17 @@ static void test_kinds(void)
 	check(is_number("l", 1e-305, 9), "a very small number keeps its value");
 	check(values_find(&box.values, "g") != NULL && values_find(&box.values, "g")->number > 1e46, "a number of 47 characters is a value");
 	check(is_missing("h"), "a number of 48 characters, which json_number() refuses, is ignored");
+	check(values_find(&box.values, "m") != NULL && values_find(&box.values, "m")->kind == VALUE_NUMBER &&
+	      values_find(&box.values, "m")->number < -1e45 && values_find(&box.values, "m")->number > -1e46,
+	      "a negative number of 47 characters is a value");
+	check(is_missing("n"), "a negative number of 48 characters is ignored");
 	check(values_find(&box.values, "i") != NULL && values_find(&box.values, "i")->kind == VALUE_NUMBER &&
 	      values_find(&box.values, "i")->seen_ms == 9, "a number beyond the range of a double is still a value");
 	check(values_find(&box.values, "i") != NULL && values_find(&box.values, "i")->number > DBL_MAX,
 	      "a number beyond the range of a double is infinite, not a number that could be shown");
 	check(values_find(&box.values, "k") != NULL && values_find(&box.values, "k")->kind == VALUE_NUMBER &&
 	      values_find(&box.values, "k")->number < -DBL_MAX, "a negative number beyond the range is minus infinite");
-	check(box.values.count == 11 && box.values.dropped == 0, "eleven numbers, the refused one is not counted as dropped");
+	check(box.values.count == 12 && box.values.dropped == 0, "twelve numbers, the refused ones are not counted as dropped");
 
 	// One value changes its kind
 	start();
@@ -295,6 +319,8 @@ static void test_kinds(void)
 	check(apply("{\"A\":\"on\"}", -1, 200) == VALUES_RENEWED && is_switch("A", VALUE_ON, 200), "the number becomes on: kind on, number 0");
 	check(apply("{\"A\":\"off\"}", -1, 300) == VALUES_RENEWED && is_switch("A", VALUE_OFF, 300), "on becomes off");
 	check(apply("{\"A\":7.5}", -1, 400) == VALUES_RENEWED && is_number("A", 7.5, 400), "off becomes a number again");
+	check(apply("{\"A\":1e999}", -1, 500) == VALUES_RENEWED && values_find(&box.values, "A") != NULL && values_find(&box.values, "A")->number > DBL_MAX &&
+	      apply("{\"A\":0}", -1, 600) == VALUES_RENEWED && is_number("A", 0, 600), "an infinite number becomes zero with the next answer");
 	check(box.values.count == 1, "a value that changes its kind stays one value");
 
 	start();
@@ -380,6 +406,12 @@ static void test_names(void)
 
 	start();
 	check(apply("{\"\":5}", -1, 1) == VALUES_RENEWED && is_number("", 5, 1) && box.values.count == 1, "the empty name is a name");
+
+	// The name under which the battery voltage of the adapter is kept (CATALOG_BATTERY in catalog.h)
+	start();
+	check(apply("{\"@BATT_V\":12.4,\"a_b\":1,\" \":2,\"9\":\"on\"}", -1, 1) == VALUES_RENEWED && is_number("@BATT_V", 12.4, 1) &&
+	      is_number("a_b", 1, 1) && is_number(" ", 2, 1) && is_switch("9", VALUE_ON, 1) && box.values.count == 4,
+	      "names that begin with @, a small letter, a space or a digit are names like any other");
 
 	start();
 	check(apply("{\"\xff\xfe\x80\":7,\"\xc3\":8}", -1, 1) == VALUES_RENEWED && is_number("\xff\xfe\x80", 7, 1) && is_number("\xc3", 8, 1),
@@ -496,6 +528,8 @@ static void test_invalid(void)
 		{"{\"error\":true}", "invalid: an error object with true"},
 		{"{\"error\":false}", "invalid: an error object with false"},
 		{"{\"error\":[1]}", "invalid: an error object with an array"},
+		{"{\"error\":\"The adapter could not build an answer because there is no memory left for it\"}", "invalid: an error object with a long text"},
+		{"{\"error\":{\"code\":1,\"text\":\"No data available\",\"more\":[1,2,3,4,5,6,7,8,9]}}", "invalid: an error object with a long object"},
 		{"{ \"error\" : 0 }", "invalid: an error object with whitespace and the number 0"},
 		{"{\"\\u0065rror\":\"x\"}", "invalid: an error object with an escaped key"},
 		{"[]", "invalid: an empty array"},
@@ -542,6 +576,9 @@ static void test_invalid(void)
 	start();
 	check(apply("{\"error\":1,\"A\":2}", -1, 1) == VALUES_RENEWED && is_number("error", 1, 1) && is_number("A", 2, 1),
 	      "error as the first of two members: a value named error");
+	start();
+	check(apply("{\"error\":1,\"error\":2}", -1, 1) == VALUES_RENEWED && is_number("error", 2, 1) && box.values.count == 1,
+	      "two members named error are not the error object: a value named error, the last counts");
 	start();
 	check(apply("{\"A\":2,\"error\":\"on\"}", -1, 1) == VALUES_RENEWED && is_switch("error", VALUE_ON, 1) && is_number("A", 2, 1),
 	      "error as the second of two members: a value named error");
@@ -624,6 +661,8 @@ static void test_limits(void)
 	check(is_number("KEEP", 8, 500), "300 members: a value they do not contain keeps content and time");
 	check(box.values.dropped == 237, "300 members: the 237 without room are counted");
 	remember();
+	check(values_apply(&box.values, text, strlen(text), 2, 1500, large_work, 1024) == VALUES_REPEATED && unchanged(),
+	      "300 members while the counter stands and the list is full: repeated, nothing changed");
 	check(apply(text, 3, 2000) == VALUES_INVALID && unchanged(), "300 members with VALUES_TOKENS tokens: invalid, nothing changed");
 
 	// VALUES_TOKENS is 192: 95 members need 191 of them, 96 need 193
@@ -634,6 +673,28 @@ static void test_limits(void)
 	many(96, 0);
 	remember();
 	check(apply(text, 2, 20) == VALUES_INVALID && unchanged(), "96 members need more than VALUES_TOKENS tokens: invalid");
+
+	// Exactly VALUES_TOKENS tokens: 93 values are 187, a member with an array of three numbers is five more
+	start();
+	many(93, 0);
+	strcpy(text + strlen(text) - 1, ",\"X\":[1,2,3]}");
+	check(json_parse(text, strlen(text), large_work, 1024) == VALUES_TOKENS && VALUES_TOKENS == 192, "93 values and an array of three numbers are 192 tokens");
+	check(apply(text, 1, 10) == VALUES_RENEWED && box.values.count == VALUES_MAX && box.values.dropped == 29 && is_missing("X"),
+	      "an answer of exactly VALUES_TOKENS tokens is applied");
+	strcpy(text + strlen(text) - 2, ",4]}");
+	remember();
+	check(json_parse(text, strlen(text), large_work, 1024) == VALUES_TOKENS + 1 && apply(text, 2, 20) == VALUES_INVALID && unchanged(),
+	      "one token more than VALUES_TOKENS: invalid");
+
+	// A long answer that is broken only at its very end
+	start();
+	many(500, 0);
+	check(strlen(text) > 5000 && values_apply(&box.values, text, strlen(text), 1, 10, large_work, 1024) == VALUES_RENEWED &&
+	      box.values.count == VALUES_MAX && box.values.dropped == 436, "500 members in more than 5000 bytes: applied");
+	start();
+	remember();
+	check(values_apply(&box.values, text, strlen(text) - 1, 1, 10, large_work, 1024) == VALUES_INVALID && unchanged(),
+	      "the same without its closing brace: invalid, nothing changed");
 
 	// Room for the tokens: a full answer has 1 + 2 * 64 of them
 	start();
@@ -780,8 +841,14 @@ static void test_disappear(void)
 	start();
 	snprintf(text, sizeof(text), "{\"A\":1,\"%s\":2}", name33);
 	check(apply(text, -1, 1000) == VALUES_RENEWED && box.values.count == 1 && box.values.dropped == 1, "a value and a dropped one");
+	check(apply("{\"A\":\"off\"}", -1, 1000) == VALUES_RENEWED && is_switch("A", VALUE_OFF, 1000) && box.values.count == 1 && box.values.dropped == 1,
+	      "the only value becomes off: it is found, whatever was dropped");
 	remember();
 	check(apply("{}", -1, 2000) == VALUES_RENEWED && unchanged(), "{} without a counter: applied, and nothing at all changed, dropped included");
+	start();
+	check(apply("{\"A\":1,\"B\":\"on\"}", -1, 1000) == VALUES_RENEWED && box.values.count == 2 && box.values.dropped == 0, "two values, none dropped");
+	remember();
+	check(apply("{}", -1, 2000) == VALUES_RENEWED && unchanged(), "{} without a counter when nothing was dropped: nothing at all changed either");
 
 	start();
 	check(apply("{\"A\":1,\"B\":2,\"C\":\"on\"}", 1, 1000) == VALUES_RENEWED && box.values.count == 3, "three values");
@@ -842,6 +909,12 @@ static void test_clear(void)
 	values_clear(&box.values);
 	check(apply("{\"NEW\":1}", -1, 2) == VALUES_RENEWED && is_number("NEW", 1, 2) && box.values.count == 1 && box.values.dropped == 0 &&
 	      is_missing("V00") && is_missing("V63") && guards_intact(), "clear: there is room again, the old names are gone");
+
+	// A single value, the one with the empty name
+	start();
+	check(apply("{\"\":5}", -1, 1) == VALUES_RENEWED && is_number("", 5, 1), "a list with nothing but the value with the empty name");
+	values_clear(&box.values);
+	check(box.values.count == 0 && is_missing(""), "clear: a single value with the empty name is forgotten as well");
 }
 
 /*
@@ -867,7 +940,7 @@ static bool model_has_pass;
 static int64_t model_pass;
 static uint32_t random_state;
 // What the sequences came across, to show that they reach the rules at all
-static int seen_repeated, seen_invalid, seen_cleared, seen_full, seen_long, seen_backwards, seen_came_back;
+static int seen_repeated, seen_invalid, seen_cleared, seen_full, seen_long, seen_backwards, seen_came_back, seen_empty, seen_large;
 
 static uint32_t rnd(uint32_t below)
 {
@@ -883,7 +956,10 @@ static void model_names(void)
 	{
 		size_t length;
 
-		snprintf(pool[i], sizeof(pool[i]), "P%02d", i);
+		// Names of every kind: capitals, small letters, the @ of the battery voltage, UTF-8, digits, a space
+		static const char *const beginnings[] = {"P", "p_", "@B", "\xc3\x84", "9", " ", "_", "e"};
+
+		snprintf(pool[i], sizeof(pool[i]), "%s%02d", beginnings[i % 8], i);
 		// Some names at the limit and one beyond it
 		length = i % 10 == 3 ? 32 : i % 10 == 7 ? 33 : 0;
 		while(strlen(pool[i]) < length) strcat(pool[i], "x");
@@ -947,7 +1023,8 @@ static bool model_sequence(uint32_t seed, int steps)
 	for(step = 0; step < steps; step++)
 	{
 		uint32_t what = rnd(100);
-		uint32_t density = 1 + rnd(9);
+		// Now and then an answer without any member
+		uint32_t density = rnd(12) == 0 ? 0 : 1 + rnd(9);
 		values_result_t result, model_result;
 		size_t length = 0;
 		int64_t pass;
@@ -1004,15 +1081,19 @@ static bool model_sequence(uint32_t seed, int steps)
 			// The order of the members changes from answer to answer
 			int index = (i * 7 + step) % POOL;
 			uint32_t kind = rnd(20);
-			int quarters = (int)rnd(8000) - 4000;
+			// A number of 1 to 24 bit before the point and 10 bit behind it: a double holds it exactly, and 1/1024 is
+			// 0.0009765625, so it has exactly ten decimal places
+			uint32_t whole = rnd((uint32_t)1 << (1 + rnd(24)));
+			uint32_t part = rnd(1024);
+			bool negative = rnd(2) == 1;
 			bool is_value = kind < 16;
 
 			if(rnd(10) >= density) continue;
 
 			length += (size_t)snprintf(text + length, sizeof(text) - length, "%s\"%s\":", first ? "" : ",", pool[index]);
 			first = false;
-			if(kind < 12) length += (size_t)snprintf(text + length, sizeof(text) - length, "%s%d.%02d", quarters < 0 ? "-" : "",
-			                                         abs(quarters) / 4, abs(quarters) % 4 * 25);
+			if(kind < 12) length += (size_t)snprintf(text + length, sizeof(text) - length, "%s%lu.%010llu", negative ? "-" : "",
+			                                         (unsigned long)whole, (unsigned long long)part * 9765625u);
 			else if(kind < 14) length += (size_t)snprintf(text + length, sizeof(text) - length, "\"on\"");
 			else if(kind < 16) length += (size_t)snprintf(text + length, sizeof(text) - length, "\"off\"");
 			else if(kind == 16) length += (size_t)snprintf(text + length, sizeof(text) - length, "\"text\"");
@@ -1040,10 +1121,12 @@ static bool model_sequence(uint32_t seed, int steps)
 			}
 			else if(expected[index].seen_ms + 10000 <= now_ms) seen_came_back++;
 			expected[index].kind = kind < 12 ? VALUE_NUMBER : kind < 14 ? VALUE_ON : VALUE_OFF;
-			expected[index].number = kind < 12 ? quarters / 4.0 : 0;
+			expected[index].number = kind < 12 ? (negative ? -1.0 : 1.0) * ((double)whole + (double)part / 1024.0) : 0;
 			expected[index].seen_ms = now_ms;
+			if(kind < 12 && whole >= 1000000 && part != 0) seen_large++;
 		}
 		snprintf(text + length, sizeof(text) - length, "}");
+		if(first) seen_empty++;
 
 		// An object with one member named error does not occur: no name of the pool is "error"
 		if(model_result == VALUES_RENEWED && pass >= 0)
@@ -1073,18 +1156,20 @@ static void test_model(void)
 	uint32_t seed;
 
 	model_names();
-	check(strlen(pool[3]) == 32 && strlen(pool[7]) == 33 && strlen(pool[0]) == 0 && strcmp(pool[12], "P12") == 0,
-	      "model: the pool has names of 0, 3, 32 and 33 bytes");
+	check(strlen(pool[3]) == 32 && strlen(pool[7]) == 33 && strlen(pool[0]) == 0 && strcmp(pool[8], "P08") == 0 && strcmp(pool[9], "p_09") == 0 &&
+	      strcmp(pool[10], "@B10") == 0 && strcmp(pool[12], "912") == 0 && strcmp(pool[21], " 21") == 0,
+	      "model: the pool has names of 0, 3, 32 and 33 bytes that begin with letters, @, digits and a space");
 	for(seed = 1; seed <= 40; seed++)
 	{
 		snprintf(what, sizeof(what), "model: 250 random answers with seed %lu behave as the rules say", (unsigned long)seed);
 		check(model_sequence(seed, 250), what);
 	}
-	printf("  repeated %d, invalid %d, cleared %d, no room %d, name too long %d, clock back %d, came back %d\n",
-	       seen_repeated, seen_invalid, seen_cleared, seen_full, seen_long, seen_backwards, seen_came_back);
+	printf("  repeated %d, invalid %d, cleared %d, no room %d, name too long %d, clock back %d, came back %d, empty %d, large numbers %d\n",
+	       seen_repeated, seen_invalid, seen_cleared, seen_full, seen_long, seen_backwards, seen_came_back, seen_empty, seen_large);
 	check(seen_repeated > 100 && seen_invalid > 100 && seen_cleared > 20 && seen_full > 100 && seen_long > 100 &&
 	      seen_backwards > 100 && seen_came_back > 100,
 	      "model: the sequences contain repeated and invalid answers, clears, full lists, long names, steps back in time, returning values");
+	check(seen_empty > 100 && seen_large > 1000, "model: and answers without members and numbers of millions with a fraction");
 }
 
 int main(void)

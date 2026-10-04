@@ -29,6 +29,12 @@ MUTATIONS = [
     ("hold_permille_uses_time_of_last_call", T, F,
      "\theld = clock_at(hold, now_ms) - hold->held_since_ms;", "\t(void)now_ms;\n\theld = hold->clock_ms - hold->held_since_ms;"),
 
+    ("hold_time_step_counted_in_32_bit", T, F, CLOCK, "\treturn hold->clock_ms + (now_ms > hold->last_ms ? (uint32_t)(now_ms - hold->last_ms) : 0);"),
+    ("hold_time_compared_in_32_bit", T, F,
+     CLOCK, "\treturn hold->clock_ms + ((uint32_t)now_ms > (uint32_t)hold->last_ms || now_ms > hold->last_ms ? now_ms - hold->last_ms : 0);"),
+    ("hold_step_back_restarts_the_release", T, F,
+     "\thold->last_ms = now_ms;", "\tif(now_ms < hold->last_ms) hold->released_since_ms = hold->clock_ms;\n\thold->last_ms = now_ms;"),
+
     # hold_init, hold_open, hold_close
     ("hold_init_keeps_stuck", T, F,
      "\tmemset(hold, 0, sizeof(*hold));", "\tbool stuck = hold->stuck;\n\n\tmemset(hold, 0, sizeof(*hold));\n\thold->stuck = stuck;"),
@@ -73,6 +79,9 @@ MUTATIONS = [
     ("hold_release_time_not_stored", T, F,
      "\t\tif(pressed) hold->pressed_since_ms = now;\n\t\telse hold->released_since_ms = now;", "\t\tif(pressed) hold->pressed_since_ms = now;"),
     ("hold_focus_change_is_no_input", T, F, "\t\thold->on_action = on_action;\n\t\thold->last_input_ms = now;\n", "\t\thold->on_action = on_action;\n"),
+    ("hold_focus_change_while_pressed_is_no_input", T, F,
+     "\t\thold->on_action = on_action;\n\t\thold->last_input_ms = now;\n", "\t\thold->on_action = on_action;\n\t\tif(!pressed) hold->last_input_ms = now;\n"),
+    ("hold_focus_not_followed_by_failed_reading", T, F, "\tif(on_action != hold->on_action)", "\tif(on_action != hold->on_action && read_ok)"),
     ("hold_focus_not_stored", T, F, "\t\thold->on_action = on_action;\n", ""),
     ("hold_focus_leaving_is_no_input", T, F, "\tif(on_action != hold->on_action)", "\tif(on_action && !hold->on_action)"),
     ("hold_focus_coming_is_no_input", T, F,
@@ -90,6 +99,12 @@ MUTATIONS = [
      UNSEEN, "\tif((!read_ok || hold->failed) && now - hold->released_since_ms >= HOLD_RELEASED_MS) hold->released_since_ms = now;"),
     ("hold_init_previous_reading_failed", T, F,
      "\tmemset(hold, 0, sizeof(*hold));", "\tmemset(hold, 0, sizeof(*hold));\n\thold->failed = true;"),
+
+    ("hold_open_forgets_failed_reading", T, F, "\thold->opened_ms = now;\n", "\thold->opened_ms = now;\n\thold->failed = false;\n"),
+    ("hold_failed_reading_remembered_only_in_dialog", T, F, "\thold->failed = !read_ok;", "\tif(hold->open) hold->failed = !read_ok;"),
+    ("hold_activity_forgets_failed_reading", T, F,
+     "\thold->last_input_ms = advance(hold, now_ms);\n\thold->holding = false;\n",
+     "\thold->last_input_ms = advance(hold, now_ms);\n\thold->holding = false;\n\thold->failed = false;\n"),
 
     # a switch that hangs
     ("hold_stuck_one_ms_late", T, F, STUCK, STUCK.replace(">= HOLD_STUCK_MS", "> HOLD_STUCK_MS")),
@@ -118,6 +133,8 @@ MUTATIONS = [
     ("hold_released_one_ms_late", T, F, RELEASED, RELEASED.replace("released_since_ms >= HOLD_RELEASED_MS", "released_since_ms > HOLD_RELEASED_MS")),
     ("hold_released_since_open_one_ms_late", T, F, RELEASED, RELEASED.replace("opened_ms >= HOLD_RELEASED_MS", "opened_ms > HOLD_RELEASED_MS")),
     ("hold_released_time_changed", T, H, "#define HOLD_RELEASED_MS    300u", "#define HOLD_RELEASED_MS    299u"),
+    ("hold_released_one_ms_late_with_focus_away", T, F,
+     RELEASED, RELEASED.replace("released_since_ms >= HOLD_RELEASED_MS", "released_since_ms >= HOLD_RELEASED_MS + (on_action ? 0u : 1u)")),
     ("hold_release_before_dialog_counts", T, F, RELEASED, RELEASED.replace(" && now - hold->opened_ms >= HOLD_RELEASED_MS", "")),
     ("hold_release_counted_from_dialog_only", T, F, RELEASED, RELEASED.replace("now - hold->released_since_ms >= HOLD_RELEASED_MS && ", "")),
     ("hold_release_either_time_enough", T, F,
@@ -140,6 +157,7 @@ MUTATIONS = [
      "\telse\n\t{\n\t\thold->holding = false;\n\t}", "\telse\n\t{\n\t\tif(pressed) hold->holding = false;\n\t}"),
     ("hold_counted_from_the_press", T, F, "\t\t\thold->held_since_ms = now;", "\t\t\thold->held_since_ms = hold->pressed_since_ms;"),
     ("hold_start_not_stored", T, F, "\t\t\thold->held_since_ms = now;\n", ""),
+    ("hold_start_is_input", T, F, "\t\t\thold->held_since_ms = now;\n", "\t\t\thold->held_since_ms = now;\n\t\t\thold->last_input_ms = now;\n"),
     ("hold_needs_new_press_after_a_break", T, F,
      "\t\tif(!hold->holding)\n\t\t{", "\t\tif(!hold->holding && hold->pressed_since_ms == now)\n\t\t{"),
 
@@ -160,6 +178,10 @@ MUTATIONS = [
     ("hold_confirm_never", T, F, CONFIRM, "\tif(0 && now - hold->held_since_ms >= HOLD_CONFIRM_MS)"),
     ("hold_confirm_without_hold", T, F, CONFIRM, "\tif(now - hold->held_since_ms >= HOLD_CONFIRM_MS)"),
     ("hold_confirm_counted_from_the_press", T, F, CONFIRM, "\tif(hold->holding && now - hold->pressed_since_ms >= HOLD_CONFIRM_MS)"),
+    ("hold_confirm_needs_more_than_3300_ms_of_dialog", T, F,
+     CONFIRM, "\tif(hold->holding && now - hold->held_since_ms >= HOLD_CONFIRM_MS && now - hold->opened_ms > HOLD_CONFIRM_MS + HOLD_RELEASED_MS)"),
+    ("hold_confirm_not_in_last_ms_before_stuck", T, F,
+     CONFIRM, "\tif(hold->holding && now - hold->held_since_ms >= HOLD_CONFIRM_MS && now - hold->pressed_since_ms < HOLD_STUCK_MS - 1)"),
     ("hold_confirmed_reported_again", T, F, "\t\thold_close(hold);\n\t\treturn HOLD_CONFIRMED;", "\t\treturn HOLD_CONFIRMED;"),
     ("hold_progress_not_reported", T, F, "\treturn hold->holding ? HOLD_PROGRESS : HOLD_WAITING;", "\treturn HOLD_WAITING;"),
     ("hold_progress_always_reported", T, F, "\treturn hold->holding ? HOLD_PROGRESS : HOLD_WAITING;", "\treturn HOLD_PROGRESS;"),

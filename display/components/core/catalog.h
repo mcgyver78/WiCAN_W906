@@ -73,7 +73,7 @@ int catalog_find(const catalog_t *catalog, const char *name);
 // The catalogue as one JSON object for storage and for the editor:
 // {"NAME":{"unit":"°C","class":"temperature","profile":true,"delivered":false}, ...} in catalogue order,
 // without whitespace; " and \ are written with a backslash, bytes below 0x20 as \u00xx.
-// Returns the length, -1 if it does not fit (out is then an empty string).
+// Returns the length, -1 if it does not fit (out is then an empty string; with size 0 nothing is written).
 int catalog_to_json(const catalog_t *catalog, char *out, size_t size);
 
 // Reads what catalog_to_json wrote: the result is a catalogue as after catalog_init with the entries of the

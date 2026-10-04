@@ -121,6 +121,14 @@ static void test_release(void)
 	check(sample(false, true, 2300) == HOLD_WAITING && sample(true, true, 2320) == HOLD_PROGRESS,
 	      "pressed when the dialog opened, then released for 300 ms and pressed: the hold begins");
 
+	open_pressed();
+	samples(false, false, 2000, 2280, HOLD_WAITING);
+	check(sample(false, false, 2299) == HOLD_WAITING && sample(true, true, 2300) == HOLD_WAITING, "released for 299 ms with the focus on cancel: no release seen");
+	open_pressed();
+	samples(false, false, 2000, 2280, HOLD_WAITING);
+	check(sample(false, false, 2300) == HOLD_WAITING && sample(true, true, 2320) == HOLD_PROGRESS,
+	      "released for 300 ms with the focus on cancel: the release is seen wherever the focus is");
+
 	open_dialog();
 	samples(false, true, 1000, 1200, HOLD_WAITING);
 	sample(true, true, 1220);
@@ -144,6 +152,11 @@ static void test_start(void)
 	hold_open(&hold, 0);
 	check(sample(false, true, 300) == HOLD_WAITING && sample(true, true, 301) == HOLD_PROGRESS && sample(true, true, 3300) == HOLD_PROGRESS &&
 	      sample(true, true, 3301) == HOLD_CONFIRMED, "a dialog opened at time 0, released at 300, pressed at 301: confirmed at 3301");
+
+	hold_init(&hold);
+	hold_open(&hold, 1000);
+	check(sample(false, true, 1300) == HOLD_WAITING && sample(true, true, 1300) == HOLD_PROGRESS && sample(true, true, 4299) == HOLD_PROGRESS &&
+	      sample(true, true, 4300) == HOLD_CONFIRMED, "released 300 ms after the dialog opened and pressed in the same millisecond: confirmed 3300 ms after it opened, the earliest there is");
 
 	hold_init(&hold);
 	hold_open(&hold, 1000);
@@ -193,6 +206,16 @@ static void test_idle(void)
 	sample(false, false, 12000);
 	sample(false, true, 13000);
 	check(sample(false, true, 27999) == HOLD_WAITING && sample(false, true, 28000) == HOLD_CANCELLED, "the focus coming back to the action restarts the idle time");
+
+	open_dialog();
+	sample(true, true, 5000);
+	sample(true, false, 9000);
+	check(sample(true, false, 20000) == HOLD_WAITING && sample(true, false, 23999) == HOLD_WAITING && sample(true, false, 24000) == HOLD_CANCELLED,
+	      "the focus leaving the action while the switch is pressed restarts the idle time as well");
+
+	open_dialog();
+	check(hold_sample(&hold, false, false, false, 9000) == HOLD_WAITING && sample(false, false, 23999) == HOLD_WAITING && sample(false, false, 24000) == HOLD_CANCELLED,
+	      "a failed reading still tells where the focus is: the focus leaving the action with it restarts the idle time");
 
 	open_dialog();
 	check(hold_sample(&hold, false, false, true, 8000) == HOLD_WAITING && hold_sample(&hold, true, false, true, 9000) == HOLD_WAITING &&
@@ -283,10 +306,26 @@ static void test_stuck_first(void)
 	check(hold_permille(&hold, 21320) == 0, "the hanging switch closed the dialog: no hold is in progress");
 	check(sample(true, true, 21340) == HOLD_STUCK && hold_is_stuck(&hold), "no confirmation follows");
 
+	// The same with the focus coming one millisecond earlier: the hold is complete before the switch hangs
+	open_dialog();
+	samples(false, true, 1000, 1300, HOLD_WAITING);
+	sample(true, false, 1320);
+	hold_activity(&hold, 10000);
+	sample(true, false, 18300);
+	check(sample(true, true, 18319) == HOLD_PROGRESS && sample(true, true, 21318) == HOLD_PROGRESS && sample(true, true, 21319) == HOLD_CONFIRMED,
+	      "a hold complete 19999 ms after the press: confirmed, the switch does not hang yet");
+	check(sample(true, true, 21320) == HOLD_STUCK && hold_is_stuck(&hold), "kept pressed one millisecond longer: the switch hangs, after the confirmation");
+
 	// A hold that began at 1320 and no reading for 15000 ms
 	begin_hold();
 	check(sample(true, true, 16320) == HOLD_CANCELLED, "hold complete and idle time over at once: cancelled, nothing is confirmed");
 	check(sample(true, true, 16340) == HOLD_WAITING, "no confirmation follows the cancellation");
+
+	// The knob is turned at 2000, the hold begins again with the reading at 2020, then no reading for 14980 ms
+	begin_hold();
+	hold_activity(&hold, 2000);
+	check(sample(true, true, 2020) == HOLD_PROGRESS && sample(true, true, 17000) == HOLD_CANCELLED,
+	      "a hold that begins again is no input: the idle time counts from the turn of the knob before it");
 }
 
 static void test_pressed_at_open(void)
@@ -359,6 +398,27 @@ static void test_failed_release(void)
 	check(sample(false, true, 2640) == HOLD_WAITING && sample(true, true, 2660) == HOLD_PROGRESS && sample(true, true, 5659) == HOLD_PROGRESS &&
 	      sample(true, true, 5660) == HOLD_CONFIRMED, "a release of 300 ms seen after failed readings counts: the hold is confirmed");
 
+	// The reading at 990 fails, the dialog opens at 1000, the first reading that succeeds is the one at 1010
+	hold_init(&hold);
+	sample(false, true, 0);
+	hold_sample(&hold, false, false, true, 990);
+	hold_open(&hold, 1000);
+	check(samples(false, true, 1010, 1290, HOLD_WAITING) == 0 && sample(false, true, 1300) == HOLD_WAITING && sample(true, true, 1305) == HOLD_WAITING,
+	      "a dialog opened behind a failed reading, 300 ms later: no release seen, the first reading that succeeded is 290 ms old");
+	hold_init(&hold);
+	sample(false, true, 0);
+	hold_sample(&hold, false, false, true, 990);
+	hold_open(&hold, 1000);
+	samples(false, true, 1010, 1290, HOLD_WAITING);
+	check(sample(false, true, 1310) == HOLD_WAITING && sample(true, true, 1311) == HOLD_PROGRESS, "300 ms after that first reading the release is seen");
+
+	// The reading at 2000 fails, the knob is turned at 2010, the first reading that succeeds is the one at 2020
+	open_pressed();
+	failed_samples(2000, 2000);
+	hold_activity(&hold, 2010);
+	check(samples(false, true, 2020, 2280, HOLD_WAITING) == 0 && sample(false, true, 2300) == HOLD_WAITING && sample(true, true, 2310) == HOLD_WAITING,
+	      "a turn of the knob behind a failed reading does not make that reading a release: 300 ms after it no release is seen");
+
 	// A release that was seen stays seen
 	begin_hold();
 	check(failed_samples(1340, 1700) == 0 && sample(true, true, 1720) == HOLD_PROGRESS, "failed readings after the release was seen do not take it back");
@@ -424,6 +484,15 @@ static void test_clock(void)
 	hold_open(&hold, 1000);
 	check(sample(false, true, 1300) == HOLD_WAITING && sample(true, true, 1320) == HOLD_PROGRESS, "300 ms after that opening the release is seen");
 
+	open_pressed();
+	samples(false, true, 2000, 2200, HOLD_WAITING);
+	check(sample(false, true, 1000) == HOLD_WAITING && sample(false, true, 1099) == HOLD_WAITING && sample(true, true, 1100) == HOLD_WAITING,
+	      "the time steps back after 200 ms released: 99 ms more are 299 ms, no release seen");
+	open_pressed();
+	samples(false, true, 2000, 2200, HOLD_WAITING);
+	check(sample(false, true, 1000) == HOLD_WAITING && sample(false, true, 1100) == HOLD_WAITING && sample(true, true, 1120) == HOLD_PROGRESS,
+	      "the time steps back after 200 ms released: the 200 ms stay, 100 ms more complete the release");
+
 	begin_hold();
 	sample(true, true, 2320);
 	hold_activity(&hold, 1000);
@@ -452,6 +521,7 @@ static void test_clock(void)
 
 static void test_clock_limits(void)
 {
+	const uint64_t two_32 = 4294967296ull;
 	uint64_t start = UINT64_MAX - 4320;
 
 	// The scene of test_sequence shifted so that it ends with the largest time
@@ -473,6 +543,17 @@ static void test_clock_limits(void)
 	check(sample(true, true, UINT64_MAX) == HOLD_PROGRESS && sample(true, true, 0) == HOLD_PROGRESS && hold_permille(&hold, 0) == 333,
 	      "the time wraps from the largest to 0 after 1000 ms of a hold: a step back, nothing is confirmed");
 	check(sample(true, true, 1999) == HOLD_PROGRESS && sample(true, true, 2000) == HOLD_CONFIRMED, "the hold goes on behind the wrap and is confirmed after 3000 ms counted");
+
+	// The time is 64 bits wide: 2^32 ms are 49.7 days
+	hold_init(&hold);
+	sample(true, false, 1000);
+	check(sample(true, false, 1000 + two_32 + 5) == HOLD_STUCK, "a reading 2^32 + 5 ms after the press: the time passed, the switch hangs");
+	hold_init(&hold);
+	sample(true, false, two_32 - 5000);
+	check(sample(true, false, two_32 + 5000) == HOLD_WAITING && sample(true, false, two_32 - 1) == HOLD_WAITING,
+	      "the time steps back from 2^32 + 5000 to 2^32 - 1 during a press: no time passed");
+	check(sample(true, false, two_32 + 9998) == HOLD_WAITING && sample(true, false, two_32 + 9999) == HOLD_STUCK,
+	      "20000 ms counted over that step back: the switch hangs, the lower 32 bits of the time alone say nothing");
 
 	hold_init(&hold);
 	sample(true, false, UINT64_MAX - 100);

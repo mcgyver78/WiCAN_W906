@@ -36,6 +36,14 @@ SOURCES_texts       := texts.c
 SOURCES_nav         := nav.c layout.c catalog.c values.c fmt.c json.c
 SOURCES_link        := link.c net_select.c
 SOURCES_touch       := touch.c
+SOURCES_poll        := poll.c conn.c dtc_flow.c values.c catalog.c wican_state.c dtc_model.c guard.c json.c
+SOURCES_scene       := scene.c nav.c layout.c catalog.c values.c fmt.c json.c conn.c dtc_flow.c dtc_model.c \
+                       dtc_view.c hold.c access.c guard.c texts.c
+APP_SOURCES         := app.c poll.c link.c scene.c nav.c knob.c hold.c access.c settings.c layout.c catalog.c \
+                       values.c fmt.c json.c conn.c dtc_flow.c dtc_model.c dtc_view.c guard.c texts.c \
+                       wican_state.c net_select.c
+SOURCES_app         := $(APP_SOURCES)
+SOURCES_app_web     := app_web.c web_route.c web_json.c ota_check.c $(APP_SOURCES)
 
 .PHONY: all clean
 

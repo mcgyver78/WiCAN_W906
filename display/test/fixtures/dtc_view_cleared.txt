@@ -1,0 +1,7 @@
+Gelöscht 3 von 5 - verbleibend 2
+Rückhaltesystem - Löschen nicht bestätigt
+SAM - 662 · 1 Fehler
+  9301 - Status 60
+Rückhaltesystem - 6BC · 1 Fehler
+  9100 - Status E0
+Collision Prevention Assist - keine Antwort

@@ -119,6 +119,14 @@ static void test_number_rounding(void)
 	check(number_is(nextafter(0.5, 0), 0, "0"), "the largest number below 0.5 rounds to 0");
 	check(number_is(nextafter(1.5, 0), 0, "1") && number_is(nextafter(2.5, 0), 0, "2"), "the largest numbers below 1.5 and 2.5 round down");
 	check(number_is(nextafter(0.5, 1), 0, "1") && number_is(nextafter(-0.5, -1), 0, "-1"), "the smallest number above 0.5 rounds up");
+	// The same next to a half of the last decimal. The products are the doubles 0.49999999999999994, 2.4999999999999996,
+	// 12.499999999999998 and 62.499999999999993.
+	check(number_is(nextafter(0.05, 0), 1, "0,0") && number_is(nextafter(0.25, 0), 1, "0,2") && number_is(nextafter(-0.25, 0), 1, "-0,2"),
+	      "the largest numbers below 0.05 and 0.25 round down with 1 decimal");
+	check(number_is(nextafter(0.125, 0), 2, "0,12") && number_is(nextafter(0.0625, 0), 3, "0,062"),
+	      "the largest numbers below 0.125 and 0.0625 round down with 2 and 3 decimals");
+	check(number_is(nextafter(0.25, 1), 1, "0,3") && number_is(nextafter(0.125, 1), 2, "0,13") && number_is(nextafter(0.0625, 1), 3, "0,063"),
+	      "the smallest numbers above these halves round up");
 
 	// Numbers whose nearest double lies just below the half. What is rounded is the product as a double, and
 	// 443.65 * 10 is the double 4436.5: the exact product 4436.4999999999997726 is nearer to it than to the
@@ -159,8 +167,12 @@ static void test_number_decimals(void)
 
 static void test_number_limits(void)
 {
+	static const double beyond[] = {1000000000000.0001220703125, 1e13, -1e13, 1e15, 1e19, -1e19, 1e300, DBL_MAX, -DBL_MAX, INFINITY, -INFINITY, NAN, -NAN};
 	double below = nextafter(1e12, 0);
+	bool at_limit = true, above = true;
 	char out[ROOM];
+	int decimals;
+	size_t i;
 
 	check(number_is(999999999999.0, 0, "999999999999"), "the largest whole number below the limit");
 	check(number_is(999999999999.999, 3, "999999999999,999") && number_is(-999999999999.999, 3, "-999999999999,999"), "twelve digits and three decimals");
@@ -171,11 +183,24 @@ static void test_number_limits(void)
 	      "the number nearest to the limit with fewer decimals");
 	check(number_refused(1e12, 0) && number_refused(1e12, 3), "1e12 is refused with an empty string");
 	check(number_refused(-1e12, 0) && number_refused(-1e12, 3), "-1e12 is refused");
+	for(decimals = -1; decimals <= 5; decimals++)
+	{
+		if(!number_refused(1e12, decimals) || !number_refused(-1e12, decimals)) at_limit = false;
+	}
+	check(at_limit, "1e12 and -1e12 are refused with every count of decimals from -1 to 5");
 	check(number_refused(nextafter(1e12, 2e12), 0) && number_refused(1e15, 0) && number_refused(1e19, 0) && number_refused(-1e19, 2) &&
 	      number_refused(1e300, 0) && number_refused(DBL_MAX, 3) && number_refused(-DBL_MAX, 3), "larger magnitudes are refused");
 	check(number_refused(NAN, 0) && number_refused(NAN, 3) && number_refused(-NAN, 1), "NaN is refused with an empty string");
 	check(number_refused(INFINITY, 0) && number_refused(INFINITY, 3), "infinity is refused");
 	check(number_refused(-INFINITY, 0) && number_refused(-INFINITY, 2), "minus infinity is refused");
+	for(decimals = -1; decimals <= 5; decimals++)
+	{
+		for(i = 0; i < sizeof(beyond) / sizeof(beyond[0]); i++)
+		{
+			if(!number_refused(beyond[i], decimals)) above = false;
+		}
+	}
+	check(above, "larger magnitudes, infinities and NaN are refused with every count of decimals from -1 to 5");
 
 	memset(out, GUARD, sizeof(out));
 	check(!fmt_number(NAN, 1, out, 0) && !fmt_number(1e12, 1, out, 0) && (unsigned char)out[0] == GUARD, "a refused value and no room: nothing is written");
@@ -352,6 +377,25 @@ static void test_number_model(void)
 	}
 	check(wrong == 0, "200000 random exact halves of every size and with every count of decimals round away from zero");
 
+	// The doubles next to such a half on either side. They are no halves any more, but their product may be
+	// one: the product as a double decides, rounded half away from zero by the C library.
+	wrong = 0;
+	for(i = 0; i < 200000; i++)
+	{
+		int64_t odd;
+		int bits;
+		double value;
+
+		decimals = (int)(random_next() % 4);
+		bits = 1 + (int)(random_next() % (39 + decimals + 1));
+		odd = (int64_t)((((uint64_t)random_next() << 24) | random_next()) & ((1ull << bits) - 1)) | 1;
+		value = ldexp((double)odd, -(decimals + 1));
+		value = nextafter(value, random_next() % 2 ? 0 : 1e12);
+		if(random_next() % 2) value = -value;
+		if(!model_agrees(value, decimals, llround(value * scales[decimals]), &shown)) wrong++;
+	}
+	check(wrong == 0, "200000 random doubles next to an exact half on either side: the product as a double decides");
+
 	// Numbers that end in a 5 behind the last decimal shown, as a text would give them: the doubles lie next
 	// to the half on either side. The expected number is the product as a double, rounded half away from
 	// zero by the C library.
@@ -407,6 +451,10 @@ static void test_label_examples(void)
 	check(label_is("Abc", "Abc") && label_is("A", "A"), "a label that is already right stays");
 	check(label_is("a_bc_def_ghij_klmno_pqrstu_vwxyz", "A Bc Def Ghij Klmno Pqrstu Vwxyz") && label_is("A_BC_DEF_GHIJ_KLMNO_PQRSTU_VWXYZ", "A Bc Def Ghij Klmno Pqrstu Vwxyz"),
 	      "every word of a long name gets its upper case letter, however far behind");
+	check(label_is("diesel_particulate_filter_differential_pressure_sensor_voltage", "Diesel Particulate Filter Differential Pressure Sensor Voltage"),
+	      "a name of 62 bytes in lower case: the words at its end get their upper case letter as well");
+	check(label_is("DIESEL_PARTICULATE_FILTER_DIFFERENTIAL_PRESSURE_SENSOR_VOLTAGE", "Diesel Particulate Filter Differential Pressure Sensor Voltage"),
+	      "a name of 62 bytes in upper case: the letters at its end become lower case as well");
 
 	check(label_is("O2_SENSOR_1", "O2 Sensor 1") && label_is("0-100_KMH", "0-100 Kmh"), "digits and signs are passed on");
 	check(label_is("1ST", "1st") && label_is("_9aB", "9ab"), "a word that starts with a digit has no upper case letter");
@@ -459,6 +507,8 @@ static void test_label_sizes(void)
 	} cases[] = {
 		{"ENGINE_OIL_TEMP", "Engine Oil Temp"}, {"A", "A"}, {"A_B", "A B"}, {"AB_", "Ab"}, {"_AB", "Ab"},
 		{"__A__B__", "A B"}, {"", ""}, {"__", ""}, {"K\303\234HLER_TEMP", "K\303\234hler Temp"},
+		// 62 bytes: with its zero it fills the largest buffer but one byte
+		{"DIESEL_PARTICULATE_FILTER_DIFFERENTIAL_PRESSURE_SENSOR_VOLTAGE", "Diesel Particulate Filter Differential Pressure Sensor Voltage"},
 	};
 	bool fits = true, exact = true, short_refused = true, short_empty = true, none = true, guards = true;
 	size_t i, size, k;

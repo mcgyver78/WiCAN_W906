@@ -106,6 +106,9 @@ static void test_ok(void)
 	memset(version, GUARD, sizeof(version));
 	check(ota_check(longer, sizeof(longer), FILE_SIZE, SLOT, version, sizeof(version)) == OTA_CHECK_OK && strcmp(version, VERSION) == 0,
 	      "more than 112 bytes given: the rest is not looked at");
+	// The block of the image ends behind its 112 bytes: whatever is announced, nothing behind them may be read
+	check(ota_check(image, 4096, FILE_SIZE, SLOT, NULL, 0) == OTA_CHECK_OK && ota_check(image, 1000000, FILE_SIZE, SLOT, NULL, 0) == OTA_CHECK_OK &&
+	      ota_check(image, SIZE_MAX, FILE_SIZE, SLOT, NULL, 0) == OTA_CHECK_OK, "a first block of 4096 bytes, of a megabyte or of the largest length is accepted");
 }
 
 static void test_too_short(void)
@@ -500,6 +503,55 @@ static void test_version_utf8(void)
 	check(version_is("ab\177c", 3, "ab") && version_is("ab\300c", 3, "ab"), "0x7F and 0xC0, the bytes next to the continuation bytes, start a character");
 }
 
+// Where a text of whole characters may be cut so that `room` bytes are enough: behind the last character
+// that fits. Follows the characters by the length their first byte announces.
+static size_t whole_characters(const char *text, size_t room)
+{
+	size_t at = 0;
+
+	while(text[at] != '\0')
+	{
+		unsigned char first = (unsigned char)text[at];
+		size_t bytes = first < 0x80 ? 1 : first < 0xE0 ? 2 : first < 0xF0 ? 3 : 4;
+
+		if(at + bytes > room) break;
+		at += bytes;
+	}
+	return at;
+}
+
+// Versions that fill the 31 bytes with characters of 2, 3 and 4 bytes, in every size of buffer
+static void test_version_utf8_sizes(void)
+{
+	static const char *const texts[4] = {
+		// 15 times "ä" and "x"
+		"\303\244\303\244\303\244\303\244\303\244\303\244\303\244\303\244\303\244\303\244\303\244\303\244\303\244\303\244\303\244x",
+		// 10 times "€" and "y"
+		"\342\202\254\342\202\254\342\202\254\342\202\254\342\202\254\342\202\254\342\202\254\342\202\254\342\202\254\342\202\254y",
+		// 7 vans and "abc"
+		"\360\237\232\220\360\237\232\220\360\237\232\220\360\237\232\220\360\237\232\220\360\237\232\220\360\237\232\220abc",
+		// 3 times "aä€" and a van, and "z"
+		"a\303\244\342\202\254\360\237\232\220a\303\244\342\202\254\360\237\232\220a\303\244\342\202\254\360\237\232\220z",
+	};
+	char expected[TEXT_BYTES];
+	int wrong = 0, count = 0, i;
+	size_t size, kept;
+
+	for(i = 0; i < 4; i++)
+	{
+		if(strlen(texts[i]) != TEXT_BYTES - 1) wrong++;
+		for(size = 0; size <= 40; size++)
+		{
+			kept = size == 0 ? 0 : whole_characters(texts[i], size - 1);
+			memcpy(expected, texts[i], kept);
+			expected[kept] = '\0';
+			if(!version_is(texts[i], size, expected)) wrong++;
+			count++;
+		}
+	}
+	check(count == 4 * 41 && wrong == 0, "versions of 31 bytes made of characters of 2, 3 and 4 bytes are cut behind the last whole character in every buffer of 0 to 40 bytes");
+}
+
 // Every length of version in every size of buffer, for an image of the display and for another project
 static void test_version_lengths(void)
 {
@@ -712,6 +764,7 @@ int main(void)
 	test_every_byte();
 	test_version();
 	test_version_utf8();
+	test_version_utf8_sizes();
 	test_version_lengths();
 	test_random_images();
 	check(same_without_buffer, "every result is the same without a buffer or without room for the version");

@@ -40,6 +40,13 @@ MUTATIONS = [
     ("net_ssid_of_32_bytes_equals_longer_text", T, F,
      "\t\tif(stored[i] != ssid[i]) return false;", "\t\tif(stored[i] != ssid[i]) return i == NET_SSID_SIZE - 1 && stored[i] == '\\0';"),
 
+    ("net_ssid_byte_10_not_compared", T, F, "\t\tif(stored[i] != ssid[i]) return false;", "\t\tif(i != 10 && stored[i] != ssid[i]) return false;"),
+    ("net_ssid_byte_5_not_compared", T, F, "\t\tif(stored[i] != ssid[i]) return false;", "\t\tif(i != 5 && stored[i] != ssid[i]) return false;"),
+    ("net_ssid_tab_equals_space", T, F,
+     "\t\tif(stored[i] != ssid[i]) return false;", "\t\tif(stored[i] != ssid[i] && !(stored[i] == '\\t' && ssid[i] == ' ')) return false;"),
+    ("net_ssid_space_at_end_of_stored_ignored", T, F,
+     "\t\tif(stored[i] != ssid[i]) return false;", "\t\tif(stored[i] != ssid[i]) return stored[i] == ' ' && ssid[i] == '\\0' && stored[i + 1] == '\\0';"),
+
     # the list is as long as profile_count says
     ("net_find_looks_behind_the_count", T, F,
      "\tfor(int i = 0; i < profile_count; i++)\n\t{\n\t\tif(ssid_equals(profiles[i].ssid, ssid)) return i;",
@@ -84,6 +91,10 @@ MUTATIONS = [
     ("net_choose_skips_profile_with_password_and_host", T, F,
      "\t\tif(profiles[i].ssid[0] == '\\0') continue;",
      "\t\tif(profiles[i].ssid[0] == '\\0' || (profiles[i].host[0] != '\\0' && profiles[i].password[0] != '\\0' && i == NET_PROFILES_MAX - 1)) continue;"),
+    ("net_choose_ssid_with_space_first_skipped", T, F,
+     "\t\tif(profiles[i].ssid[0] == '\\0') continue;", "\t\tif(profiles[i].ssid[0] == '\\0' || profiles[i].ssid[0] == ' ') continue;"),
+    ("net_choose_ssid_with_high_byte_first_skipped", T, F,
+     "\t\tif(profiles[i].ssid[0] == '\\0') continue;", "\t\tif(profiles[i].ssid[0] == '\\0' || (profiles[i].ssid[0] & 0x80) != 0) continue;"),
     ("net_choose_empty_ssid_ends_the_list", T, F, "\t\tif(profiles[i].ssid[0] == '\\0') continue;", "\t\tif(profiles[i].ssid[0] == '\\0') break;"),
     ("net_choose_order_of_the_scan", T, F,
      CHOOSE,
@@ -117,6 +128,15 @@ MUTATIONS = [
     ("net_host_gateway_only_with_factory_password", T, F,
      "\tif(net_is_wican_ap(profile->ssid)) return NET_HOST_GATEWAY;",
      "\tif(net_is_wican_ap(profile->ssid) && (net_is_factory_password(profile->password) || profile->password[0] == '\\0')) return NET_HOST_GATEWAY;"),
+
+    ("net_host_ignored_without_ssid", T, F,
+     "\tif(profile->host[0] != '\\0') return NET_HOST_GIVEN;", "\tif(profile->host[0] != '\\0' && profile->ssid[0] != '\\0') return NET_HOST_GIVEN;"),
+    ("net_host_wican_without_underscore_is_gateway", T, F,
+     "\tif(net_is_wican_ap(profile->ssid)) return NET_HOST_GATEWAY;",
+     "\tif(net_is_wican_ap(profile->ssid) || strcmp(profile->ssid, \"WiCAN\") == 0) return NET_HOST_GATEWAY;"),
+    ("net_host_lower_case_ap_is_gateway", T, F,
+     "\tif(net_is_wican_ap(profile->ssid)) return NET_HOST_GATEWAY;",
+     "\tif(net_is_wican_ap(profile->ssid) || strncmp(profile->ssid, \"wican_\", 6) == 0) return NET_HOST_GATEWAY;"),
 
     # net_is_wican_ap
     ("net_ap_beginning_of_the_prefix_counts", T, F,
@@ -193,6 +213,23 @@ MUTATIONS = [
     ("net_store_refusal_changes_the_list", T, F,
      "\tif(password_length > 0 && password_length < WPA2_PASSWORD_MIN) return -1;",
      "\tif(password_length > 0 && password_length < WPA2_PASSWORD_MIN)\n\t{\n\t\tif(profile_count > 0) profiles[0].password[0] = '\\0';\n\t\treturn -1;\n\t}"),
+    # nothing but the lengths of the texts decides
+    ("net_store_ssid_with_space_first_refused", T, F,
+     "\tif(ssid[0] == '\\0' || strlen(ssid) >= NET_SSID_SIZE) return -1;", "\tif(ssid[0] == '\\0' || ssid[0] == ' ' || strlen(ssid) >= NET_SSID_SIZE) return -1;"),
+    ("net_store_ssid_with_high_byte_first_refused", T, F,
+     "\tif(ssid[0] == '\\0' || strlen(ssid) >= NET_SSID_SIZE) return -1;", "\tif(ssid[0] == '\\0' || (ssid[0] & 0x80) != 0 || strlen(ssid) >= NET_SSID_SIZE) return -1;"),
+    ("net_store_short_password_with_space_first_accepted", T, F,
+     "\tif(password_length > 0 && password_length < WPA2_PASSWORD_MIN) return -1;",
+     "\tif(password_length > 0 && password_length < WPA2_PASSWORD_MIN && password[0] != ' ') return -1;"),
+    ("net_store_password_with_high_byte_first_refused", T, F,
+     "\tif(password_length > 0 && password_length < WPA2_PASSWORD_MIN) return -1;",
+     "\tif((password_length > 0 && password_length < WPA2_PASSWORD_MIN) || (password[0] & 0x80) != 0) return -1;"),
+    ("net_store_host_with_space_refused", T, F,
+     "\tif(strlen(host) >= NET_HOST_SIZE) return -1;", "\tif(strlen(host) >= NET_HOST_SIZE || strchr(host, ' ') != NULL) return -1;"),
+    ("net_store_host_with_colon_refused", T, F,
+     "\tif(strlen(host) >= NET_HOST_SIZE) return -1;", "\tif(strlen(host) >= NET_HOST_SIZE || strchr(host, ':') != NULL) return -1;"),
+    ("net_store_host_of_39_with_dot_refused", T, F,
+     "\tif(strlen(host) >= NET_HOST_SIZE) return -1;", "\tif(strlen(host) >= NET_HOST_SIZE - (strchr(host, '.') != NULL)) return -1;"),
     ("net_store_list_size_changed", T, H, "#define NET_PROFILES_MAX    4", "#define NET_PROFILES_MAX    5"),
 
     # net_store: where the profile goes

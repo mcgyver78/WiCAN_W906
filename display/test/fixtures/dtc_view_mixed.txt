@@ -1,0 +1,17 @@
+10 Fehler - 8 Steuergeräte · 36 s
+Motorelektronik - 7E0 · 6 Fehler
+  P0100-13 - aktiv
+  P242F-FA - gespeichert
+4 Codes nicht übertragen
+SAM - 662 · 2 Fehler
+  9301 - Status 60
+  9302
+ESP - 784 · 2 Fehler
+  U0100-87 - gespeichert
+1 Code nicht übertragen
+ESP - abgelehnt (NRC 22)
+Collision Prevention Assist - keine Antwort
+Rückhaltesystem - Antwort ausstehend
+Fahrertür - unvollständig
+Radio - unbekannter Status
+1 Steuergerät ohne Fehler

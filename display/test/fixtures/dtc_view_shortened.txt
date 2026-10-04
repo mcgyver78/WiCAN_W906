@@ -1,0 +1,18 @@
+165 Fehler - 18 Steuergeräte · 35 s
+Motorelektronik - 7E0 · 80 Fehler
+80 Codes nicht übertragen
+ESP - 784 · 75 Fehler
+75 Codes nicht übertragen
+SAM - 662 · 2 Fehler
+  9301 - Status 60
+  9302 - Status 60
+Kraftstoffpumpe - 778 · 8 Fehler
+  P0190-11 - gespeichert
+  P0191-11 - gespeichert
+  P0192-11 - gespeichert
+  P0193-11 - gespeichert
+  P0194-11 - gespeichert
+  P0195-11 - gespeichert
+  P0196-11 - gespeichert
+  P0197-11 - gespeichert
+14 Steuergeräte ohne Fehler

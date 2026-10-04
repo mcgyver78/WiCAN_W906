@@ -1,0 +1,2 @@
+0 Fehler - 18 Steuergeräte · 35 s
+18 Steuergeräte ohne Fehler

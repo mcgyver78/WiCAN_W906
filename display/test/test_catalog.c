@@ -432,6 +432,9 @@ static void test_config_members(void)
 	      "an object with a text named error is a configuration that names nothing");
 	check(config("{\"error\":{\"unit\":\"u\"}}") && box.catalog.count == 2 && entry_is(1, "error", "u", "", true, false),
 	      "an object named error alone in a configuration is a value like any other");
+	check(config("{\"A\":null}") && box.catalog.count == 1 && config("{\"A\":{}}") && box.catalog.count == 2 && config("{\"A\":5}") && box.catalog.count == 1 &&
+	      config("{\"A\":{}}") && config("{\"A\":false}") && box.catalog.count == 1 && config("{\"A\":{}}") && config("{\"A\":[]}") && box.catalog.count == 1 &&
+	      battery_is_first(), "a single member that is null, a number, false or an array is a configuration that names nothing");
 
 	// Known ones are updated in place
 	start();
@@ -480,12 +483,44 @@ static void test_config_invalid(void)
 		{" ", "no configuration: a space"},
 		{"\n\t \r", "no configuration: nothing but whitespace"},
 	};
-	size_t i;
+	size_t i, cut;
+	int wrong = 0;
 
 	start();
 	check(config("{\"B\":{},\"A\":{\"unit\":\"u\",\"class\":\"c\"}}") && deliver("{\"B\":1}") && box.catalog.count == 3, "a catalogue before the invalid texts");
 	remember();
 	for(i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) check(!config(invalid[i].json) && unchanged(), invalid[i].what);
+
+	// A body that the connection cut off is no configuration, wherever it ends: an object is only whole with its last byte
+	check(read_fixture("../../tools/w906/fixtures/car_config_w906.json", text, sizeof(text)), "fixture configuration of the W906, to be cut off");
+	cut = strlen(text);
+	for(i = 0; i < cut; i++)
+	{
+		if(catalog_apply_config(&box.catalog, text, i, work, CATALOG_TOKENS) || !unchanged()) wrong++;
+	}
+	check(cut > 1700 && wrong == 0, "the configuration of the W906 cut off after any number of its bytes is no configuration, nothing changed");
+
+	// The same when the display starts and the catalogue is fresh
+	for(i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++)
+	{
+		start();
+		remember();
+		if(config(invalid[i].json) || !unchanged())
+		{
+			printf("  %s\n", invalid[i].what);
+			wrong++;
+		}
+	}
+	for(i = 0; i < cut; i++)
+	{
+		start();
+		remember();
+		if(catalog_apply_config(&box.catalog, text, i, work, CATALOG_TOKENS) || !unchanged()) wrong++;
+	}
+	check(wrong == 0, "none of these texts is a configuration for a fresh catalogue either, nothing changed");
+	start();
+	check(config("{\"B\":{},\"A\":{\"unit\":\"u\",\"class\":\"c\"}}") && deliver("{\"B\":1}") && box.catalog.count == 3, "the catalogue before the invalid texts again");
+	remember();
 
 	// Only `length` bytes belong to the text
 	check(!catalog_apply_config(&box.catalog, "{\"N\":{}}", 7, work, CATALOG_TOKENS) && unchanged(), "a length that ends before the last brace: no configuration");
@@ -642,6 +677,18 @@ static void test_limits(void)
 	many_config('P', 171, "u");
 	remember();
 	check(!config(text) && unchanged(), "171 values need 1027 tokens: no configuration");
+
+	// Exactly CATALOG_TOKENS tokens: 170 values are 1021, a member with an array of one number, which is ignored, three more
+	start();
+	many_config('P', 170, "u");
+	strcpy(text + strlen(text) - 1, ",\"X\":[1]}");
+	check(json_parse(text, strlen(text), large_work, 2048) == CATALOG_TOKENS && CATALOG_TOKENS == 1024, "170 values and an array of one number are 1024 tokens");
+	check(config(text) && box.catalog.count == CATALOG_MAX && box.catalog.dropped == 75 && find("X") == -1,
+	      "a configuration of exactly CATALOG_TOKENS tokens is applied");
+	strcpy(text + strlen(text) - 2, ",2]}");
+	remember();
+	check(json_parse(text, strlen(text), large_work, 2048) == CATALOG_TOKENS + 1 && !config(text) && unchanged(),
+	      "one token more than CATALOG_TOKENS: no configuration");
 
 	// Exactly one place left
 	start();
@@ -836,9 +883,26 @@ static void test_cut(void)
 		{"123456789\xe2\x80\xbf", "123456789", "123456789\xe2\x80\xbf", "cut: 0x80 and 0xbf, the first and the last continuation byte, are not cut off their character"},
 		{"1234567890\x7f\x7f", "1234567890\x7f", "1234567890\x7f\x7f", "cut: 0x7f is a character of its own"},
 	};
+	static const char *const escaped_what[] = {
+		"cut: 22 escaped characters, 132 bytes in the text, are a class of 22 bytes",
+		"cut: 23 escaped characters, 138 bytes in the text, fit a class completely",
+		"cut: 24 escaped characters are cut to a class of 23 bytes",
+	};
 	size_t i, at;
 
 	for(i = 0; i < sizeof(cuts) / sizeof(cuts[0]); i++) check(cut_is(cuts[i].raw, cuts[i].unit, cuts[i].value_class), cuts[i].what);
+
+	// The limit counts what the text stands for, however long it is written
+	for(i = 22; i <= 24; i++)
+	{
+		char raw[160] = "";
+		char value_class[32] = "";
+		size_t n;
+
+		for(n = 0; n < i; n++) strcat(raw, "\\u0041");
+		for(n = 0; n < i && n < 23; n++) strcat(value_class, "A");
+		check(strlen(raw) == 6 * i && cut_is(raw, "AAAAAAAAAAA", value_class), escaped_what[i - 22]);
+	}
 
 	// Texts the size of a whole answer. Put together by hand: gcc refuses a snprintf() of a text that might not fit.
 	start();
@@ -1080,6 +1144,20 @@ static void test_to_json(void)
 	      "to_json: it is JSON of 10 tokens per entry, CATALOG_TOKENS are enough to read it");
 	check(catalog_to_json(&box.catalog, out, (size_t)result) == -1 && out[0] == '\0' && catalog_to_json(&box.catalog, out, (size_t)result + 1) == result,
 	      "to_json: the largest catalogue needs exactly its length and one byte");
+
+	// And back: every byte of every name, unit and class was written as six
+	remember();
+	check(stored(out) && guards_intact() && box.catalog.count == CATALOG_MAX && box.catalog.dropped == 0 && battery_is_first(),
+	      "from_json: the largest catalogue is read again with CATALOG_TOKENS tokens");
+	all = true;
+	for(count = 1; count < CATALOG_MAX; count++)
+	{
+		const catalog_entry_t *entry = snapshot.catalog.entries + count;
+
+		if(strlen(entry->name) != 32 || strlen(entry->unit) != 11 || strlen(entry->value_class) != 23 ||
+		   !entry_is(count, entry->name, entry->unit, entry->value_class, false, false)) all = false;
+	}
+	check(all, "from_json: every name of 32, unit of 11 and class of 23 escaped bytes is whole again");
 }
 
 static void test_from_json(void)
@@ -1125,12 +1203,17 @@ static void test_from_json(void)
 		{"{\"N\":{\"unit\":\"u\",\"class\":\"c\",\"profile\":true},\"M\":7}", "from_json refuses: a good entry followed by a number"},
 		{"{\"M\":{\"class\":\"c\",\"profile\":false},\"N\":{\"unit\":\"u\",\"class\":\"c\",\"profile\":true}}", "from_json refuses: an entry without unit followed by a good one"},
 		{"{\"N\":{\"x\":{\"unit\":\"u\",\"class\":\"c\",\"profile\":true}}}", "from_json refuses: unit, class and profile one level too deep"},
+		{"{\"N\":{\"unit\":\"u\",\"class\":\"c\",\"profile\":true},\"M\":{\"unit\":5,\"class\":\"c\",\"profile\":true}}", "from_json refuses: a good entry followed by one whose unit is a number"},
+		{"{\"N\":{\"unit\":\"u\",\"class\":\"c\",\"profile\":true},\"M\":{\"unit\":null,\"class\":\"c\",\"profile\":true}}", "from_json refuses: a good entry followed by one whose unit is null"},
+		{"{\"N\":{\"unit\":\"u\",\"class\":\"c\",\"profile\":true},\"M\":{\"unit\":\"u\",\"class\":null,\"profile\":true}}", "from_json refuses: a good entry followed by one whose class is null"},
+		{"{\"N\":{\"unit\":\"u\",\"class\":\"c\",\"profile\":true},\"M\":{\"unit\":\"u\",\"class\":\"c\",\"profile\":\"x\"}}", "from_json refuses: a good entry followed by one whose profile is a text"},
+		{"{\"N\":{\"unit\":\"u\",\"class\":\"c\",\"profile\":true},\"M\":{\"unit\":\"u\",\"class\":\"c\",\"profile\":null}}", "from_json refuses: a good entry followed by one whose profile is null"},
 	};
 	static const char one[] = "{\"N\":{\"unit\":\"u\",\"class\":\"c\",\"profile\":true}}";
 	static char many_y[301];
-	size_t i;
+	size_t i, cut;
 	int good;
-	int wrong = 0;
+	int wrong = 0, fresh_wrong = 0, cut_wrong = 0;
 
 	// The stored catalogue written by hand
 	start();
@@ -1164,6 +1247,18 @@ static void test_from_json(void)
 	      "a battery entry that a profile changed");
 	check(stored("{\"A\":{\"unit\":\"u\",\"class\":\"c\",\"profile\":true}}") && battery_is_first() && entry_is(1, "A", "u", "c", true, false) && box.catalog.count == 2,
 	      "from_json: a text without the battery entry gives the battery entry of a fresh catalogue");
+
+	start();
+	many_config('P', CATALOG_MAX, "u");
+	check(config(text) && deliver("{\"P001\":1,\"P094\":2}") && box.catalog.count == CATALOG_MAX && box.catalog.dropped == 1, "a full catalogue with a dropped name");
+	check(stored("{\"A\":{\"unit\":\"u\",\"class\":\"c\",\"profile\":true}}") && box.catalog.count == 2 && battery_is_first() &&
+	      entry_is(1, "A", "u", "c", true, false) && box.catalog.dropped == 0 && find("P001") == -1 && find("P094") == -1,
+	      "from_json: a text with one entry replaces a full catalogue");
+
+	start();
+	snprintf(text, sizeof(text), "{\"%s\":{}}", name33);
+	check(config(text) && box.catalog.count == 1 && box.catalog.dropped == 1, "a catalogue with nothing but the battery and a dropped name");
+	check(stored("{}") && box.catalog.count == 1 && box.catalog.dropped == 0 && battery_is_first(), "from_json: an empty object is read there as well, dropped starts again");
 
 	start();
 	check(stored("{}") && box.catalog.count == 1 && battery_is_first(), "from_json: an empty object gives a fresh catalogue");
@@ -1202,6 +1297,33 @@ static void test_from_json(void)
 	for(i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) check(!stored(refused[i].json) && unchanged(), refused[i].what);
 	check(read_fixture("../../tools/w906/fixtures/car_config_w906.json", text, sizeof(text)) && !stored(text) && unchanged(),
 	      "from_json refuses: a configuration of the adapter is no stored catalogue");
+
+	// The same when the display starts: nothing of a refused text gets into the fresh catalogue
+	for(i = 0; i < sizeof(refused) / sizeof(refused[0]); i++)
+	{
+		start();
+		remember();
+		if(stored(refused[i].json) || !unchanged())
+		{
+			printf("  %s\n", refused[i].what);
+			fresh_wrong++;
+		}
+	}
+	check(fresh_wrong == 0, "from_json refuses every one of these texts for a fresh catalogue as well, nothing changed");
+
+	// What the flash gives back after a write that was interrupted: the stored catalogue cut off anywhere
+	check(read_fixture("fixtures/catalog_stored.json", text, sizeof(text)), "fixture stored catalogue, to be cut off");
+	cut = strlen(text);
+	for(i = 0; i < cut; i++)
+	{
+		start();
+		remember();
+		if(catalog_from_json(&box.catalog, text, i, work, CATALOG_TOKENS) || !unchanged()) cut_wrong++;
+	}
+	check(cut > 400 && cut_wrong == 0, "from_json refuses the stored catalogue cut off after any number of its bytes, nothing changed");
+	start();
+	check(config("{\"K\":{\"unit\":\"u\",\"class\":\"c\"},\"L\":{}}") && deliver("{\"L\":1}") && box.catalog.count == 3, "the catalogue before the refused texts again");
+	remember();
 	check(strlen(one) == 45 && !catalog_from_json(&box.catalog, one, 44, work, CATALOG_TOKENS) && unchanged(),
 	      "from_json refuses: a length that ends before the last brace");
 	check(catalog_from_json(&box.catalog, "{\"N\":{\"unit\":\"u\",\"class\":\"c\",\"profile\":true}}x", 45, work, CATALOG_TOKENS) &&
@@ -1237,6 +1359,18 @@ static void test_from_json(void)
 	check(!stored(text) && unchanged(), "from_json refuses: 110 entries need 1101 tokens, more than CATALOG_TOKENS");
 	check(catalog_from_json(&box.catalog, text, strlen(text), large_work, 2048) && guards_intact() && box.catalog.count == CATALOG_MAX &&
 	      box.catalog.dropped == 15 && many_are('S', CATALOG_MAX - 1, "u", false), "from_json: 110 entries with 2048 tokens are read, 15 dropped");
+
+	// Exactly CATALOG_TOKENS tokens: 101 entries are 1011, an entry with a member it does not know, an array of three numbers, 13 more
+	start();
+	many_stored('S', 101);
+	strcpy(text + strlen(text) - 1, ",\"X\":{\"unit\":\"u\",\"class\":\"c\",\"profile\":true,\"x\":[1,2,3]}}");
+	check(json_parse(text, strlen(text), large_work, 2048) == CATALOG_TOKENS, "101 entries and one with an array of three numbers are 1024 tokens");
+	check(stored(text) && box.catalog.count == CATALOG_MAX && box.catalog.dropped == 7 && many_are('S', CATALOG_MAX - 1, "u", false),
+	      "from_json: a text of exactly CATALOG_TOKENS tokens is read");
+	strcpy(text + strlen(text) - 3, ",4]}}");
+	remember();
+	check(json_parse(text, strlen(text), large_work, 2048) == CATALOG_TOKENS + 1 && !stored(text) && unchanged(),
+	      "from_json refuses: one token more than CATALOG_TOKENS");
 
 	// A member that is no entry is found wherever it stands, also behind more entries than there are places
 	for(good = CATALOG_MAX - 2; good <= CATALOG_MAX + 1; good++)
@@ -1416,6 +1550,9 @@ static void model_names(void)
 		snprintf(names[i], sizeof(names[i]), "X%03d", i);
 		while(strlen(names[i]) < length) strcat(names[i], "x");
 	}
+	// Names that look like the one of the battery are names like any other
+	strcpy(names[1], "@BATT");
+	strcpy(names[2], "@BATT_VV");
 }
 
 static void model_init(void)
@@ -1650,8 +1787,9 @@ static void test_model(void)
 	uint32_t seed;
 
 	model_names();
-	check(strcmp(names[0], CATALOG_BATTERY) == 0 && strlen(names[3]) == 32 && strlen(names[5]) == 33 && strcmp(names[12], "X012") == 0,
-	      "model: the pool has the battery and names of 4, 32 and 33 bytes");
+	check(strcmp(names[0], CATALOG_BATTERY) == 0 && strlen(names[3]) == 32 && strlen(names[5]) == 33 && strcmp(names[12], "X012") == 0 &&
+	      strcmp(names[1], "@BATT") == 0 && strcmp(names[2], "@BATT_VV") == 0,
+	      "model: the pool has the battery, two names that look like it, and names of 4, 32 and 33 bytes");
 	for(seed = 1; seed <= 40; seed++)
 	{
 		snprintf(what, sizeof(what), "model: 200 random steps with seed %lu behave as the rules say", (unsigned long)seed);

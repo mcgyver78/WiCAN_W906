@@ -137,7 +137,8 @@ static int range_permille(const layout_item_t *item, const value_t *value)
 	return (int)part;
 }
 
-// One value of a page. level, old: what the page says to the ring, raised by a value that is shown.
+// One value of a page. level, old: what the page says to the ring - the worst level of a value that is
+// shown, and whether a value is old or missing.
 static void build_item(const scene_input_t *input, conn_view_t view, const layout_item_t *item, scene_item_t *out, int *level, bool *old)
 {
 	const catalog_t *catalog = input->world->catalog;
@@ -160,6 +161,9 @@ static void build_item(const scene_input_t *input, conn_view_t view, const layou
 
 	if(!shown)
 	{
+		// A dash stands for a value that should be there: a page of dashes must not have the ring of a
+		// page on which all is well. What the profile does not provide is missed by nobody.
+		if(state != LAYOUT_ITEM_UNAVAILABLE) *old = true;
 		append(out->text, sizeof(out->text), state == LAYOUT_ITEM_UNAVAILABLE ? SCENE_UNAVAILABLE : SCENE_DASH);
 		return;
 	}
@@ -296,6 +300,17 @@ static void build_menu(const scene_input_t *input, scene_t *scene)
 	build_rows(input, NULL, NULL, choices, COUNT(choices), scene);
 }
 
+// What the list of the own read holds: "3 Fehler in 2 Steuergeräten"
+static void add_summary(scene_t *scene, const dtc_summary_t *summary)
+{
+	char *line = add_line(scene);
+
+	append_number(line, SCENE_TEXT_SIZE, summary->codes);
+	append(line, SCENE_TEXT_SIZE, " Fehler in ");
+	append_number(line, SCENE_TEXT_SIZE, summary->ecus_with_codes);
+	append(line, SCENE_TEXT_SIZE, summary->ecus_with_codes == 1 ? " Steuergerät" : " Steuergeräten");
+}
+
 static void build_dtc(const scene_input_t *input, scene_t *scene)
 {
 	const nav_world_t *world = input->world;
@@ -310,6 +325,35 @@ static void build_dtc(const scene_input_t *input, scene_t *scene)
 
 	set_title(scene, "Fehlerspeicher");
 	set_note(scene, text_block(input->read_block));
+	// Where the own request stands: the rows only tell what can be done
+	switch(input->flow->phase)
+	{
+		case DTC_FLOW_READ_SENT:
+		case DTC_FLOW_READING:
+			add_text(scene, "Lesen läuft …");
+			break;
+		case DTC_FLOW_LIST:
+			if(input->summary != NULL) add_summary(scene, input->summary);
+			else add_text(scene, "Liste gelesen");
+			break;
+		case DTC_FLOW_CLEAR_SENT:
+		case DTC_FLOW_CLEARING:
+			add_text(scene, "Löschen läuft …");
+			break;
+		case DTC_FLOW_CLEARED:
+			add_text(scene, "Gelöscht");
+			break;
+		case DTC_FLOW_FAILED:
+			add_text(scene, "Letzter Auftrag fehlgeschlagen");
+			break;
+		case DTC_FLOW_UNKNOWN:
+			add_text(scene, "Stand des Löschens unbekannt");
+			break;
+		// DTC_FLOW_IDLE, and what is no phase: nav.h takes that for idle as well
+		default:
+			add_text(scene, "Noch nicht gelesen");
+			break;
+	}
 	build_rows(input, NULL, NULL, choices, COUNT(choices), scene);
 }
 
@@ -385,18 +429,8 @@ static void build_choice(const scene_input_t *input, const char *act, scene_t *s
 
 static void build_clear_dialog(const scene_input_t *input, scene_t *scene)
 {
-	const dtc_summary_t *summary = input->summary;
-
 	set_title(scene, "Fehler löschen?");
-	if(summary != NULL)
-	{
-		char *line = add_line(scene);
-
-		append_number(line, SCENE_TEXT_SIZE, summary->codes);
-		append(line, SCENE_TEXT_SIZE, " Fehler in ");
-		append_number(line, SCENE_TEXT_SIZE, summary->ecus_with_codes);
-		append(line, SCENE_TEXT_SIZE, summary->ecus_with_codes == 1 ? " Steuergerät" : " Steuergeräten");
-	}
+	if(input->summary != NULL) add_summary(scene, input->summary);
 	add_text(scene, "Betrifft alle Steuergeräte, auch SRS und ESP.");
 	add_text(scene, "Zündung an, Motor aus, Fahrzeug steht.");
 	set_note(scene, "Auf Löschen drehen, Knopf 3 s halten");
@@ -454,6 +488,7 @@ static void build_web(const scene_input_t *input, scene_t *scene)
 		{"Freigabe", release, true},
 		{"Zurück", "", true},
 	};
+	bool has_address = input->address != NULL && input->address[0] != '\0';
 	char *line;
 
 	if(seconds > 0)
@@ -464,7 +499,9 @@ static void build_web(const scene_input_t *input, scene_t *scene)
 	}
 
 	set_title(scene, "Web-Zugriff");
-	add_text(scene, input->address != NULL && input->address[0] != '\0' ? input->address : "Kein WLAN");
+	if(has_address) add_text(scene, input->address);
+	// With the own access point a phone joins the network named below: it is not to read that there is none
+	else if(!input->ap_on) add_text(scene, "Kein WLAN");
 	if(input->ap_on)
 	{
 		// What a phone needs to join the access point
@@ -630,6 +667,12 @@ void scene_build(const scene_input_t *input, scene_t *scene)
 	}
 
 	scene->ring = ring_state(view, state, level, old);
+	// These two screens have an arc of their own, and two arcs on one screen would be read as one
+	if((input->nav->screen == NAV_DTC_BUSY || input->nav->screen == NAV_DTC_CONFIRM) && scene->ring.kind == RING_PROGRESS)
+	{
+		scene->ring.kind = RING_NONE;
+		scene->ring.permille = 0;
+	}
 	build_overlay(input, scene);
 }
 

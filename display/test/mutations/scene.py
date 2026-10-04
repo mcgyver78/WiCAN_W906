@@ -30,7 +30,8 @@ LABEL = "\tif(item->label[0] != '\\0') append(out->label, sizeof(out->label), it
 MADE_LABEL = "\telse if(!fmt_label(item->key, out->label, sizeof(out->label))) memset(out->label, 0, sizeof(out->label));"
 WIDGET = "\tif(item->widget == LAYOUT_WIDGET_ARC || item->widget == LAYOUT_WIDGET_BAR || item->widget == LAYOUT_WIDGET_STATE) out->widget = item->widget;"
 NOT_SHOWN = "\t\tappend(out->text, sizeof(out->text), state == LAYOUT_ITEM_UNAVAILABLE ? SCENE_UNAVAILABLE : SCENE_DASH);\n\t\treturn;"
-IF_NOT_SHOWN = "\tif(!shown)\n\t{\n\t\tappend(out->text"
+IF_NOT_SHOWN = "\tif(!shown)\n\t{\n"
+MISSED = "\t\tif(state != LAYOUT_ITEM_UNAVAILABLE) *old = true;\n"
 LEVEL = "\tif(item_level > *level) *level = item_level;\n"
 OLD = "\tif(state == LAYOUT_ITEM_OLD) *old = true;\n"
 LIVE_TONE = "\tif(state == LAYOUT_ITEM_LIVE && view != CONN_VIEW_SCAN)"
@@ -86,10 +87,27 @@ LIST_NOTE = "\tif(world->can_clear)\n\t{\n\t\tset_note(scene, \"Löschen möglic
 LIST_TIME = "\t\tappend_time(scene->note, sizeof(scene->note), dtc_flow_seconds_left(input->flow, input->now_ms));\n"
 LIST_BLOCK = "\t\tset_note(scene, text_block(input->clear_block));"
 
+# What a list holds, for the fault memory and the clear dialog
+CODES = "\tappend_number(line, SCENE_TEXT_SIZE, summary->codes);\n"
+WITH_CODES = "\tappend_number(line, SCENE_TEXT_SIZE, summary->ecus_with_codes);"
+UNITS = "\tappend(line, SCENE_TEXT_SIZE, summary->ecus_with_codes == 1 ? \" Steuergerät\" : \" Steuergeräten\");"
+
+# Where the fault memory stands
+STAND = "\tswitch(input->flow->phase)\n"
+STAND_READ = "\t\tcase DTC_FLOW_READ_SENT:\n\t\tcase DTC_FLOW_READING:\n\t\t\tadd_text(scene, \"Lesen läuft …\");\n\t\t\tbreak;\n"
+STAND_LIST = ("\t\tcase DTC_FLOW_LIST:\n\t\t\tif(input->summary != NULL) add_summary(scene, input->summary);\n"
+              "\t\t\telse add_text(scene, \"Liste gelesen\");\n\t\t\tbreak;\n")
+STAND_SUMMARY = "\t\t\tif(input->summary != NULL) add_summary(scene, input->summary);\n\t\t\telse add_text(scene, \"Liste gelesen\");\n"
+STAND_CLEAR = "\t\tcase DTC_FLOW_CLEAR_SENT:\n\t\tcase DTC_FLOW_CLEARING:\n\t\t\tadd_text(scene, \"Löschen läuft …\");\n\t\t\tbreak;\n"
+STAND_CLEARED = "\t\tcase DTC_FLOW_CLEARED:\n\t\t\tadd_text(scene, \"Gelöscht\");\n\t\t\tbreak;\n"
+STAND_FAILED = "\t\tcase DTC_FLOW_FAILED:\n\t\t\tadd_text(scene, \"Letzter Auftrag fehlgeschlagen\");\n\t\t\tbreak;\n"
+STAND_UNKNOWN = "\t\tcase DTC_FLOW_UNKNOWN:\n\t\t\tadd_text(scene, \"Stand des Löschens unbekannt\");\n\t\t\tbreak;\n"
+STAND_IDLE = "\t\tdefault:\n\t\t\tadd_text(scene, \"Noch nicht gelesen\");\n\t\t\tbreak;\n"
+STAND_END = STAND_IDLE + "\t}\n"
+
 # The dialogs
 OPTION = "\tscene->option = input->nav->row > 0 ? 1 : 0;"
-SUMMARY = "\tif(summary != NULL)\n"
-UNITS = "\t\tappend(line, SCENE_TEXT_SIZE, summary->ecus_with_codes == 1 ? \" Steuergerät\" : \" Steuergeräten\");"
+SUMMARY = "\tif(input->summary != NULL) add_summary(scene, input->summary);\n\tadd_text(scene, \"Betrifft alle"
 WARN_ALL = "\tadd_text(scene, \"Betrifft alle Steuergeräte, auch SRS und ESP.\");\n"
 WARN_ENGINE = "\tadd_text(scene, \"Zündung an, Motor aus, Fahrzeug steht.\");\n"
 HOLD = "\tscene->permille = hold_permille(input->hold, input->now_ms);\n"
@@ -108,7 +126,9 @@ LEVEL_TITLE = "\tset_title(scene, input->world->night_mode ? \"Helligkeit (Nacht
 LEVEL_BIG = "\tappend_percent(scene->big, sizeof(scene->big), input->nav->value);"
 RELEASE = "\tuint32_t seconds = access_seconds_left(input->access, input->now_ms);"
 RELEASE_ON = "\tif(seconds > 0)\n"
-ADDRESS = "\tadd_text(scene, input->address != NULL && input->address[0] != '\\0' ? input->address : \"Kein WLAN\");"
+HAS_ADDRESS = "\tbool has_address = input->address != NULL && input->address[0] != '\\0';"
+ADDRESS = "\tif(has_address) add_text(scene, input->address);\n"
+NO_NETWORK = "\telse if(!input->ap_on) add_text(scene, \"Kein WLAN\");\n"
 AP = "\tif(input->ap_on)\n\t{\n"
 AP_NAME = "\t\tappend(line, SCENE_TEXT_SIZE, \"WLAN: \");\n\t\tappend(line, SCENE_TEXT_SIZE, input->ap_ssid);\n"
 AP_PASSWORD = "\t\tappend(line, SCENE_TEXT_SIZE, \"Passwort: \");\n\t\tappend(line, SCENE_TEXT_SIZE, input->ap_password);\n"
@@ -138,6 +158,8 @@ UPDATE_LEFT = "\t\t\tappend_time(line, SCENE_TEXT_SIZE, input->update_left_s);\n
 # scene_build()
 CLEAR = "\tmemset(scene, 0, sizeof(*scene));\n"
 RING = "\tscene->ring = ring_state(view, state, level, old);"
+OWN_ARC = "\tif((input->nav->screen == NAV_DTC_BUSY || input->nav->screen == NAV_DTC_CONFIRM) && scene->ring.kind == RING_PROGRESS)"
+RING_OFF = "\t\tscene->ring.kind = RING_NONE;\n"
 OVERLAY = "\tbuild_overlay(input, scene);\n"
 CLEARED = "\t\t\tset_title(scene, \"Gelöscht\");\n\t\t\tbuild_rows(input, input->cleared, NULL, done, COUNT(done), scene);"
 OLD_LIST = "\t\t\tset_title(scene, \"Zuletzt gelöscht\");\n\t\t\tbuild_rows(input, input->old, NULL, back, COUNT(back), scene);"
@@ -290,8 +312,26 @@ MUTATIONS = [
      "\t\tif(state == LAYOUT_ITEM_UNAVAILABLE) append(out->unit, sizeof(out->unit), layout_item_unit(item, catalog));\n\t\treturn;"),
     ("scene_item_dash_raises_level", T, F,
      IF_NOT_SHOWN, "\tif(value != NULL && layout_item_level(item, value) > *level) *level = layout_item_level(item, value);\n" + IF_NOT_SHOWN),
-    ("scene_item_dash_counts_as_old", T, F, IF_NOT_SHOWN, "\tif(state == LAYOUT_ITEM_OLD) *old = true;\n" + IF_NOT_SHOWN),
-    ("scene_item_gone_counts_as_old", T, F, IF_NOT_SHOWN, "\tif(state == LAYOUT_ITEM_NO_VALUE) *old = true;\n" + IF_NOT_SHOWN),
+    # a dash is missed, and the ring says so; what the profile does not provide is not
+    ("scene_item_dash_is_not_missed", T, F, MISSED, ""),
+    ("scene_item_unavailable_is_missed", T, F, MISSED, "\t\t*old = true;\n"),
+    ("scene_item_missed_swapped", T, F, MISSED, "\t\tif(state == LAYOUT_ITEM_UNAVAILABLE) *old = true;\n"),
+    ("scene_item_no_text_is_not_missed", T, F, MISSED, "\t\tif(state == LAYOUT_ITEM_NO_VALUE) *old = true;\n"),
+    ("scene_item_gone_is_not_missed", T, F, MISSED, "\t\tif(state == LAYOUT_ITEM_LIVE || state == LAYOUT_ITEM_OLD) *old = true;\n"),
+    ("scene_item_fresh_without_text_is_not_missed", T, F, MISSED, "\t\tif(state != LAYOUT_ITEM_UNAVAILABLE && state != LAYOUT_ITEM_LIVE) *old = true;\n"),
+    ("scene_item_never_seen_is_not_missed", T, F, MISSED, "\t\tif(state != LAYOUT_ITEM_UNAVAILABLE && value != NULL) *old = true;\n"),
+    ("scene_item_missed_only_with_profile", T, F,
+     MISSED, "\t\tif(state != LAYOUT_ITEM_UNAVAILABLE && catalog_find(catalog, item->key) >= 0) *old = true;\n"),
+    ("scene_item_missed_of_last_value", T, F, MISSED, "\t\t*old = state != LAYOUT_ITEM_UNAVAILABLE;\n"),
+    ("scene_item_missed_only_with_label", T, F, MISSED, "\t\tif(state != LAYOUT_ITEM_UNAVAILABLE && item->label[0] != '\\0') *old = true;\n"),
+    ("scene_item_missed_raises_level", T, F, MISSED, MISSED + "\t\tif(state != LAYOUT_ITEM_UNAVAILABLE && *level < 2) *level = 2;\n"),
+    ("scene_item_missed_only_during_scan", T, F, MISSED, "\t\tif(state != LAYOUT_ITEM_UNAVAILABLE && view == CONN_VIEW_SCAN) *old = true;\n"),
+    ("scene_item_missed_only_for_numbers", T, F, MISSED, "\t\tif(state != LAYOUT_ITEM_UNAVAILABLE && out->widget == LAYOUT_WIDGET_NUMBER) *old = true;\n"),
+    ("scene_item_missed_not_for_a_state", T, F, MISSED, "\t\tif(state != LAYOUT_ITEM_UNAVAILABLE && item->widget != LAYOUT_WIDGET_STATE) *old = true;\n"),
+    ("scene_item_missed_not_in_safe_mode", T, F, MISSED, "\t\tif(state != LAYOUT_ITEM_UNAVAILABLE && !input->safe_mode) *old = true;\n"),
+    ("scene_item_missed_not_when_hot", T, F, MISSED, "\t\tif(state != LAYOUT_ITEM_UNAVAILABLE && input->heat == GUARD_HEAT_NORMAL) *old = true;\n"),
+    ("scene_item_missed_toggles", T, F, MISSED, "\t\tif(state != LAYOUT_ITEM_UNAVAILABLE) *old = !*old;\n"),
+    ("scene_item_unavailable_is_missed_once_seen", T, F, MISSED, "\t\tif(state == LAYOUT_ITEM_NO_VALUE || value != NULL) *old = true;\n"),
     ("scene_item_level_not_told", T, F, LEVEL, "\t(void)level;\n"),
     ("scene_item_level_of_last_value", T, F, LEVEL, "\t*level = item_level;\n"),
     ("scene_item_level_of_first_value", T, F, LEVEL, "\tif(*level == 0) *level = item_level;\n"),
@@ -546,6 +586,80 @@ MUTATIONS = [
     ("scene_dtc_note_only_when_blocked_by_world", T, F,
      "\tset_note(scene, text_block(input->read_block));", "\tif(!world->can_read) set_note(scene, text_block(input->read_block));"),
     ("scene_dtc_rows_swapped", T, F, DTC_VIEW + DTC_OLD, DTC_OLD + DTC_VIEW),
+    ("scene_dtc_stand_by_world", T, F, STAND, "\tswitch(world->flow)\n"),
+    ("scene_dtc_stand_by_low_byte", T, F, STAND, "\tswitch((dtc_flow_phase_t)((unsigned)input->flow->phase & 0xFFu))\n"),
+    ("scene_dtc_stand_only_when_read_allowed", T, F, STAND, "\tif(world->can_read) switch(input->flow->phase)\n"),
+    ("scene_dtc_stand_only_without_note", T, F, STAND, "\tif(scene->note[0] == '\\0') switch(input->flow->phase)\n"),
+    ("scene_dtc_stand_summary_in_every_phase", T, F,
+     STAND, "\tif(input->summary != NULL) add_summary(scene, input->summary);\n\telse switch(input->flow->phase)\n"),
+    ("scene_dtc_stand_read_sent_is_idle", T, F, STAND_READ, STAND_READ.replace("\t\tcase DTC_FLOW_READ_SENT:\n", "")),
+    ("scene_dtc_stand_reading_is_idle", T, F, STAND_READ, STAND_READ.replace("\t\tcase DTC_FLOW_READING:\n", "")),
+    ("scene_dtc_stand_clear_sent_is_idle", T, F, STAND_CLEAR, STAND_CLEAR.replace("\t\tcase DTC_FLOW_CLEAR_SENT:\n", "")),
+    ("scene_dtc_stand_clearing_is_idle", T, F, STAND_CLEAR, STAND_CLEAR.replace("\t\tcase DTC_FLOW_CLEARING:\n", "")),
+    ("scene_dtc_stand_read_and_clear_swapped", T, F,
+     STAND_READ + STAND_LIST + STAND_CLEAR,
+     STAND_READ.replace("Lesen läuft", "Löschen läuft") + STAND_LIST + STAND_CLEAR.replace("Löschen läuft", "Lesen läuft")),
+    ("scene_dtc_stand_clear_sent_is_a_read", T, F,
+     STAND_READ + STAND_LIST + STAND_CLEAR,
+     STAND_READ.replace("\t\tcase DTC_FLOW_READING:\n", "\t\tcase DTC_FLOW_READING:\n\t\tcase DTC_FLOW_CLEAR_SENT:\n") + STAND_LIST +
+     STAND_CLEAR.replace("\t\tcase DTC_FLOW_CLEAR_SENT:\n", "")),
+    ("scene_dtc_stand_list_is_idle", T, F, STAND_LIST, ""),
+    ("scene_dtc_stand_list_is_cleared", T, F, STAND_LIST + STAND_CLEAR + STAND_CLEARED,
+     STAND_CLEAR + "\t\tcase DTC_FLOW_LIST:\n" + STAND_CLEARED),
+    ("scene_dtc_stand_summary_never", T, F, STAND_SUMMARY, "\t\t\tadd_text(scene, \"Liste gelesen\");\n"),
+    ("scene_dtc_stand_summary_not_checked", T, F, STAND_SUMMARY, "\t\t\tadd_summary(scene, input->summary);\n"),
+    ("scene_dtc_stand_summary_needs_codes", T, F,
+     STAND_SUMMARY, "\t\t\tif(input->summary != NULL && input->summary->codes > 0) add_summary(scene, input->summary);\n"
+     "\t\t\telse add_text(scene, \"Liste gelesen\");\n"),
+    ("scene_dtc_stand_summary_needs_the_lines", T, F,
+     STAND_SUMMARY, "\t\t\tif(input->summary != NULL && input->list != NULL) add_summary(scene, input->summary);\n"
+     "\t\t\telse add_text(scene, \"Liste gelesen\");\n"),
+    ("scene_dtc_stand_summary_is_the_number_of_codes", T, F,
+     STAND_SUMMARY, "\t\t\tif(input->summary != NULL) append_number(add_line(scene), SCENE_TEXT_SIZE, input->summary->codes);\n"
+     "\t\t\telse add_text(scene, \"Liste gelesen\");\n"),
+    ("scene_dtc_stand_summary_and_words", T, F,
+     STAND_SUMMARY, "\t\t\tif(input->summary != NULL) add_summary(scene, input->summary);\n\t\t\tadd_text(scene, \"Liste gelesen\");\n"),
+    ("scene_dtc_stand_no_summary_no_line", T, F,
+     STAND_SUMMARY, "\t\t\tif(input->summary != NULL) add_summary(scene, input->summary);\n"),
+    ("scene_dtc_stand_cleared_is_idle", T, F, STAND_CLEARED, ""),
+    ("scene_dtc_stand_failed_is_idle", T, F, STAND_FAILED, ""),
+    ("scene_dtc_stand_unknown_is_idle", T, F, STAND_UNKNOWN, ""),
+    ("scene_dtc_stand_unknown_is_failed", T, F, STAND_FAILED + STAND_UNKNOWN, "\t\tcase DTC_FLOW_UNKNOWN:\n" + STAND_FAILED),
+    ("scene_dtc_stand_failed_and_unknown_swapped", T, F,
+     STAND_FAILED + STAND_UNKNOWN,
+     STAND_FAILED.replace("DTC_FLOW_FAILED", "DTC_FLOW_UNKNOWN") + STAND_UNKNOWN.replace("DTC_FLOW_UNKNOWN", "DTC_FLOW_FAILED")),
+    ("scene_dtc_stand_failed_tells_the_reason", T, F,
+     STAND_FAILED, "\t\tcase DTC_FLOW_FAILED:\n\t\t\tadd_text(scene, input->flow->reason);\n\t\t\tbreak;\n"),
+    ("scene_dtc_stand_failed_has_two_lines", T, F,
+     STAND_FAILED, "\t\tcase DTC_FLOW_FAILED:\n\t\t\tadd_text(scene, \"Letzter Auftrag fehlgeschlagen\");\n\t\t\tadd_text(scene, input->flow->reason);\n\t\t\tbreak;\n"),
+    ("scene_dtc_stand_idle_has_no_line", T, F, STAND_IDLE, "\t\tdefault:\n\t\t\tbreak;\n"),
+    ("scene_dtc_stand_no_phase_has_no_line", T, F,
+     STAND_IDLE, "\t\tcase DTC_FLOW_IDLE:\n\t\t\tadd_text(scene, \"Noch nicht gelesen\");\n\t\t\tbreak;\n\t\tdefault:\n\t\t\tbreak;\n"),
+    ("scene_dtc_stand_no_phase_has_an_empty_line", T, F,
+     STAND_IDLE, "\t\tcase DTC_FLOW_IDLE:\n\t\t\tadd_text(scene, \"Noch nicht gelesen\");\n\t\t\tbreak;\n\t\tdefault:\n\t\t\tadd_text(scene, \"\");\n\t\t\tbreak;\n"),
+    ("scene_dtc_stand_no_phase_is_unknown", T, F,
+     STAND_UNKNOWN + "\t\t// DTC_FLOW_IDLE, and what is no phase: nav.h takes that for idle as well\n" + STAND_IDLE,
+     "\t\tcase DTC_FLOW_IDLE:\n\t\t\tadd_text(scene, \"Noch nicht gelesen\");\n\t\t\tbreak;\n"
+     "\t\tdefault:\n\t\t\tadd_text(scene, \"Stand des Löschens unbekannt\");\n\t\t\tbreak;\n"),
+    ("scene_dtc_stand_failed_only_with_reason", T, F,
+     STAND_FAILED, "\t\tcase DTC_FLOW_FAILED:\n\t\t\tadd_text(scene, input->flow->reason[0] != '\\0' ? \"Letzter Auftrag fehlgeschlagen\" : \"Noch nicht gelesen\");\n\t\t\tbreak;\n"),
+    ("scene_dtc_stand_idle_with_old_list_is_cleared", T, F,
+     STAND_IDLE, "\t\tdefault:\n\t\t\tadd_text(scene, world->old_lines > 0 ? \"Gelöscht\" : \"Noch nicht gelesen\");\n\t\t\tbreak;\n"),
+    ("scene_dtc_stand_idle_with_numbers_is_list", T, F,
+     STAND_IDLE, "\t\tdefault:\n\t\t\tadd_text(scene, input->flow->read_seq != 0 ? \"Liste gelesen\" : \"Noch nicht gelesen\");\n\t\t\tbreak;\n"),
+    ("scene_dtc_stand_only_with_focus_on_a_row", T, F, STAND, "\tif(input->nav->row >= 0 && input->nav->row < COUNT(choices)) switch(input->flow->phase)\n"),
+    ("scene_dtc_stand_list_only_while_not_clearable", T, F,
+     STAND_SUMMARY, STAND_SUMMARY.replace("else add_text(scene, \"Liste gelesen\");", "else add_text(scene, world->can_clear ? \"\" : \"Liste gelesen\");")),
+    ("scene_dtc_stand_twice", T, F, STAND_END, STAND_END + "\tadd_text(scene, \"\");\n"),
+    ("scene_dtc_stand_as_note", T, F,
+     STAND_IDLE, "\t\tdefault:\n\t\t\tif(scene->note[0] == '\\0') set_note(scene, \"Noch nicht gelesen\");\n\t\t\tadd_text(scene, \"Noch nicht gelesen\");\n\t\t\tbreak;\n"),
+    text("scene_text_dtc_stand_idle", "\"Noch nicht gelesen\"", "\"Nicht gelesen\""),
+    text("scene_text_dtc_stand_read", "\"Lesen läuft …\"", "\"Lesen läuft\""),
+    text("scene_text_dtc_stand_list", "\"Liste gelesen\"", "\"Gelesen\""),
+    text("scene_text_dtc_stand_clear", "\"Löschen läuft …\"", "\"Löschen läuft ...\""),
+    text("scene_text_dtc_stand_cleared", "\t\t\tadd_text(scene, \"Gelöscht\");", "\t\t\tadd_text(scene, \"Geloescht\");"),
+    text("scene_text_dtc_stand_failed", "\"Letzter Auftrag fehlgeschlagen\"", "\"Auftrag fehlgeschlagen\""),
+    text("scene_text_dtc_stand_unknown", "\t\t\tadd_text(scene, \"Stand des Löschens unbekannt\");", "\t\t\tadd_text(scene, \"Stand unbekannt\");"),
 
     # the progress
     ("scene_busy_read_not_accepted", T, F, ACCEPTED, "\tbool accepted = flow->phase == DTC_FLOW_CLEARING;"),
@@ -691,32 +805,33 @@ MUTATIONS = [
     ("scene_choice_focus_by_low_bit", T, F, OPTION, "\tscene->option = input->nav->row & 1;"),
     ("scene_choice_focus_zero_is_action", T, F, OPTION, "\tscene->option = input->nav->row >= 0 ? 1 : 0;"),
     text("scene_text_clear_title", "\"Fehler löschen?\"", "\"Löschen?\""),
-    ("scene_clear_summary_not_checked", T, F, SUMMARY, "\tif(true)\n"),
-    ("scene_clear_summary_never", T, F, SUMMARY, "\tif(false)\n"),
-    ("scene_clear_summary_needs_codes", T, F, SUMMARY, "\tif(summary != NULL && summary->codes > 0)\n"),
-    ("scene_clear_without_codes", T, F, "\t\tappend_number(line, SCENE_TEXT_SIZE, summary->codes);\n", ""),
-    ("scene_clear_without_units", T, F, "\t\tappend_number(line, SCENE_TEXT_SIZE, summary->ecus_with_codes);\n", ""),
-    ("scene_clear_numbers_swapped", T, F,
-     "\t\tappend_number(line, SCENE_TEXT_SIZE, summary->codes);\n\t\tappend(line, SCENE_TEXT_SIZE, \" Fehler in \");\n\t\tappend_number(line, SCENE_TEXT_SIZE, summary->ecus_with_codes);",
-     "\t\tappend_number(line, SCENE_TEXT_SIZE, summary->ecus_with_codes);\n\t\tappend(line, SCENE_TEXT_SIZE, \" Fehler in \");\n\t\tappend_number(line, SCENE_TEXT_SIZE, summary->codes);"),
-    ("scene_clear_units_not_ok", T, F,
-     "\t\tappend_number(line, SCENE_TEXT_SIZE, summary->ecus_with_codes);", "\t\tappend_number(line, SCENE_TEXT_SIZE, summary->ecus_not_ok);"),
-    ("scene_clear_units_clean", T, F,
-     "\t\tappend_number(line, SCENE_TEXT_SIZE, summary->ecus_with_codes);", "\t\tappend_number(line, SCENE_TEXT_SIZE, summary->ecus_clean);"),
-    ("scene_clear_codes_as_int", T, F,
-     "\t\tappend_number(line, SCENE_TEXT_SIZE, summary->codes);", "\t\tappend_number(line, SCENE_TEXT_SIZE, (int)summary->codes);"),
-    text("scene_text_clear_codes", "\" Fehler in \"", "\" Fehler, \""),
-    ("scene_clear_always_plural", T, F, UNITS, "\t\tappend(line, SCENE_TEXT_SIZE, \" Steuergeräten\");"),
-    ("scene_clear_always_singular", T, F, UNITS, "\t\tappend(line, SCENE_TEXT_SIZE, \" Steuergerät\");"),
-    ("scene_clear_singular_up_to_one", T, F, UNITS, "\t\tappend(line, SCENE_TEXT_SIZE, summary->ecus_with_codes <= 1 ? \" Steuergerät\" : \" Steuergeräten\");"),
-    ("scene_clear_singular_by_codes", T, F, UNITS, "\t\tappend(line, SCENE_TEXT_SIZE, summary->codes == 1 ? \" Steuergerät\" : \" Steuergeräten\");"),
-    ("scene_clear_singular_by_last_digit", T, F, UNITS, "\t\tappend(line, SCENE_TEXT_SIZE, summary->ecus_with_codes % 10 == 1 ? \" Steuergerät\" : \" Steuergeräten\");"),
-    ("scene_clear_plural_nominative", T, F, UNITS, "\t\tappend(line, SCENE_TEXT_SIZE, summary->ecus_with_codes == 1 ? \" Steuergerät\" : \" Steuergeräte\");"),
+    ("scene_clear_summary_not_checked", T, F, SUMMARY, SUMMARY.replace("if(input->summary != NULL) ", "")),
+    ("scene_clear_summary_never", T, F, SUMMARY, "\tadd_text(scene, \"Betrifft alle"),
+    ("scene_clear_summary_needs_codes", T, F,
+     SUMMARY, SUMMARY.replace("if(input->summary != NULL) ", "if(input->summary != NULL && input->summary->codes > 0) ")),
+    ("scene_clear_summary_is_the_number_of_codes", T, F,
+     SUMMARY, SUMMARY.replace("add_summary(scene, input->summary);", "append_number(add_line(scene), SCENE_TEXT_SIZE, input->summary->codes);")),
+    # the words for what a list holds, the same on the start of the fault memory and in the clear dialog
+    ("scene_summary_without_codes", T, F, CODES, ""),
+    ("scene_summary_without_units", T, F, WITH_CODES + "\n", ""),
+    ("scene_summary_numbers_swapped", T, F,
+     CODES + "\tappend(line, SCENE_TEXT_SIZE, \" Fehler in \");\n" + WITH_CODES,
+     WITH_CODES + "\n\tappend(line, SCENE_TEXT_SIZE, \" Fehler in \");\n" + CODES.rstrip("\n")),
+    ("scene_summary_units_not_ok", T, F, WITH_CODES, "\tappend_number(line, SCENE_TEXT_SIZE, summary->ecus_not_ok);"),
+    ("scene_summary_units_clean", T, F, WITH_CODES, "\tappend_number(line, SCENE_TEXT_SIZE, summary->ecus_clean);"),
+    ("scene_summary_codes_as_int", T, F, CODES, "\tappend_number(line, SCENE_TEXT_SIZE, (int)summary->codes);\n"),
+    text("scene_text_summary_codes", "\" Fehler in \"", "\" Fehler, \""),
+    ("scene_summary_always_plural", T, F, UNITS, "\tappend(line, SCENE_TEXT_SIZE, \" Steuergeräten\");"),
+    ("scene_summary_always_singular", T, F, UNITS, "\tappend(line, SCENE_TEXT_SIZE, \" Steuergerät\");"),
+    ("scene_summary_singular_up_to_one", T, F, UNITS, "\tappend(line, SCENE_TEXT_SIZE, summary->ecus_with_codes <= 1 ? \" Steuergerät\" : \" Steuergeräten\");"),
+    ("scene_summary_singular_by_codes", T, F, UNITS, "\tappend(line, SCENE_TEXT_SIZE, summary->codes == 1 ? \" Steuergerät\" : \" Steuergeräten\");"),
+    ("scene_summary_singular_by_last_digit", T, F, UNITS, "\tappend(line, SCENE_TEXT_SIZE, summary->ecus_with_codes % 10 == 1 ? \" Steuergerät\" : \" Steuergeräten\");"),
+    ("scene_summary_plural_nominative", T, F, UNITS, "\tappend(line, SCENE_TEXT_SIZE, summary->ecus_with_codes == 1 ? \" Steuergerät\" : \" Steuergeräte\");"),
     ("scene_clear_without_first_warning", T, F, WARN_ALL, ""),
     ("scene_clear_without_second_warning", T, F, WARN_ENGINE, ""),
     ("scene_clear_warnings_swapped", T, F, WARN_ALL + WARN_ENGINE, WARN_ENGINE + WARN_ALL),
     ("scene_clear_warnings_only_with_summary", T, F,
-     WARN_ALL, "\tif(summary != NULL) add_text(scene, \"Betrifft alle Steuergeräte, auch SRS und ESP.\");\n"),
+     WARN_ALL, "\tif(input->summary != NULL) add_text(scene, \"Betrifft alle Steuergeräte, auch SRS und ESP.\");\n"),
     text("scene_text_clear_all", "\"Betrifft alle Steuergeräte, auch SRS und ESP.\"", "\"Betrifft alle Steuergeräte.\""),
     text("scene_text_clear_engine", "\"Zündung an, Motor aus, Fahrzeug steht.\"", "\"Zündung an, Motor aus.\""),
     text("scene_text_clear_note", "\"Auf Löschen drehen, Knopf 3 s halten\"", "\"Auf Löschen drehen, Knopf halten\""),
@@ -838,13 +953,34 @@ MUTATIONS = [
     ("scene_web_release_without_time", T, F, "\t\tappend_time(release, sizeof(release), seconds);\n", ""),
     ("scene_web_release_time_in_seconds", T, F, "\t\tappend_time(release, sizeof(release), seconds);", "\t\tappend_number(release, sizeof(release), seconds);"),
     ("scene_web_release_off_kept_before_on", T, F, "\t\trelease[0] = '\\0';\n", ""),
-    ("scene_web_address_null_is_read", T, F, ADDRESS, "\tadd_text(scene, input->address[0] != '\\0' ? input->address : \"Kein WLAN\");"),
-    ("scene_web_address_empty_is_shown", T, F, ADDRESS, "\tadd_text(scene, input->address != NULL ? input->address : \"Kein WLAN\");"),
-    ("scene_web_address_never_shown", T, F, ADDRESS, "\tadd_text(scene, \"Kein WLAN\");"),
+    ("scene_web_address_null_is_read", T, F, HAS_ADDRESS, "\tbool has_address = input->address[0] != '\\0';"),
+    ("scene_web_address_empty_is_shown", T, F, HAS_ADDRESS, "\tbool has_address = input->address != NULL;"),
+    ("scene_web_address_never_shown", T, F, HAS_ADDRESS, "\tbool has_address = false;"),
     ("scene_web_address_needs_two_bytes", T, F,
-     ADDRESS, "\tadd_text(scene, input->address != NULL && input->address[0] != '\\0' && input->address[1] != '\\0' ? input->address : \"Kein WLAN\");"),
-    ("scene_web_no_address_no_line", T, F,
-     ADDRESS, "\tif(input->address != NULL && input->address[0] != '\\0') add_text(scene, input->address);"),
+     HAS_ADDRESS, "\tbool has_address = input->address != NULL && input->address[0] != '\\0' && input->address[1] != '\\0';"),
+    ("scene_web_address_not_with_access_point", T, F, ADDRESS, "\tif(has_address && !input->ap_on) add_text(scene, input->address);\n"),
+    ("scene_web_no_address_no_line", T, F, NO_NETWORK, ""),
+    ("scene_web_no_network_above_access_point", T, F, NO_NETWORK, "\telse add_text(scene, \"Kein WLAN\");\n"),
+    ("scene_web_no_network_only_above_access_point", T, F, NO_NETWORK, "\telse if(input->ap_on) add_text(scene, \"Kein WLAN\");\n"),
+    ("scene_web_no_network_above_access_point_without_name", T, F,
+     NO_NETWORK, "\telse if(!input->ap_on || input->ap_ssid == NULL || input->ap_ssid[0] == '\\0') add_text(scene, \"Kein WLAN\");\n"),
+    ("scene_web_no_network_above_access_point_for_null", T, F,
+     NO_NETWORK, "\telse if(!input->ap_on || input->address == NULL) add_text(scene, \"Kein WLAN\");\n"),
+    ("scene_web_no_network_above_access_point_for_empty", T, F,
+     NO_NETWORK, "\telse if(!input->ap_on || input->address != NULL) add_text(scene, \"Kein WLAN\");\n"),
+    ("scene_web_no_network_above_access_point_while_locked", T, F,
+     NO_NETWORK, "\telse if(!input->ap_on || seconds == 0) add_text(scene, \"Kein WLAN\");\n"),
+    ("scene_web_no_network_above_access_point_while_released", T, F,
+     NO_NETWORK, "\telse if(!input->ap_on || seconds > 0) add_text(scene, \"Kein WLAN\");\n"),
+    ("scene_web_no_network_left_out_leaves_empty_line", T, F,
+     NO_NETWORK, "\telse add_text(scene, input->ap_on ? \"\" : \"Kein WLAN\");\n"),
+    ("scene_web_no_network_also_with_address", T, F,
+     NO_NETWORK, "\tif(!input->ap_on) add_text(scene, \"Kein WLAN\");\n"),
+    ("scene_web_no_network_only_with_focus_on_release", T, F, NO_NETWORK, "\telse if(!input->ap_on && input->nav->row == 0) add_text(scene, \"Kein WLAN\");\n"),
+    ("scene_web_no_network_above_access_point_in_safe_mode", T, F, NO_NETWORK, "\telse if(!input->ap_on || input->safe_mode) add_text(scene, \"Kein WLAN\");\n"),
+    ("scene_web_no_network_only_while_released", T, F, NO_NETWORK, "\telse if(!input->ap_on && seconds > 0) add_text(scene, \"Kein WLAN\");\n"),
+    ("scene_web_no_network_behind_access_point", T, F,
+     NO_NETWORK + "\tif(input->ap_on)\n\t{\n", "\tif(input->ap_on)\n\t{\n\t\tif(!has_address) add_text(scene, \"Kein WLAN\");\n"),
     text("scene_text_web_no_wifi", "\"Kein WLAN\"", "\"Kein Netz\""),
     ("scene_web_access_point_always_shown", T, F, AP, "\tif(true)\n\t{\n"),
     ("scene_web_access_point_never_shown", T, F, AP, "\tif(false)\n\t{\n"),
@@ -987,6 +1123,45 @@ MUTATIONS = [
     ("scene_build_ring_always_live", T, F, RING, "\tscene->ring = ring_state(CONN_VIEW_LIVE, state, level, old);"),
     ("scene_build_ring_missing", T, F, RING + "\n", ""),
     ("scene_build_ring_only_on_pages", T, F, RING, "\tif(input->nav->screen == NAV_PAGES) scene->ring = ring_state(view, state, level, old);"),
+    # no second arc on the two screens that have one
+    ("scene_ring_second_arc", T, F, OWN_ARC, "\tif(false)"),
+    ("scene_ring_second_arc_on_progress", T, F, OWN_ARC, "\tif(input->nav->screen == NAV_DTC_CONFIRM && scene->ring.kind == RING_PROGRESS)"),
+    ("scene_ring_second_arc_on_clear_dialog", T, F, OWN_ARC, "\tif(input->nav->screen == NAV_DTC_BUSY && scene->ring.kind == RING_PROGRESS)"),
+    ("scene_ring_off_on_every_dialog", T, F,
+     OWN_ARC, "\tif((input->nav->screen == NAV_DTC_BUSY || input->nav->screen == NAV_DTC_CONFIRM || input->nav->screen == NAV_CONFIRM) && scene->ring.kind == RING_PROGRESS)"),
+    ("scene_ring_off_on_every_choice", T, F, OWN_ARC, "\tif((scene->kind == SCENE_PROGRESS || scene->kind == SCENE_CHOICE) && scene->ring.kind == RING_PROGRESS)"),
+    ("scene_ring_off_on_brightness", T, F,
+     OWN_ARC, "\tif((input->nav->screen == NAV_DTC_BUSY || input->nav->screen == NAV_DTC_CONFIRM || input->nav->screen == NAV_BRIGHTNESS) && scene->ring.kind == RING_PROGRESS)"),
+    ("scene_ring_off_on_fault_memory", T, F,
+     OWN_ARC, "\tif(input->nav->screen >= NAV_DTC && input->nav->screen <= NAV_DTC_CONFIRM && scene->ring.kind == RING_PROGRESS)"),
+    ("scene_ring_off_behind_the_menu", T, F, OWN_ARC, "\tif(input->nav->screen != NAV_PAGES && scene->ring.kind == RING_PROGRESS)"),
+    ("scene_ring_off_during_every_scan", T, F, OWN_ARC, "\tif(scene->ring.kind == RING_PROGRESS)"),
+    ("scene_ring_every_ring_off", T, F, OWN_ARC, "\tif(input->nav->screen == NAV_DTC_BUSY || input->nav->screen == NAV_DTC_CONFIRM)"),
+    ("scene_ring_grey_off_as_well", T, F,
+     OWN_ARC, "\tif((input->nav->screen == NAV_DTC_BUSY || input->nav->screen == NAV_DTC_CONFIRM) && (scene->ring.kind == RING_PROGRESS || scene->ring.kind == RING_GREY))"),
+    ("scene_ring_yellow_off_as_well", T, F,
+     OWN_ARC, "\tif((input->nav->screen == NAV_DTC_BUSY || input->nav->screen == NAV_DTC_CONFIRM) && (scene->ring.kind == RING_PROGRESS || scene->ring.kind == RING_YELLOW))"),
+    ("scene_ring_off_only_once_begun", T, F, OWN_ARC, OWN_ARC[:-1] + " && scene->ring.permille > 0)"),
+    ("scene_ring_off_only_for_own_request", T, F, OWN_ARC, OWN_ARC[:-1] + " && state->dtc.seq == input->flow->seq)"),
+    ("scene_ring_off_only_while_under_way", T, F,
+     OWN_ARC, OWN_ARC[:-1] + " && (input->nav->screen == NAV_DTC_CONFIRM || input->flow->phase == DTC_FLOW_READING || input->flow->phase == DTC_FLOW_CLEARING))"),
+    ("scene_ring_off_only_while_held", T, F,
+     OWN_ARC, "\tif((input->nav->screen == NAV_DTC_BUSY || (input->nav->screen == NAV_DTC_CONFIRM && scene->permille > 0)) && scene->ring.kind == RING_PROGRESS)"),
+    ("scene_ring_off_not_under_an_overlay", T, F, OWN_ARC, OWN_ARC[:-1] + " && nav_overlay(input->world) == NAV_OVER_NONE)"),
+    ("scene_ring_off_only_with_focus_on_an_answer", T, F, OWN_ARC, OWN_ARC[:-1] + " && input->nav->row >= 0 && input->nav->row <= 1)"),
+    ("scene_ring_off_not_in_safe_mode", T, F, OWN_ARC, OWN_ARC[:-1] + " && !input->safe_mode)"),
+    ("scene_ring_off_on_dialog_only_if_clearable", T, F,
+     OWN_ARC, "\tif((input->nav->screen == NAV_DTC_BUSY || (input->nav->screen == NAV_DTC_CONFIRM && input->world->can_clear)) && scene->ring.kind == RING_PROGRESS)"),
+    ("scene_ring_off_only_with_request_number", T, F, OWN_ARC, OWN_ARC[:-1] + " && input->flow->seq != 0)"),
+    ("scene_ring_off_not_when_scan_is_complete", T, F, OWN_ARC, OWN_ARC[:-1] + " && scene->ring.permille < 1000)"),
+    ("scene_ring_off_only_if_arcs_differ", T, F, OWN_ARC, OWN_ARC[:-1] + " && scene->permille != scene->ring.permille)"),
+    ("scene_ring_off_takes_permille_of_screen", T, F, RING_OFF + "\t\tscene->ring.permille = 0;\n", RING_OFF + "\t\tscene->ring.permille = scene->permille;\n"),
+    ("scene_ring_off_by_low_byte", T, F,
+     OWN_ARC, "\tif((((unsigned)input->nav->screen & 0xFFu) == NAV_DTC_BUSY || ((unsigned)input->nav->screen & 0xFFu) == NAV_DTC_CONFIRM) && scene->ring.kind == RING_PROGRESS)"),
+    ("scene_ring_off_keeps_permille", T, F, RING_OFF + "\t\tscene->ring.permille = 0;\n", RING_OFF),
+    ("scene_ring_arc_of_nothing", T, F, RING_OFF, ""),
+    ("scene_ring_second_arc_is_yellow", T, F, RING_OFF, "\t\tscene->ring.kind = RING_YELLOW;\n"),
+    ("scene_ring_second_arc_is_grey", T, F, RING_OFF, "\t\tscene->ring.kind = RING_GREY;\n"),
     ("scene_build_view_at_time_zero", T, F,
      "\tconn_view_t view = conn_view(input->conn, input->now_ms);", "\tconn_view_t view = conn_view(input->conn, 0);"),
     ("scene_build_unknown_screen_is_a_page", T, F, NO_SCREEN, "\t\tdefault:\n\t\t\tbreak;"),
@@ -998,7 +1173,7 @@ MUTATIONS = [
      "\t\tcase NAV_DTC_LIST:\n\t\t\tbuild_dtc(input, scene);\n\t\t\tbreak;\n\t\tcase NAV_DTC_BUSY:\n\t\t\tbuild_busy(input, state, scene);\n\t\t\tbreak;\n\t\tcase NAV_DTC:"),
     ("scene_build_busy_without_state", T, F, "\t\t\tbuild_busy(input, state, scene);", "\t\t\tbuild_busy(input, NULL, scene);"),
     ("scene_build_failed_without_state", T, F, "\t\t\tbuild_failed(input, state, scene);", "\t\t\tbuild_failed(input, NULL, scene);"),
-    text("scene_text_cleared_title", "\"Gelöscht\"", "\"Geloescht\""),
+    text("scene_text_cleared_title", "\t\t\tset_title(scene, \"Gelöscht\");", "\t\t\tset_title(scene, \"Geloescht\");"),
     text("scene_text_cleared_done", "{{\"Fertig\", \"\", true}}", "{{\"OK\", \"\", true}}"),
     ("scene_cleared_done_disabled", T, F, "{{\"Fertig\", \"\", true}}", "{{\"Fertig\", \"\", false}}"),
     ("scene_cleared_lines_of_old_list", T, F, CLEARED, "\t\t\tset_title(scene, \"Gelöscht\");\n\t\t\tbuild_rows(input, input->old, NULL, done, COUNT(done), scene);"),

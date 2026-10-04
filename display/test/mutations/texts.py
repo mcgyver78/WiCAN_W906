@@ -53,6 +53,7 @@ REASONS = [
     ("bad_request", "WiCAN versteht die Anfrage nicht"),
     ("internal", "WiCAN: interner Fehler – erneut lesen"),
     ("no_answer", "Keine Antwort vom WiCAN"),
+    ("no_result", "Ergebnis nicht abrufbar – erneut lesen"),
     ("restarted", "WiCAN neu gestartet – Ergebnis verloren"),
     ("superseded", "Von einem anderen Scan überholt"),
 ]
@@ -154,6 +155,13 @@ MUTATIONS += [
     ("texts_reason_first_skipped", T, F, LOOP, LOOP.replace("size_t i = 0", "size_t i = 1")),
     ("texts_reason_last_skipped", T, F, LOOP, LOOP.replace("sizeof(REASONS) / sizeof(REASONS[0])", "sizeof(REASONS) / sizeof(REASONS[0]) - 1")),
     ("texts_reason_next_text", T, F, COMPARE, COMPARE.replace("return REASONS[i].text", "return REASONS[i > 0 ? i - 1 : 0].text")),
+    ("texts_reason_no_result_is_no_answer", T, F, reason_line("no_result", "Ergebnis nicht abrufbar – erneut lesen"), reason_line("no_result", "Keine Antwort vom WiCAN")),
+    ("texts_reason_no_result_with_hyphen", T, F,
+     reason_line("no_result", "Ergebnis nicht abrufbar – erneut lesen"), reason_line("no_result", "Ergebnis nicht abrufbar - erneut lesen")),
+    ("texts_reason_no_result_other_words", T, F,
+     reason_line("no_result", "Ergebnis nicht abrufbar – erneut lesen"), reason_line("no_result", "Ergebnis nicht lesbar – erneut lesen")),
+    ("texts_reason_no_result_by_other_word", T, F,
+     reason_line("no_result", "Ergebnis nicht abrufbar – erneut lesen"), reason_line("no_results", "Ergebnis nicht abrufbar – erneut lesen")),
 
     # text_heat_word
     ("texts_heat_normal_forgotten", T, F, '\t\tcase GUARD_HEAT_NORMAL: return "normal";\n', ""),

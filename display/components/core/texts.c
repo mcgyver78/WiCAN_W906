@@ -32,6 +32,7 @@ static const struct
 	{"bad_request", "WiCAN versteht die Anfrage nicht"},
 	{"internal", "WiCAN: interner Fehler – erneut lesen"},
 	{"no_answer", "Keine Antwort vom WiCAN"},
+	{"no_result", "Ergebnis nicht abrufbar – erneut lesen"},
 	{"restarted", "WiCAN neu gestartet – Ergebnis verloren"},
 	{"superseded", "Von einem anderen Scan überholt"},
 };

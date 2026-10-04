@@ -26,6 +26,12 @@ static bool under_way(const dtc_flow_t *flow)
 	return flow->phase == DTC_FLOW_READ_SENT || flow->phase == DTC_FLOW_READING || clearing(flow);
 }
 
+// The adapter accepted the own request, and its result is not there yet
+static bool accepted(const dtc_flow_t *flow)
+{
+	return flow->phase == DTC_FLOW_READING || flow->phase == DTC_FLOW_CLEARING;
+}
+
 // The POST ended without an answer, the states have to tell what became of it
 static bool unanswered(const dtc_flow_t *flow)
 {
@@ -46,11 +52,9 @@ static void fail(dtc_flow_t *flow, const char *reason)
 	flow->phase = DTC_FLOW_FAILED;
 }
 
-// The own request cannot be followed any more. One that was not taken yet is not sent late; of a clear
-// nobody can say what it did.
+// The own request was sent and cannot be followed any more. Of a clear nobody can say what it did.
 static void give_up(dtc_flow_t *flow, const char *reason)
 {
-	flow->to_send = DTC_FLOW_SEND_NOTHING;
 	if(clearing(flow)) flow->phase = DTC_FLOW_UNKNOWN;
 	else fail(flow, reason);
 }
@@ -61,6 +65,17 @@ static void drop_list(dtc_flow_t *flow)
 	flow->read_seq = 0;
 	flow->list_count = 0;
 	flow->list_end_ms = 0;
+}
+
+// The own request still waits to be taken and will not be sent any more. It has done nothing: no failure
+// and no unknown outcome. list: the list of a clear is as good as before; a read has dropped its list.
+static void withdraw(dtc_flow_t *flow, bool list)
+{
+	bool clear = clearing(flow);
+
+	flow->to_send = DTC_FLOW_SEND_NOTHING;
+	if(clear && list) flow->phase = DTC_FLOW_LIST;
+	else drop_list(flow);
 }
 
 void dtc_flow_init(dtc_flow_t *flow)
@@ -90,17 +105,18 @@ static dtc_flow_block_t adapter_block(const dtc_flow_t *flow, const conn_t *conn
 static dtc_flow_block_t engine_block(const values_t *values, const catalog_t *catalog, bool newer, uint64_t than_ms, uint64_t now_ms)
 {
 	const value_t *value;
-	bool fresh;
+	bool known;
 
 	// A profile without an engine speed: the adapter decides
 	if(catalog_find(catalog, DTC_FLOW_RPM_NAME) < 0) return DTC_FLOW_ALLOWED;
 
-	// values_age() takes a value that is not there as gone. A switch ("on" / "off") is no speed.
+	// values_age() takes a value that is not there as gone. A value that is only old counts: one polling pass
+	// of the adapter may take longer than a value stays fresh. A switch ("on" / "off") is no speed.
 	value = values_find(values, DTC_FLOW_RPM_NAME);
-	fresh = values_age(value, now_ms) == VALUE_AGE_FRESH && value->kind == VALUE_NUMBER;
+	known = values_age(value, now_ms) != VALUE_AGE_GONE && value->kind == VALUE_NUMBER;
 	// Not "number >= limit": what is no number at all must not pass for an engine that stands
-	if(fresh && !(value->number < DTC_FLOW_RPM_LIMIT)) return DTC_FLOW_ENGINE_RUNNING;
-	if(!fresh || (newer && value->seen_ms <= than_ms)) return DTC_FLOW_RPM_UNKNOWN;
+	if(known && !(value->number < DTC_FLOW_RPM_LIMIT)) return DTC_FLOW_ENGINE_RUNNING;
+	if(!known || (newer && value->seen_ms <= than_ms)) return DTC_FLOW_RPM_UNKNOWN;
 	return DTC_FLOW_ALLOWED;
 }
 
@@ -186,7 +202,6 @@ dtc_flow_send_t dtc_flow_take(dtc_flow_t *flow, uint32_t *seq, uint64_t now_ms)
 
 void dtc_flow_posted(dtc_flow_t *flow, int status, uint32_t seq, const char *reason, uint64_t now_ms)
 {
-	(void)now_ms;
 	// Only a request that was taken can have an answer, and it has one answer
 	if((flow->phase != DTC_FLOW_READ_SENT && flow->phase != DTC_FLOW_CLEAR_SENT) || flow->to_send != DTC_FLOW_SEND_NOTHING || flow->posted) return;
 
@@ -194,6 +209,7 @@ void dtc_flow_posted(dtc_flow_t *flow, int status, uint32_t seq, const char *rea
 	if(status == 202 && seq != 0)
 	{
 		flow->seq = seq;
+		flow->accepted_ms = now_ms;
 		flow->phase = clearing(flow) ? DTC_FLOW_CLEARING : DTC_FLOW_READING;
 	}
 	// Accepted without a number is as good as no answer: the states have to tell
@@ -207,14 +223,14 @@ void dtc_flow_state(dtc_flow_t *flow, const wican_state_t *state, uint64_t now_m
 {
 	bool clear = clearing(flow);
 
-	(void)now_ms;
 	// A failure and an unknown outcome stay as they are until the user leaves them
 	if(state == NULL || flow->phase == DTC_FLOW_FAILED || flow->phase == DTC_FLOW_UNKNOWN) return;
 
 	if(state->boot != flow->boot)
 	{
-		// The numbers of another boot mean nothing
-		if(under_way(flow)) give_up(flow, "restarted");
+		// The numbers of another boot mean nothing, also those of the list a clear waits with
+		if(flow->to_send != DTC_FLOW_SEND_NOTHING) withdraw(flow, false);
+		else if(under_way(flow)) give_up(flow, "restarted");
 		else drop_list(flow);
 		return;
 	}
@@ -238,10 +254,11 @@ void dtc_flow_state(dtc_flow_t *flow, const wican_state_t *state, uint64_t now_m
 			return;
 		}
 		flow->seq = state->dtc.seq;
+		flow->accepted_ms = now_ms;
 		flow->phase = clear ? DTC_FLOW_CLEARING : DTC_FLOW_READING;
 	}
 
-	if(flow->phase == DTC_FLOW_READING || flow->phase == DTC_FLOW_CLEARING)
+	if(accepted(flow))
 	{
 		if(state->dtc.seq == flow->seq)
 		{
@@ -257,6 +274,9 @@ void dtc_flow_state(dtc_flow_t *flow, const wican_state_t *state, uint64_t now_m
 	{
 		drop_list(flow);
 	}
+
+	// What the state shows went first. A request it leaves waiting is given up when its time is over.
+	if(accepted(flow) && passed(now_ms, flow->accepted_ms) > DTC_FLOW_WAIT_MS) give_up(flow, "no_answer");
 }
 
 void dtc_flow_result(dtc_flow_t *flow, uint32_t result_seq, bool clear, uint32_t count, uint32_t age_s, uint64_t now_ms)
@@ -278,9 +298,16 @@ void dtc_flow_result(dtc_flow_t *flow, uint32_t result_seq, bool clear, uint32_t
 	}
 }
 
+void dtc_flow_no_result(dtc_flow_t *flow)
+{
+	if(accepted(flow)) give_up(flow, "no_result");
+}
+
 void dtc_flow_lost(dtc_flow_t *flow)
 {
-	if(under_way(flow)) give_up(flow, "no_answer");
+	// Never sent: nothing happened in the vehicle, and the list of a clear is as good as before
+	if(flow->to_send != DTC_FLOW_SEND_NOTHING) withdraw(flow, true);
+	else if(under_way(flow)) give_up(flow, "no_answer");
 }
 
 void dtc_flow_dismiss(dtc_flow_t *flow)

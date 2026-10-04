@@ -54,6 +54,7 @@ typedef struct
 	int32_t sleep_in_s;
 	uint32_t memory;        // trouble codes the vehicle has stored, 0 to 2
 	uint32_t pickup_ms;
+	uint32_t pass_time;     // one polling pass takes this long, in ms
 	const char *read_text;  // the result of a read as a scene wants it, NULL: made from `memory`
 	const char *clear_text;
 	const char *config_text;    // the profile as a scene wants it, NULL: by has_rpm
@@ -121,6 +122,7 @@ static void adapter_init(adapter_t *a, uint64_t boot_ms)
 	a->sleep_in_s = -1;
 	a->memory = 2;
 	a->pickup_ms = PICKUP_MS;
+	a->pass_time = PASS_MS;
 	a->pass_ms = boot_ms;
 	a->next_seq = 42;
 }
@@ -210,12 +212,12 @@ static void adapter_catch_up(adapter_t *a, uint64_t now_ms)
 	{
 		a->pass_ms = now_ms;
 	}
-	else if(now_ms - a->pass_ms >= PASS_MS)
+	else if(now_ms - a->pass_ms >= a->pass_time)
 	{
-		uint64_t passes = (now_ms - a->pass_ms) / PASS_MS;
+		uint64_t passes = (now_ms - a->pass_ms) / a->pass_time;
 
 		a->pass += (uint32_t)passes;
-		a->pass_ms += passes * PASS_MS;
+		a->pass_ms += passes * a->pass_time;
 		a->valid = true;
 	}
 }
@@ -446,13 +448,14 @@ static void reply(int status, const char *body, const char *seq_header)
 	poll_apply(&poll, &request, status, body, body != NULL ? strlen(body) : 0, seq_header, now, work, POLL_TOKENS);
 }
 
-// The answer of the adapter to the request under way. A body that has no room at the caller is no answer.
+// The answer of the adapter to the request under way. A body that has no room at the caller is passed as
+// the status that came with it and an empty body.
 static void answer(void)
 {
 	answer_t made;
 
 	adapter_answer(&wican, &request, now, &made);
-	if(made.length >= POLL_BODY_SIZE) poll_apply(&poll, &request, 0, NULL, 0, NULL, now, work, POLL_TOKENS);
+	if(made.length >= POLL_BODY_SIZE) poll_apply(&poll, &request, made.status, "", 0, made.seq_header, now, work, POLL_TOKENS);
 	else poll_apply(&poll, &request, made.status, made.body, made.length, made.seq_header, now, work, POLL_TOKENS);
 }
 
@@ -793,6 +796,11 @@ static void test_stored(void)
 	seconds(40);
 	events = poll_take_events(&poll);
 	check(poll.catalog_complete && (events & POLL_EVENT_CATALOG) == 0 && !poll.catalog_guard.written, "the profile of the adapter is the stored catalogue: it is never stored again");
+	adapter_restart(&wican, BOOT + 1, 42, now + 500);
+	seconds(40);
+	events = poll_take_events(&poll);
+	check((events & POLL_EVENT_FORGET) != 0 && (events & POLL_EVENT_CATALOG) == 0 && poll.catalog_complete && poll.catalog_guard.has_stored && !poll.catalog_guard.written,
+	      "the adapter restarts and its profile is still the stored catalogue: the catalogue is started anew and loaded again, and still not stored again");
 	adapter_init(&wican, 0);
 	join(OWN, 100000);
 	poll_stored(&poll, stored_catalog, strlen(stored_catalog), NULL, 0, work, POLL_TOKENS);
@@ -919,12 +927,13 @@ static void test_wifi(void)
 	scene();
 	poll_read(&poll, now);
 	poll_wifi(&poll, false, now);
-	check(reason_is("no_answer") && poll.flow.to_send == DTC_FLOW_SEND_NOTHING && poll.lost, "the network is lost while a read waits to be sent: failed, no answer");
+	check(poll.flow.phase == DTC_FLOW_IDLE && poll.flow.to_send == DTC_FLOW_SEND_NOTHING && poll.lost && poll_take_events(&poll) == 0,
+	      "the network is lost while a read waits to be sent: it was never sent - idle, no failure");
 	now = 104000;
 	poll_wifi(&poll, true, now);
 	exchange();
 	second();
-	check(sent("SCV SV") && reason_is("no_answer") && wican.seq == 0, "the read that waited when the network was lost is never sent");
+	check(sent("SCV SV") && poll.flow.phase == DTC_FLOW_IDLE && wican.seq == 0, "the read that waited when the network was lost is never sent");
 
 	scene();
 	poll_read(&poll, now);
@@ -948,13 +957,30 @@ static void test_wifi(void)
 	second();
 	check(poll_clear(&poll, false, now) == DTC_FLOW_ALLOWED && poll.has_list, "the scene: a clear waits to be sent");
 	poll_wifi(&poll, false, now);
-	check(poll.flow.phase == DTC_FLOW_UNKNOWN && poll.flow.to_send == DTC_FLOW_SEND_NOTHING && !poll.has_list && !poll.has_old && poll_take_events(&poll) == POLL_EVENT_LISTS,
-	      "the network is lost while a clear waits to be sent: the list is dropped with the flow, nothing became the old list");
+	check(poll.flow.phase == DTC_FLOW_LIST && poll.flow.to_send == DTC_FLOW_SEND_NOTHING && shows_list(read_text, 2) && !poll.has_old && poll_take_events(&poll) == 0,
+	      "the network is lost while a clear waits to be sent: it was never sent - the list is shown as before, nothing became the old list");
+	trace[0] = '\0';
+	now = 108000;
+	poll_wifi(&poll, true, now);
+	exchange();
+	seconds(2);
+	check(sent("SRCV SV SV") && wican.seq == 42 && poll.flow.phase == DTC_FLOW_LIST && shows_list(read_text, 2) && !poll.has_old,
+	      "the clear that waited when the network was lost is never sent; the list stays while the adapter shows its read");
+	check(poll_clear(&poll, false, now) == DTC_FLOW_ALLOWED && send() && request.kind == POLL_DTC_CLEAR && strcmp(request.path, "/api/dtc?action=clear&seq=42") == 0,
+	      "after the network came back the user confirms again: the clear goes out");
+
+	scene_list();
+	second();
+	poll_clear(&poll, false, now);
+	check(send() && request.kind == POLL_DTC_CLEAR && !poll.has_old && poll_take_events(&poll) == 0, "the scene: the POST of a clear is under way, nothing became the old list");
+	poll_wifi(&poll, false, now);
+	check(poll.flow.phase == DTC_FLOW_UNKNOWN && !poll.asking && !poll.has_list && old_is(read_text, 2) && poll_take_events(&poll) == (POLL_EVENT_OLD | POLL_EVENT_LISTS),
+	      "the network is lost while the POST of a clear is under way: it may have arrived - unknown, and its list is the old list with POLL_EVENT_OLD");
 
 	scene_clearing();
 	poll_wifi(&poll, false, now);
 	check(poll.flow.phase == DTC_FLOW_UNKNOWN && !poll.has_list && old_is(read_text, 2) && poll_take_events(&poll) == POLL_EVENT_LISTS,
-	      "the network is lost while the own clear runs: unknown, the list lives on as the old one");
+	      "the network is lost while the own clear runs: unknown, the list lives on as the old one it became with the 202");
 
 	scene_cleared();
 	poll_wifi(&poll, false, now);
@@ -1108,13 +1134,14 @@ static void test_clear(void)
 
 	check(send() && request.kind == POLL_DTC_CLEAR && request.post && strcmp(request.path, "/api/dtc?action=clear&seq=42") == 0 && poll.asked == POLL_DTC_CLEAR,
 	      "the clear goes out with the next request: POST /api/dtc?action=clear&seq=42, the number of the list");
-	check(poll.events == (POLL_EVENT_OLD | POLL_EVENT_LISTS), "before the clear is sent POLL_EVENT_OLD and POLL_EVENT_LISTS are raised");
-	check(old_is(read_text, 2) && poll.old.code_count == 2 && strcmp(poll.old.codes[1].code, "9302") == 0 && poll.old.duration_ms == 35100,
-	      "before the clear is sent the list is the old list: the struct, and the text byte for byte");
-	check(shows_list(read_text, 2) && wican.seq == 42, "the list is still shown, and the adapter has not seen the clear yet");
-	check(poll_take_events(&poll) == (POLL_EVENT_OLD | POLL_EVENT_LISTS) && poll_take_events(&poll) == 0 && poll.events == 0, "the events are taken once");
+	check(poll.events == 0 && !poll.has_old && shows_list(read_text, 2) && wican.seq == 42,
+	      "a clear that goes out makes no old list and raises nothing: the list is shown, and the adapter has not seen the clear yet");
 	answer();
-	check(poll.flow.phase == DTC_FLOW_CLEARING && poll.flow.seq == 43 && shows_list(read_text, 2) && poll_take_events(&poll) == 0, "202 with the number 43: the own clear is accepted");
+	check(poll.flow.phase == DTC_FLOW_CLEARING && poll.flow.seq == 43 && shows_list(read_text, 2), "202 with the number 43: the own clear is accepted, the list is still shown");
+	check(poll.events == (POLL_EVENT_OLD | POLL_EVENT_LISTS), "with the 202 of the clear POLL_EVENT_OLD and POLL_EVENT_LISTS are raised");
+	check(old_is(read_text, 2) && poll.old.code_count == 2 && strcmp(poll.old.codes[1].code, "9302") == 0 && poll.old.duration_ms == 35100,
+	      "with the 202 of the clear the list is the old list: the struct, and the text byte for byte");
+	check(poll_take_events(&poll) == (POLL_EVENT_OLD | POLL_EVENT_LISTS) && poll_take_events(&poll) == 0 && poll.events == 0, "the events are taken once");
 
 	seconds(3);
 	check(sent("c S S S") && poll.flow.phase == DTC_FLOW_CLEARING && shows_list(read_text, 2) && !poll.has_cleared && poll_take_events(&poll) == 0,
@@ -1133,8 +1160,9 @@ static void test_clear(void)
 	scene_list();
 	seconds(24);
 	check(poll.events == POLL_EVENT_CATALOG && poll_clear(&poll, false, now) == DTC_FLOW_ALLOWED, "the scene: the catalogue is to be stored, and the user confirms the clear");
-	check(send() && request.kind == POLL_DTC_CLEAR && poll_take_events(&poll) == (POLL_EVENT_CATALOG | POLL_EVENT_OLD | POLL_EVENT_LISTS),
-	      "the events of a clear that goes out join those that wait to be taken");
+	check(send() && request.kind == POLL_DTC_CLEAR && poll.events == POLL_EVENT_CATALOG, "the clear goes out: the event of the catalogue still waits, alone");
+	answer();
+	check(poll_take_events(&poll) == (POLL_EVENT_CATALOG | POLL_EVENT_OLD | POLL_EVENT_LISTS), "the events of a clear that is accepted join those that wait to be taken");
 
 	// The next read
 	scene_cleared();
@@ -1152,10 +1180,10 @@ static void test_clear(void)
 
 	// The time of the call is what the flow judges with
 	scene();
-	now = 105000;
-	check(poll_read(&poll, now) == DTC_FLOW_RPM_UNKNOWN && poll.flow.phase == DTC_FLOW_IDLE, "a read 3000 ms after the last engine speed arrived is refused: the value is not fresh");
-	now = 104999;
-	check(poll_read(&poll, now) == DTC_FLOW_ALLOWED, "a read 2999 ms after the last engine speed arrived is allowed");
+	now = 112000;
+	check(poll_read(&poll, now) == DTC_FLOW_RPM_UNKNOWN && poll.flow.phase == DTC_FLOW_IDLE, "a read 10000 ms after the last engine speed arrived is refused: the value is gone");
+	now = 111999;
+	check(!fresh("ENGINE_RPM") && poll_read(&poll, now) == DTC_FLOW_ALLOWED, "a read 9999 ms after the last engine speed arrived is allowed: the value is not fresh, but not gone");
 
 	// A list without codes
 	scene();
@@ -1271,10 +1299,10 @@ static void test_post(void)
 		send();
 		poll_take_events(&poll);
 		reply(refusals[i].status, text, NULL);
-		if(!reason_is(refusals[i].reason) || poll.has_list || !old_is(read_text, 2) || poll_take_events(&poll) != POLL_EVENT_LISTS) wrong_clear++;
+		if(!reason_is(refusals[i].reason) || poll.has_list || poll.has_old || poll_take_events(&poll) != POLL_EVENT_LISTS) wrong_clear++;
 	}
 	check(wrong_read == 0, "each of the seven refusals of API.md ends the own read as failed with its reason");
-	check(wrong_clear == 0, "each of the seven refusals ends the own clear as failed with its reason: the list is dropped and stays the old list");
+	check(wrong_clear == 0, "each of the seven refusals ends the own clear as failed with its reason: the list is dropped and is not the old list, nothing was cleared");
 
 	// The adapter itself refuses
 	scene();
@@ -1292,7 +1320,7 @@ static void test_post(void)
 	poll_clear(&poll, false, now);
 	wican.ended_ms = now - 600001;
 	exchange();
-	check(reason_is("read_required") && !poll.has_list && old_is(read_text, 2), "the adapter finds the read older than 600 s: the clear is refused, read_required");
+	check(reason_is("read_required") && !poll.has_list && !poll.has_old, "the adapter finds the read older than 600 s: the clear is refused, read_required");
 
 	// The number of an accepted request
 	if(!read_fixture("../../tools/w906/fixtures/api_body_accepted.json", text, sizeof(text))) wrong++;
@@ -1385,13 +1413,14 @@ static void test_no_answer(void)
 	send();
 	reply(0, NULL, NULL);
 	seconds(2);
-	check(poll.flow.phase == DTC_FLOW_LIST && shows_list(read_text, 2) && old_is(read_text, 2) && poll_take_events(&poll) == (POLL_EVENT_OLD | POLL_EVENT_LISTS),
-	      "two states without a new request: the clear did not arrive, the list is back and was never dropped");
+	check(poll.flow.phase == DTC_FLOW_LIST && shows_list(read_text, 2) && !poll.has_old && poll_take_events(&poll) == 0,
+	      "two states without a new request: the clear did not arrive - the list is back and was never dropped, nothing became the old list");
 	check(poll_clear(&poll, false, now) == DTC_FLOW_ALLOWED && send() && request.kind == POLL_DTC_CLEAR && strcmp(request.path, "/api/dtc?action=clear&seq=42") == 0 &&
-	      poll_take_events(&poll) == (POLL_EVENT_OLD | POLL_EVENT_LISTS), "the user confirms again: the clear goes out again, the old list is stored again");
+	      !poll.has_old && poll_take_events(&poll) == 0, "the user confirms again: the clear goes out again");
 	answer();
+	check(old_is(read_text, 2) && poll_take_events(&poll) == (POLL_EVENT_OLD | POLL_EVENT_LISTS), "the second clear is accepted: now its list is the old list");
 	seconds(4);
-	check(poll.flow.phase == DTC_FLOW_CLEARED && poll.has_cleared && !poll.has_list, "the second clear is accepted and ends with its outcome");
+	check(poll.flow.phase == DTC_FLOW_CLEARED && poll.has_cleared && !poll.has_list, "the second clear ends with its outcome");
 
 	// The clear arrived, its answer did not
 	scene_list();
@@ -1400,9 +1429,11 @@ static void test_no_answer(void)
 	send();
 	adapter_answer(&wican, &request, now, &lost);
 	reply(-1, NULL, NULL);
-	check(undecided(DTC_FLOW_CLEAR_SENT) && shows_list(read_text, 2) && wican.seq == 43, "the scene: the adapter accepted the clear, the display got no status");
+	check(undecided(DTC_FLOW_CLEAR_SENT) && shows_list(read_text, 2) && wican.seq == 43 && !poll.has_old && poll_take_events(&poll) == 0,
+	      "the scene: the adapter accepted the clear, the display got no status; nothing became the old list");
 	second();
 	check(poll.flow.phase == DTC_FLOW_CLEARING && poll.flow.seq == 43 && shows_list(read_text, 2), "the next state shows a new clear from HTTP: it is the own one");
+	check(old_is(read_text, 2) && poll_take_events(&poll) == (POLL_EVENT_OLD | POLL_EVENT_LISTS), "with the state that shows the own clear its list is the old list, POLL_EVENT_OLD");
 	seconds(3);
 	check(poll.flow.phase == DTC_FLOW_CLEARED && poll.has_cleared && poll.cleared.dtc_count == 1 && !poll.has_list, "the clear without an answer goes on to its outcome");
 
@@ -1422,8 +1453,20 @@ static void test_no_answer(void)
 	poll_take_events(&poll);
 	adapter_request(&wican, true, false, 0, now, &number, &reason);
 	second();
-	check(poll.flow.phase == DTC_FLOW_UNKNOWN && !poll.has_list && old_is(read_text, 2) && poll_take_events(&poll) == POLL_EVENT_LISTS,
-	      "a clear without an answer and a state with a clear from MQTT: unknown, the list is dropped");
+	check(poll.flow.phase == DTC_FLOW_UNKNOWN && !poll.has_list && old_is(read_text, 2) && poll_take_events(&poll) == (POLL_EVENT_OLD | POLL_EVENT_LISTS),
+	      "a clear without an answer and a state with a clear from MQTT: unknown - the list is dropped and is the old list, it may have been cleared");
+
+	// The clear arrived, its answer did not, and the first state shows that it ended with an error
+	scene_list();
+	second();
+	poll_clear(&poll, false, now);
+	send();
+	adapter_answer(&wican, &request, now, &lost);
+	reply(0, NULL, NULL);
+	wican.rpm = 780;
+	second();
+	check(reason_is("engine_running") && poll.flow.seq == 43 && !poll.has_list, "a clear without an answer and a state that shows it accepted and ended with an error: failed with that reason");
+	check(old_is(read_text, 2) && poll_take_events(&poll) == (POLL_EVENT_OLD | POLL_EVENT_LISTS), "the clear was accepted, so its list is the old list although the display never saw it running");
 }
 
 static void test_read_error(void)
@@ -1673,10 +1716,10 @@ static bool result_without_room(void)
 {
 	scene_result();
 	poll_apply(&poll, &request, 200, padded_result(read_text, POLL_TEXT_SIZE), POLL_TEXT_SIZE, "42", now, work, POLL_TOKENS);
-	if(!result_gone() || !reason_is("no_answer")) return false;
+	if(!result_gone() || !reason_is("no_result")) return false;
 	scene_result();
 	poll_apply(&poll, &request, 200, padded_result(read_text, POLL_TEXT_SIZE + 1), POLL_TEXT_SIZE + 1, "42", now, work, POLL_TOKENS);
-	if(!result_gone() || !reason_is("no_answer")) return false;
+	if(!result_gone() || !reason_is("no_result")) return false;
 	scene_clear_result();
 	poll_apply(&poll, &request, 200, padded_result(clear_text, POLL_TEXT_SIZE), POLL_TEXT_SIZE, "43", now, work, POLL_TOKENS);
 	return result_gone() && poll.flow.phase == DTC_FLOW_UNKNOWN;
@@ -1708,7 +1751,7 @@ static void test_result(void)
 	{
 		scene_result();
 		reply(gone[i].status, gone[i].body != NULL ? gone[i].body : read_text, gone[i].header);
-		if(!result_gone() || !reason_is("no_answer") || poll_take_events(&poll) != 0 || !send() || request.kind != POLL_VALUES)
+		if(!result_gone() || !reason_is("no_result") || poll_take_events(&poll) != 0 || !send() || request.kind != POLL_VALUES)
 		{
 			printf("  a read: %d with the header '%s' and the body '%.20s'\n", gone[i].status, gone[i].header != NULL ? gone[i].header : "(none)",
 			       gone[i].body != NULL ? gone[i].body : "(the result)");
@@ -1724,7 +1767,7 @@ static void test_result(void)
 		}
 	}
 	check(wrong == 0, "204, 503, a result without the header, with another number or with more than its digits, a body that is no result, any other status: "
-	                  "the result cannot be had - conn goes on, the own read failed without an answer, the outcome of the own clear is unknown");
+	                  "the result cannot be had - conn goes on, the own read failed with no_result, the outcome of the own clear is unknown");
 	scene_result();
 	reply(204, "", NULL);
 	exchange();
@@ -1737,7 +1780,7 @@ static void test_result(void)
 	// The wrong action under the right number
 	scene_result();
 	reply(200, clear_text, "42");
-	check(result_gone() && reason_is("no_answer") && poll_take_events(&poll) == 0, "the result of a clear under the number of the own read: fetched, but no list - the read failed");
+	check(result_gone() && reason_is("no_result") && poll_take_events(&poll) == 0, "the result of a clear under the number of the own read: fetched, but no list - the read failed, no_result");
 	scene_clear_result();
 	reply(200, read_text, "43");
 	check(result_gone() && poll.flow.phase == DTC_FLOW_UNKNOWN && poll_take_events(&poll) == POLL_EVENT_LISTS,
@@ -1767,7 +1810,7 @@ static void test_result(void)
 	check(shows_list(read_text, 2) && poll.list_text[length + 1] == 'y', "a result followed by other bytes: the list and its text end at its length");
 	scene_result();
 	poll_apply(&poll, &request, 200, read_text, length - 1, "42", now, work, POLL_TOKENS);
-	check(result_gone() && reason_is("no_answer"), "a result passed one byte short cannot be read");
+	check(result_gone() && reason_is("no_result"), "a result passed one byte short cannot be read: no_result");
 
 	// No answer
 	scene_result();
@@ -1976,7 +2019,7 @@ static void test_catalog(void)
 	answer();
 	check(poll.conn.failed_rounds == 1 && poll.http_failed == 1, "without a state nothing says that AutoPID is off: a 500 for the profile fails the round");
 
-	// A profile that has no room at the caller is reported as no answer
+	// A profile that has no room at the caller is passed with its status and an empty body
 	memset(huge, ' ', sizeof(huge) - 1);
 	memcpy(huge, CONFIG_RPM, strlen(CONFIG_RPM));
 	huge[POLL_BODY_SIZE - 1] = '\0';
@@ -1991,9 +2034,13 @@ static void test_catalog(void)
 	wican.config_text = huge;
 	join(OWN, 100000);
 	exchange();
+	check(sent("SCV") && !poll.catalog_complete && !poll.conn.want_catalog && poll.conn.failed_rounds == 0 && poll.http_ok == 3 && poll.http_failed == 0,
+	      "a profile of 16384 bytes has no room: 200 with an empty body - an answer that cannot be used, conn has it for this connection and the round goes on");
 	seconds(20);
-	check(strchr(trace, 'V') == NULL && !poll.catalog_complete && view() == CONN_VIEW_NO_ANSWER && poll.conn.failed_rounds == 5,
-	      "a profile of 16384 bytes has no room: status 0 every round, the values are never asked for and the display shows no answer");
+	check(strchr(trace, 'C') == NULL && view() == CONN_VIEW_LIVE && poll.conn.failed_rounds == 0 && !poll.catalog_complete && !poll.lost,
+	      "a profile without room is not asked for again and fails no round: the display stays live, not without an answer");
+	check(poll.catalog.count == 4 && catalog_find(&poll.catalog, "ENGINE_RPM") == 1 && poll.catalog.entries[1].delivered && !poll.catalog.entries[1].in_profile,
+	      "the catalogue of a connection whose profile had no room is what the values bring");
 }
 
 // A display that got the state of API.md (pass 1234) and a profile without ENGINE_RPM; its values are asked for at 5000
@@ -2146,12 +2193,14 @@ static void test_restart(void)
 	state_second();
 	check(poll.values.count == 1 && value("@BATT_V") != NULL && seen_at("@BATT_V") == 103000 && !poll.values.has_pass,
 	      "the state shows another boot number: the values are dropped; the voltage of that very state stays");
-	check(!poll.catalog_complete && poll.catalog.count == 4 && poll.catalog_guard.seen_since_ms == 103000 && poll.conn.want_catalog,
-	      "after a restart the catalogue stays but is not complete, guard is told: its rest time begins anew");
+	check(!poll.catalog_complete && poll.catalog.count == 1 && strcmp(poll.catalog.entries[0].name, "@BATT_V") == 0 && !poll.catalog.entries[0].delivered &&
+	      catalog_find(&poll.catalog, "ENGINE_RPM") < 0, "after a restart the catalogue is started anew: the battery voltage alone, not delivered, and not complete");
+	check(poll.catalog_guard.seen_since_ms == 103000 && !poll.catalog_guard.written && poll.conn.want_catalog, "after a restart guard is told: its rest time begins anew, and conn asks for the profile");
 	check(poll_take_events(&poll) == (POLL_EVENT_FORGET | POLL_EVENT_LISTS) && poll.flow.phase == DTC_FLOW_IDLE, "a restart raises POLL_EVENT_FORGET and POLL_EVENT_LISTS");
 	exchange();
 	second();
-	check(sent("SCV SV") && poll.catalog_complete && poll_take_events(&poll) == 0, "after a restart the profile is asked for again, once");
+	check(sent("SCV SV") && poll.catalog_complete && poll.catalog.count == 4 && poll.catalog.entries[1].in_profile && poll_take_events(&poll) == 0,
+	      "after a restart the profile is asked for again, once, and is the catalogue");
 
 	scene();
 	now += 1000;
@@ -2168,9 +2217,10 @@ static void test_restart(void)
 	poll_read(&poll, now);
 	adapter_restart(&wican, BOOT + 1, 42, now);
 	answer();
-	check(reason_is("restarted") && poll.flow.to_send == DTC_FLOW_SEND_NOTHING, "the adapter restarts while a read waits behind the request under way: failed, restarted");
+	check(poll.flow.phase == DTC_FLOW_IDLE && poll.flow.to_send == DTC_FLOW_SEND_NOTHING && poll_take_events(&poll) == (POLL_EVENT_FORGET | POLL_EVENT_LISTS),
+	      "the adapter restarts while a read waits behind the request under way: it was never sent - idle, no failure");
 	exchange();
-	check(sent("SCV") && wican.seq == 0, "the read that waited when the restart showed is never sent");
+	check(sent("SCV") && wican.seq == 0 && poll.flow.phase == DTC_FLOW_IDLE, "the read that waited when the restart showed is never sent");
 	scene();
 	poll_read(&poll, now);
 	exchange();
@@ -2203,6 +2253,51 @@ static void test_restart(void)
 	second();
 	check(sent("SCV") && poll.flow.phase == DTC_FLOW_LIST && shows_list(read_text, 2) && poll.catalog_complete && poll.values.count == 4 && poll_take_events(&poll) == 0,
 	      "another number of values without another boot number: the profile is asked for again, nothing is dropped");
+	check(poll.catalog.count == 4 && catalog_find(&poll.catalog, "ENGINE_RPM") == 1 && poll.catalog.entries[1].delivered && !poll.catalog.entries[1].in_profile,
+	      "without a restart the catalogue keeps an entry that was delivered, also when the profile does not name it any more");
+
+	// A restart with another profile leaves nothing of the one before behind
+	scene();
+	check(catalog_find(&poll.catalog, "ENGINE_RPM") == 1 && poll.catalog.entries[1].delivered && poll.catalog.count == 4, "the scene: ENGINE_RPM is in the catalogue and was delivered");
+	wican.has_rpm = false;
+	adapter_restart(&wican, BOOT + 1, 42, now + 500);
+	seconds(2);
+	check(sent("SCV SV") && poll.catalog_complete && poll.catalog.count == 3 && catalog_find(&poll.catalog, "ENGINE_RPM") < 0 &&
+	      strcmp(poll.catalog.entries[1].name, "COOLANT_TMP") == 0 && poll.catalog.entries[1].in_profile && strcmp(poll.catalog.entries[2].name, "FUEL_L") == 0,
+	      "the adapter restarts with a profile without ENGINE_RPM: the catalogue is that profile, the entry delivered before the restart is gone");
+	seconds(13);
+	check(now == 117000 && read_block() == DTC_FLOW_STARTING, "14 s after that restart no read is offered yet: the adapter is not up for 15 s");
+	second();
+	check(value("ENGINE_RPM") == NULL && read_block() == DTC_FLOW_ALLOWED, "15 s after that restart a read is offered without an engine speed: the profile of this adapter has none");
+
+	// A catalogue that is not complete is started anew as well
+	adapter_init(&wican, 0);
+	wican.config_text = "[]";
+	join(OWN, 100000);
+	exchange();
+	seconds(2);
+	check(!poll.catalog_complete && poll.catalog.count == 4 && poll.catalog.entries[1].delivered, "the scene: the profile cannot be used, the catalogue is what the values brought");
+	adapter_restart(&wican, BOOT + 1, 42, now + 500);
+	state_second();
+	check(poll.catalog.count == 1 && !poll.catalog_complete && poll_take_events(&poll) == (POLL_EVENT_FORGET | POLL_EVENT_LISTS),
+	      "a restart starts the catalogue anew also when it never was complete: what the values of the adapter before brought is gone");
+
+	// Joining a network is no restart: the stored catalogue serves
+	adapter_init(&wican, 0);
+	wican.dead = true;
+	join(OWN, 100000);
+	poll_stored(&poll, stored_catalog, strlen(stored_catalog), NULL, 0, work, POLL_TOKENS);
+	exchange();
+	seconds(20);
+	check(view() == CONN_VIEW_NO_ANSWER && poll.catalog.count == 3 && catalog_find(&poll.catalog, "OIL_TEMP_OLD") == 2, "an adapter that does not answer: the stored catalogue serves");
+	wican.dead = false;
+	now += 10000;
+	send();
+	answer();
+	check(conn_state(&poll.conn) != NULL && poll.catalog.count == 3 && catalog_find(&poll.catalog, "OIL_TEMP_OLD") == 2 && (poll_take_events(&poll) & POLL_EVENT_FORGET) == 0,
+	      "the first state of a connection is no restart: the stored catalogue still serves, nothing is forgotten");
+	exchange();
+	check(poll.catalog_complete && poll.catalog.count == 4 && catalog_find(&poll.catalog, "OIL_TEMP_OLD") < 0, "the profile of that connection replaces the stored catalogue");
 }
 
 static void test_foreign(void)
@@ -2212,6 +2307,7 @@ static void test_foreign(void)
 	state_second();
 	check(view() == CONN_VIEW_FOREIGN && poll.values.count == 0 && !poll.catalog_complete && strcmp(poll.bound_id, OWN) == 0,
 	      "another adapter answers: foreign, the values are dropped and its voltage is no value");
+	check(poll.catalog.count == 1 && catalog_find(&poll.catalog, "ENGINE_RPM") < 0, "another adapter answers: the catalogue is started anew");
 	check(poll.flow.phase == DTC_FLOW_IDLE && !poll.has_list && poll_take_events(&poll) == (POLL_EVENT_FORGET | POLL_EVENT_LISTS),
 	      "another adapter answers while the list is shown: the list is dropped although it shows the same numbers");
 	exchange();
@@ -2255,8 +2351,9 @@ static void test_no_api(void)
 	state_second();
 	check(view() == CONN_VIEW_NO_API && reason_is("no_answer") && poll.values.count == 0 && !poll.catalog_complete && poll_take_events(&poll) == (POLL_EVENT_FORGET | POLL_EVENT_LISTS),
 	      "404 for the state after a state was answered: another firmware - values dropped, the own read failed, no voltage");
+	check(poll.catalog.count == 1, "404 for the state after a state was answered: the catalogue is started anew");
 	exchange();
-	check(sent("rSCV"), "the firmware without the API is asked for its profile and its values");
+	check(sent("rSCV") && poll.catalog_complete && poll.catalog.count == 4, "the firmware without the API is asked for its profile and its values");
 	scene_list();
 	wican.api = false;
 	state_second();
@@ -2282,6 +2379,7 @@ static void test_no_api(void)
 	state_second();
 	check(view() == CONN_VIEW_LIVE && poll.values.count == 1 && value("@BATT_V") != NULL && !poll.catalog_complete && poll_take_events(&poll) == (POLL_EVENT_FORGET | POLL_EVENT_LISTS),
 	      "a state after a 404: another firmware - the values of the old one are dropped, the voltage of the state is there");
+	check(poll.catalog.count == 1, "a state after a 404: the catalogue of the firmware without the API is gone, it is started anew");
 	exchange();
 	check(sent("SCV") && poll.catalog_complete && poll.values.has_pass, "the firmware with the API is asked for its profile again, the values have a pass counter now");
 }
@@ -2303,7 +2401,7 @@ static void test_other_scan(void)
 	poll_clear(&poll, false, now);
 	adapter_request(&wican, false, false, 0, now, &number, &reason);
 	exchange();
-	check(sent("SVc") && reason_is("busy") && !poll.has_list && old_is(read_text, 2) && wican.seq == 43 && !wican.clear,
+	check(sent("SVc") && reason_is("busy") && !poll.has_list && !poll.has_old && wican.seq == 43 && !wican.clear,
 	      "somebody else starts a scan between the confirmation and the POST: the adapter refuses the clear, busy");
 }
 
@@ -2312,6 +2410,309 @@ static void at(uint64_t at_ms)
 {
 	now = at_ms;
 	exchange();
+}
+
+static char second_text[POLL_TEXT_SIZE];    // the result of the read 44 as the adapter of the test wrote it
+
+// The own read 44 behind the clear 43: a second list, with the one code that came back, is shown since
+// 115000. It is 117000, and the list of the first clear, with two codes, is the old list.
+static bool scene_second_list(void)
+{
+	scene_cleared();
+	wican.read_text = NULL;
+	poll_read(&poll, now);
+	exchange();
+	seconds(6);
+	strcpy(second_text, wican.result);
+	poll_take_events(&poll);
+	trace[0] = '\0';
+	return now == 117000 && poll.flow.phase == DTC_FLOW_LIST && poll.flow.read_seq == 44 && poll.has_list && strcmp(poll.list_text, second_text) == 0 &&
+	       poll.list.dtc_count == 1 && strcmp(second_text, read_text) != 0 && old_is(read_text, 2);
+}
+
+static bool old_is_second(void)
+{
+	return poll.has_old && strcmp(poll.old_text, second_text) == 0 && !poll.old.clear && poll.old.dtc_count == 1 && poll.old.code_count == 1;
+}
+
+// The list before the last clear is only replaced by a list that was cleared, or may have been
+static void test_old(void)
+{
+	answer_t lost;
+	const char *reason;
+	uint32_t number;
+
+	check(scene_second_list(), "the scene: a second list with one code is shown; the list of the first clear, with two codes, is the old list");
+
+	// The adapter accepts
+	poll_clear(&poll, false, now);
+	check(send() && request.kind == POLL_DTC_CLEAR && strcmp(request.path, "/api/dtc?action=clear&seq=44") == 0 && old_is(read_text, 2) && poll_take_events(&poll) == 0,
+	      "the clear of the second list goes out: the old list is still the one of the first clear, no event");
+	answer();
+	check(poll.flow.phase == DTC_FLOW_CLEARING && old_is_second() && poll_take_events(&poll) == (POLL_EVENT_OLD | POLL_EVENT_LISTS),
+	      "202: the second list replaces the old list, POLL_EVENT_OLD and POLL_EVENT_LISTS");
+	wican.rpm = 780;
+	second();
+	check(reason_is("engine_running") && old_is_second() && poll_take_events(&poll) == POLL_EVENT_LISTS,
+	      "the accepted clear ends with an error: the old list stays the list of that clear, POLL_EVENT_OLD is not raised a second time");
+
+	// The adapter refuses
+	scene_second_list();
+	poll_clear(&poll, false, now);
+	wican.sleep_in_s = 0;
+	exchange();
+	check(sent("c") && reason_is("not_ready") && !poll.has_list && old_is(read_text, 2) && poll_take_events(&poll) == POLL_EVENT_LISTS,
+	      "a clear the adapter refuses leaves the old list as it was: the list of the first clear, no POLL_EVENT_OLD");
+
+	// The clear does not arrive
+	scene_second_list();
+	poll_clear(&poll, false, now);
+	send();
+	reply(0, NULL, NULL);
+	seconds(2);
+	check(poll.flow.phase == DTC_FLOW_LIST && poll.has_list && strcmp(poll.list_text, second_text) == 0 && old_is(read_text, 2) && poll_take_events(&poll) == 0,
+	      "a clear that did not arrive leaves the old list as it was and the second list shown, no event");
+
+	// The clear arrives, its answer does not
+	scene_second_list();
+	poll_clear(&poll, false, now);
+	send();
+	adapter_answer(&wican, &request, now, &lost);
+	reply(0, NULL, NULL);
+	check(undecided(DTC_FLOW_CLEAR_SENT) && old_is(read_text, 2) && poll_take_events(&poll) == 0, "the POST of a clear without an answer changes no old list: the states decide");
+	second();
+	check(poll.flow.phase == DTC_FLOW_CLEARING && poll.flow.seq == 45 && old_is_second() && poll_take_events(&poll) == (POLL_EVENT_OLD | POLL_EVENT_LISTS),
+	      "the state shows the clear accepted: the second list replaces the old list with that state");
+	scene_second_list();
+	poll_clear(&poll, false, now);
+	send();
+	adapter_answer(&wican, &request, now, &lost);
+	reply(202, "{\"accepted\":true}", NULL);
+	check(undecided(DTC_FLOW_CLEAR_SENT) && old_is(read_text, 2) && poll_take_events(&poll) == 0,
+	      "202 without a number is no acceptance the display can follow: the old list stays until the states decide");
+	second();
+	check(poll.flow.phase == DTC_FLOW_CLEARING && old_is_second(), "the state behind a 202 without a number shows the clear: now the second list is the old list");
+
+	// The number of the accepted clear need not be the one behind the number of the list
+	scene();
+	wican.next_seq = 2147483647u;
+	poll_read(&poll, now);
+	exchange();
+	seconds(5);
+	poll_take_events(&poll);
+	check(poll.flow.phase == DTC_FLOW_LIST && poll.flow.read_seq == 2147483647u && poll_clear(&poll, false, now) == DTC_FLOW_ALLOWED, "the scene: a list with the largest number an adapter gives, 2147483647");
+	exchange();
+	check(poll.flow.phase == DTC_FLOW_CLEARING && poll.flow.seq == 1 && old_is(read_text, 2) && poll_take_events(&poll) == (POLL_EVENT_OLD | POLL_EVENT_LISTS),
+	      "its clear is accepted with the number 1, the one behind the largest: a lower number than the one of the list is an acceptance all the same, the list is the old list");
+	scene_list();
+	second();
+	poll_clear(&poll, false, now);
+	send();
+	reply(0, NULL, NULL);
+	second();
+	check(undecided(DTC_FLOW_CLEAR_SENT) && poll.flow.rounds_without_answer == 1 && !poll.has_old, "the scene: one state after the POST of a clear got no answer shows no new request");
+	adapter_request(&wican, true, true, 42, now, &number, &reason);
+	second();
+	check(poll.flow.phase == DTC_FLOW_CLEARING && poll.flow.seq == 43 && old_is(read_text, 2) && poll_take_events(&poll) == (POLL_EVENT_OLD | POLL_EVENT_LISTS),
+	      "the second state after the POST shows the clear accepted: its list is the old list with that state");
+
+	// Nobody knows what became of the clear
+	scene_second_list();
+	poll_clear(&poll, false, now);
+	send();
+	reply(0, NULL, NULL);
+	adapter_request(&wican, false, false, 0, now, &number, &reason);
+	second();
+	check(poll.flow.phase == DTC_FLOW_UNKNOWN && !poll.has_list && old_is_second() && poll_take_events(&poll) == (POLL_EVENT_OLD | POLL_EVENT_LISTS),
+	      "a clear whose outcome is unknown may have cleared: the second list replaces the old list");
+
+	// The network
+	scene_second_list();
+	poll_clear(&poll, false, now);
+	poll_wifi(&poll, false, now);
+	check(poll.flow.phase == DTC_FLOW_LIST && poll.has_list && old_is(read_text, 2) && poll_take_events(&poll) == 0,
+	      "the network is lost while the clear of the second list waits: never sent, the old list stays");
+	scene_second_list();
+	poll_clear(&poll, false, now);
+	send();
+	poll_wifi(&poll, false, now);
+	check(poll.flow.phase == DTC_FLOW_UNKNOWN && old_is_second() && poll_take_events(&poll) == (POLL_EVENT_OLD | POLL_EVENT_LISTS),
+	      "the network is lost while the POST of the clear of the second list is under way: the second list replaces the old list");
+
+	// A restart
+	scene_second_list();
+	now += 1000;
+	send();
+	check(request.kind == POLL_STATE && poll_clear(&poll, false, now) == DTC_FLOW_ALLOWED, "the scene: the clear of the second list waits behind the state under way");
+	adapter_restart(&wican, BOOT + 1, 42, now);
+	answer();
+	check(poll.flow.phase == DTC_FLOW_IDLE && !poll.has_list && old_is(read_text, 2) && poll_take_events(&poll) == (POLL_EVENT_FORGET | POLL_EVENT_LISTS),
+	      "the adapter restarts while the clear of the second list waits: never sent, the old list stays");
+	exchange();
+	check(sent("SCV") && wican.seq == 0, "the clear that waited when the restart showed is never sent");
+	scene_second_list();
+	poll_clear(&poll, false, now);
+	send();
+	reply(0, NULL, NULL);
+	adapter_restart(&wican, BOOT + 1, 42, now);
+	second();
+	check(poll.flow.phase == DTC_FLOW_UNKNOWN && !poll.has_list && old_is_second() && poll_take_events(&poll) == (POLL_EVENT_FORGET | POLL_EVENT_OLD | POLL_EVENT_LISTS),
+	      "the adapter restarts after the POST of the clear got no answer: unknown, the second list replaces the old list");
+
+	// The clear waits too long
+	scene_second_list();
+	poll_clear(&poll, false, now);
+	now = 715001;
+	check(send() && request.kind == POLL_STATE && poll.flow.phase == DTC_FLOW_LIST && old_is(read_text, 2) && poll.events == 0,
+	      "a clear of the second list that waited 600001 ms is not handed out: the old list stays, no event");
+
+	// The old list that was read from the flash
+	adapter_init(&wican, 0);
+	wican.read_text = read_text;
+	join(OWN, 100000);
+	poll_stored(&poll, NULL, 0, SHORTEST_RESULT, strlen(SHORTEST_RESULT), work, POLL_TOKENS);
+	exchange();
+	seconds(2);
+	poll_read(&poll, now);
+	exchange();
+	seconds(5);
+	poll_take_events(&poll);
+	check(poll.flow.phase == DTC_FLOW_LIST && shows_list(read_text, 2) && poll_clear(&poll, false, now) == DTC_FLOW_ALLOWED && strcmp(poll.old_text, SHORTEST_RESULT) == 0,
+	      "the scene: an old list from the flash, and the clear of a list just read waits");
+	send();
+	check(request.kind == POLL_DTC_CLEAR && poll.has_old && strcmp(poll.old_text, SHORTEST_RESULT) == 0 && poll.old.ecu_count == 0 && poll_take_events(&poll) == 0,
+	      "that clear goes out: the old list from the flash is still the old list, nothing is to be stored");
+	reply(409, "{\"accepted\":false,\"reason\":\"busy\",\"seq\":42}", NULL);
+	check(reason_is("busy") && poll.has_old && strcmp(poll.old_text, SHORTEST_RESULT) == 0 && poll.old.ecu_count == 0 && poll.old.dtc_count == 0 &&
+	      poll_take_events(&poll) == POLL_EVENT_LISTS, "that clear is refused: the old list from the flash outlasts it");
+}
+
+// An answer whose body had no room at the caller: the status that came, with an empty body
+static void test_no_room(void)
+{
+	answer_t lost;
+
+	join(NULL, 5000);
+	send();
+	reply(200, "", NULL);
+	check(conn_state(&poll.conn) == NULL && poll.conn.failed_rounds == 1 && !poll.conn.no_api && poll.http_ok == 1 && poll.http_failed == 0 && !send(),
+	      "a state without room, 200 with an empty body: the round has failed, and an answer is counted");
+
+	scene_result();
+	reply(200, "", "42");
+	check(result_gone() && reason_is("no_result") && poll.conn.failed_rounds == 0 && poll.http_failed == 0 && send() && request.kind == POLL_VALUES,
+	      "a result without room, 200 with its header and an empty body: it cannot be had - the read failed with no_result, the round goes on");
+	scene_clear_result();
+	reply(200, NULL, "43");
+	check(result_gone() && poll.flow.phase == DTC_FLOW_UNKNOWN && old_is(read_text, 2) && poll.conn.failed_rounds == 0,
+	      "the result of a clear without room, 200 with its header and no body: the outcome is unknown, the round goes on");
+	scene_result();
+	reply(0, "", "42");
+	check(poll.flow.phase == DTC_FLOW_READING && poll.conn.failed_rounds == 1 && poll.http_failed == 1 && !send(),
+	      "status 0 with an empty body is something else: no answer for the result - the round has failed, the read waits and the result is asked for again");
+
+	adapter_init(&wican, 0);
+	scene_catalog();
+	reply(200, "", NULL);
+	check(!poll.catalog_complete && !poll.conn.want_catalog && poll.conn.failed_rounds == 0 && poll.catalog.count == 1 && poll.http_ok == 2 && send() && request.kind == POLL_VALUES,
+	      "a profile without room, 200 with an empty body: done for this connection as with any body that cannot be used, the round goes on");
+	adapter_init(&wican, 0);
+	scene_catalog();
+	reply(0, "", NULL);
+	check(poll.conn.want_catalog && poll.conn.failed_rounds == 1 && poll.http_failed == 1 && !send(), "status 0 with an empty body for the profile is no answer: the round has failed");
+	adapter_init(&wican, 0);
+	join(OWN, 100000);
+	poll_stored(&poll, stored_catalog, strlen(stored_catalog), NULL, 0, work, POLL_TOKENS);
+	send();
+	answer();
+	send();
+	reply(200, "", NULL);
+	check(request.kind == POLL_CATALOG && !poll.catalog_complete && poll.catalog.count == 3 && catalog_find(&poll.catalog, "OIL_TEMP_OLD") == 2,
+	      "a profile without room leaves the catalogue as it was: the stored one still serves");
+
+	scene_values();
+	reply(200, "", NULL);
+	check(poll.conn.failed_rounds == 1 && poll.values.count == 1 && !poll.values.has_pass && poll.http_ok == 3 && poll.http_failed == 0,
+	      "values without room, 200 with an empty body: the round has failed, no value is taken, and an answer is counted");
+
+	read_answered(202, "");
+	check(undecided(DTC_FLOW_READ_SENT) && poll.http_ok == 8, "the 202 of a read without room, with an empty body: accepted without a number, the states decide");
+	read_answered(409, "");
+	check(reason_is("http_409") && poll.http_ok == 8, "a refusal without room, 409 with an empty body: failed with the reason of its status");
+	scene_list();
+	second();
+	poll_clear(&poll, false, now);
+	send();
+	adapter_answer(&wican, &request, now, &lost);
+	reply(202, "", NULL);
+	check(undecided(DTC_FLOW_CLEAR_SENT) && !poll.has_old, "the 202 of a clear without room: not accepted with a number, no old list yet");
+	second();
+	check(poll.flow.phase == DTC_FLOW_CLEARING && poll.flow.seq == 43 && old_is(read_text, 2), "the state behind the 202 without room shows the clear: it goes on as accepted, its list is the old list");
+}
+
+// An adapter that accepts a request and does not end it
+static void test_wait(void)
+{
+	scene();
+	wican.pickup_ms = 400000;
+	poll_read(&poll, now);
+	exchange();
+	check(poll.flow.phase == DTC_FLOW_READING && poll.flow.seq == 42 && poll.flow.accepted_ms == 102000, "the scene: the own read was accepted at 102000 by an adapter that leaves it queued");
+	seconds(180);
+	check(now == 282000 && poll.flow.phase == DTC_FLOW_READING && view() == CONN_VIEW_SCAN && conn_state(&poll.conn)->dtc.phase == WICAN_DTC_QUEUED,
+	      "a state 180000 ms after the acceptance shows the read still queued: the display still waits");
+	scene();
+	wican.pickup_ms = 400000;
+	poll_read(&poll, now);
+	exchange();
+	seconds(179);
+	at(282001);
+	check(reason_is("no_answer") && !poll.has_list && view() == CONN_VIEW_SCAN && poll.conn.failed_rounds == 0,
+	      "a state 180001 ms after the acceptance shows the read still queued: the read is given up, no answer, although the adapter answers every round");
+	check(poll_read(&poll, now) == DTC_FLOW_BUSY && poll_clear(&poll, false, now) == DTC_FLOW_BUSY, "the adapter still shows its scan queued: nothing is offered while it does");
+
+	scene_list();
+	second();
+	wican.pickup_ms = 400000;
+	poll_clear(&poll, false, now);
+	exchange();
+	check(poll.flow.phase == DTC_FLOW_CLEARING && poll.flow.accepted_ms == 107000, "the scene: the own clear was accepted at 107000 by an adapter that leaves it queued");
+	seconds(180);
+	check(now == 287000 && poll.flow.phase == DTC_FLOW_CLEARING && shows_list(read_text, 2), "a state 180000 ms after the acceptance shows the clear still queued: the display still waits, the list shown");
+	scene_list();
+	second();
+	wican.pickup_ms = 400000;
+	poll_clear(&poll, false, now);
+	exchange();
+	seconds(179);
+	poll_take_events(&poll);
+	at(287001);
+	check(poll.flow.phase == DTC_FLOW_UNKNOWN && !poll.has_list && old_is(read_text, 2) && poll_take_events(&poll) == POLL_EVENT_LISTS,
+	      "a state 180001 ms after the acceptance shows the clear still queued: its outcome is unknown, the list is dropped and stays the old list");
+}
+
+// An adapter whose polling pass takes longer than a value stays fresh
+static void test_slow_pass(void)
+{
+	int renewed = 0, not_fresh = 0, refused = 0;
+	int i;
+
+	adapter_init(&wican, 0);
+	wican.pass_time = 3500;
+	join(OWN, 100000);
+	exchange();
+	seconds(2);
+	check(conn_state(&poll.conn)->pass == 29 && seen_at("ENGINE_RPM") == 102000, "the scene: a polling pass takes 3500 ms; the 29th ended at 101500, its values arrived at 102000");
+	for(i = 0; i < 70; i++)
+	{
+		second();
+		if(seen_at("ENGINE_RPM") == now) renewed++;
+		if(!fresh("ENGINE_RPM")) not_fresh++;
+		if(read_block() != DTC_FLOW_ALLOWED) refused++;
+	}
+	check(renewed == 20, "in 70 s the values are renewed 20 times, 3 or 4 s apart: only when a pass has ended");
+	check(not_fresh == 10, "in 10 of the 70 s the engine speed is 3000 ms old at the end of the round: not fresh");
+	check(refused == 0, "a read is offered in every one of the 70 s: an engine speed that is not fresh counts while it is not gone");
 }
 
 static void test_outage(void)
@@ -2388,6 +2789,22 @@ static void test_outage(void)
 	check(poll.flow.phase == DTC_FLOW_UNKNOWN && !poll.has_list && old_is(read_text, 2) && poll_take_events(&poll) == POLL_EVENT_LISTS && poll.lost,
 	      "the round that fails after the grace time: the outcome of the clear is unknown and the list is dropped, both with that answer");
 
+	// The POST of the clear got no answer, and then nothing answers any more: it may have arrived
+	scene_list();
+	second();
+	poll_clear(&poll, false, now);
+	send();
+	reply(0, NULL, NULL);
+	wican.dead = true;
+	at(108000);
+	at(109000);
+	at(111000);
+	check(undecided(DTC_FLOW_CLEAR_SENT) && shows_list(read_text, 2) && !poll.has_old && poll.conn.failed_rounds == 3 && poll_take_events(&poll) == 0,
+	      "the POST of a clear got no answer and three rounds failed within the grace time: not decided, the list is shown, nothing became the old list");
+	at(116000);
+	check(poll.flow.phase == DTC_FLOW_UNKNOWN && !poll.has_list && old_is(read_text, 2) && poll.lost && poll_take_events(&poll) == (POLL_EVENT_OLD | POLL_EVENT_LISTS),
+	      "the round that fails after the grace time: the clear without an answer is unknown, and its list is the old list with that answer");
+
 	// Nothing to lose
 	scene_list();
 	wican.dead = true;
@@ -2414,13 +2831,14 @@ typedef struct
 	int failed_rounds;
 	bool conn_asking;
 	uint32_t pass;
+	bool has_old;
 } untouched_t;
 
 static untouched_t untouched(void)
 {
 	untouched_t is = {poll.asking, poll.asked, poll.http_ok, poll.http_failed, poll.events, poll.flow.phase, poll.flow.posted, poll.values.count,
 	                  value("@BATT_V") != NULL ? seen_at("@BATT_V") : 0, poll.catalog_complete, poll.catalog.count, poll.conn.failed_rounds, poll.conn.asking,
-	                  poll.values.pass};
+	                  poll.values.pass, poll.has_old};
 
 	return is;
 }
@@ -2431,7 +2849,7 @@ static bool same_as(untouched_t was)
 
 	return is.asking == was.asking && is.asked == was.asked && is.ok == was.ok && is.failed == was.failed && is.events == was.events && is.phase == was.phase &&
 	       is.posted == was.posted && is.values == was.values && is.volts_ms == was.volts_ms && is.complete == was.complete && is.entries == was.entries &&
-	       is.failed_rounds == was.failed_rounds && is.conn_asking == was.conn_asking && is.pass == was.pass;
+	       is.failed_rounds == was.failed_rounds && is.conn_asking == was.conn_asking && is.pass == was.pass && is.has_old == was.has_old;
 }
 
 // An answer that fits a request of this kind
@@ -2696,10 +3114,10 @@ static void test_late_clear(void)
 	poll_take_events(&poll);
 	now = 706000;
 	poll_clear(&poll, false, now);
-	check(send() && request.kind == POLL_DTC_CLEAR && old_is(read_text, 2) && poll_take_events(&poll) == (POLL_EVENT_OLD | POLL_EVENT_LISTS),
+	check(send() && request.kind == POLL_DTC_CLEAR && !poll.has_old && poll_take_events(&poll) == 0,
 	      "the confirmed clear gets its turn exactly 600000 ms after the read ended: it is handed out");
 	answer();
-	check(reason_is("read_required") && !poll.has_list && old_is(read_text, 2), "the adapter counts the 600 s from the end of the read, not from the arrival of the list: it refuses");
+	check(reason_is("read_required") && !poll.has_list && !poll.has_old, "the adapter counts the 600 s from the end of the read, not from the arrival of the list: it refuses");
 }
 
 // The adapter and the display start together
@@ -2805,7 +3223,7 @@ static void test_rooms(void)
 		memset(room, 0xA5, sizeof(room));
 		scene_result();
 		poll_apply(&poll, &request, 200, read_text, strlen(read_text), "42", now, room, count);
-		if(count >= 32 ? !shows_list(read_text, 2) || poll.flow.phase != DTC_FLOW_LIST : !result_gone() || !reason_is("no_answer")) wrong_result++;
+		if(count >= 32 ? !shows_list(read_text, 2) || poll.flow.phase != DTC_FLOW_LIST : !result_gone() || !reason_is("no_result")) wrong_result++;
 		if(!guard_intact(room, count, ROOM_TOKENS + 8)) damaged++;
 
 		// The profile without ENGINE_RPM has 13
@@ -2945,6 +3363,33 @@ static void model_shown(model_t *m, bool had_list, bool had_cleared)
 	if(m->list_shown != had_list || m->cleared_shown != had_cleared) m->events |= POLL_EVENT_LISTS;
 }
 
+// The list before the last clear. A clear that was sent replaces it when the answers say that the adapter
+// took it, or leave open whether it did: the clear runs, nobody knows, or it failed - told by a state and not
+// by the answer to its POST, which would be a refusal.
+static void model_old(model_t *m, bool was_sent, bool told_by_state)
+{
+	bool taken = false;
+
+	switch(m->flow.phase)
+	{
+		case DTC_FLOW_CLEARING:
+		case DTC_FLOW_UNKNOWN:
+			taken = true;
+			break;
+		case DTC_FLOW_FAILED:
+			taken = told_by_state;
+			break;
+		default:
+			break;
+	}
+	if(!was_sent || !taken) return;
+
+	m->old = m->list;
+	snprintf(m->old_text, sizeof(m->old_text), "%s", m->list_text);
+	m->has_old = true;
+	m->events |= POLL_EVENT_OLD | POLL_EVENT_LISTS;
+}
+
 // An adapter that cannot be reached ends the own request. Losing it twice changes nothing.
 static void model_reach(model_t *m, uint64_t now_ms)
 {
@@ -2957,6 +3402,7 @@ static void model_reach(model_t *m, uint64_t now_ms)
 static void model_wifi(model_t *m, bool up, uint64_t now_ms)
 {
 	bool had_list = m->list_shown, had_cleared = m->cleared_shown;
+	bool was_sent = m->flow.phase == DTC_FLOW_CLEAR_SENT;
 
 	if(up == m->joined) return;
 
@@ -2970,6 +3416,7 @@ static void model_wifi(model_t *m, bool up, uint64_t now_ms)
 		guard_catalog_connected(&m->guard);
 	}
 	model_reach(m, now_ms);
+	model_old(m, was_sent, false);
 	model_shown(m, had_list, had_cleared);
 }
 
@@ -2992,10 +3439,6 @@ static bool model_prepare(model_t *m, uint64_t now_ms, poll_request_t *expected)
 			expected->kind = POLL_DTC_CLEAR;
 			expected->post = true;
 			snprintf(expected->path, sizeof(expected->path), "/api/dtc?action=clear&seq=%lu", (unsigned long)number);
-			m->old = m->list;
-			strcpy(m->old_text, m->list_text);
-			m->has_old = true;
-			m->events |= POLL_EVENT_OLD | POLL_EVENT_LISTS;
 			break;
 		default:
 			switch(conn_next(&m->conn, now_ms))
@@ -3046,6 +3489,7 @@ static void model_state(model_t *m, int status, const answer_t *a, uint64_t now_
 	if(conn_take_restarted(&m->conn))
 	{
 		values_clear(&m->values);
+		catalog_init(&m->catalog);
 		m->complete = false;
 		guard_catalog_connected(&m->guard);
 		m->events |= POLL_EVENT_FORGET | POLL_EVENT_LISTS;
@@ -3096,12 +3540,13 @@ static void model_result(model_t *m, int status, const answer_t *a, const char *
 	{
 		conn_got_result(&m->conn, CONN_GOT_NOT_FOUND, now_ms);
 	}
-	if(waited && (m->flow.phase == DTC_FLOW_READING || m->flow.phase == DTC_FLOW_CLEARING)) dtc_flow_lost(&m->flow);
+	if(waited && (m->flow.phase == DTC_FLOW_READING || m->flow.phase == DTC_FLOW_CLEARING)) dtc_flow_no_result(&m->flow);
 }
 
 static void model_apply(model_t *m, const poll_request_t *as, const answer_t *a, uint64_t now_ms)
 {
 	bool had_list = m->list_shown, had_cleared = m->cleared_shown;
+	bool was_sent = m->flow.phase == DTC_FLOW_CLEAR_SENT;
 	int status = a->status < 0 ? 0 : a->status;
 	const char *body = a->body != NULL ? a->body : "";
 	size_t length = a->body != NULL ? a->length : 0;
@@ -3155,6 +3600,7 @@ static void model_apply(model_t *m, const poll_request_t *as, const answer_t *a,
 	}
 
 	model_reach(m, now_ms);
+	model_old(m, was_sent, m->kind == POLL_STATE);
 	model_shown(m, had_list, had_cleared);
 	if(guard_catalog_due(&m->guard, catalog_checksum(&m->catalog), m->complete, now_ms)) m->events |= POLL_EVENT_CATALOG;
 	if(status >= 200 && status < 500) m->answered++;
@@ -3207,7 +3653,7 @@ static bool same_flow(const dtc_flow_t *a, const dtc_flow_t *b)
 {
 	return a->phase == b->phase && a->to_send == b->to_send && a->boot == b->boot && a->seq_before == b->seq_before && a->seq == b->seq && a->read_seq == b->read_seq &&
 	       a->list_count == b->list_count && a->list_end_ms == b->list_end_ms && a->posted == b->posted && a->rounds_without_answer == b->rounds_without_answer &&
-	       strcmp(a->reason, b->reason) == 0;
+	       a->accepted_ms == b->accepted_ms && strcmp(a->reason, b->reason) == 0;
 }
 
 static bool same_values(const values_t *a, const values_t *b)
@@ -3287,8 +3733,9 @@ static const char *differs(const model_t *m)
  * Long random conversations. After every call the module is compared with the model, and the promises of
  * poll.h are watched on their own, without the model:
  *   - never two requests under way
- *   - a clear is only handed out after poll_clear() allowed it, with the number of the list shown, with
- *     POLL_EVENT_OLD raised and old_text equal to the text of that list
+ *   - a clear is only handed out after poll_clear() allowed it, with the number of the list shown
+ *   - the old list changes exactly when the flow leaves CLEAR_SENT with the clear accepted or its outcome
+ *     unknown, and is then the text of the list that was shown; POLL_EVENT_OLD is raised then and only then
  *   - has_list and has_cleared follow the flow
  *   - the events are raised when their cause happens and only then
  *   - after any conversation a healthy adapter and enough time lead back to renewed values and an allowed read
@@ -3302,6 +3749,7 @@ enum
 {
 	PROMISE_ONE_REQUEST,
 	PROMISE_CLEAR,
+	PROMISE_OLD,
 	PROMISE_SHOWN,
 	PROMISE_EVENTS,
 	PROMISE_STUCK,
@@ -3316,7 +3764,7 @@ typedef struct
 	long phases[DTC_FLOW_UNKNOWN + 1];
 	long views[CONN_VIEW_LIVE + 1];
 	long raised[5];             // by bit
-	long lists, outcomes, unknown, failures, back_to_list, late_clears, old_lists;
+	long lists, outcomes, unknown, failures, back_to_list, late_clears, old_lists, clears_out, clears_without_old, catalogs_anew;
 	long ignored, stale, steps_back, starts, stored, faults, no_room, at_limit, heals, healed_under_way;
 } walk_result_t;
 
@@ -3334,6 +3782,12 @@ static uint32_t text_sum(const char *text)
 
 	for(; *text != '\0'; text++) sum = (sum ^ (unsigned char)*text) * 16777619u;
 	return sum;
+}
+
+// The list before the last clear, to see whether a call changed it
+static uint32_t old_sum(void)
+{
+	return poll.has_old ? text_sum(poll.old_text) * 31 + (uint32_t)poll.old.dtc_count + 1 : 0;
 }
 
 // What the screen shows of the lists, to see whether a call changed it
@@ -3569,10 +4023,12 @@ static void walk_answer(const poll_request_t *asked, uint64_t world, uint32_t tr
 // The answer arrives at the display, which tells it to module and model
 static void walk_deliver(const poll_request_t *as, answer_t *answer, uint64_t now_ms, walk_result_t *result)
 {
-	// A body that has no room at the caller is reported as no answer
+	// A body that has no room at the caller is passed as the status that came with it and an empty body
 	if(answer->length >= POLL_BODY_SIZE)
 	{
-		memset(answer, 0, sizeof(*answer));
+		answer->body = NULL;
+		answer->length = 0;
+		walk_unreadable(answer);
 		result->no_room++;
 	}
 	poll_apply(&poll, as, answer->status, answer->body, answer->length, answer->seq_header, now_ms, work, POLL_TOKENS);
@@ -3638,10 +4094,11 @@ static bool walk(uint32_t seed, walk_result_t *result)
 		bool healing = call == WALK_CALLS;
 		uint32_t operation = walk_random(1000);
 		uint32_t step = walk_random(1000);
-		uint32_t events_before, shown_before;
+		uint32_t events_before, shown_before, old_before;
 		dtc_flow_phase_t phase_before;
 		char bound_before[33];
-		bool expect_forget = false, handed_clear = false, fresh_start = false, delivered = false;
+		bool expect_forget = false, fresh_start = false, delivered = false;
+		poll_kind_t answered = POLL_NONE;           // the kind of the request whose answer this call delivered
 
 		// The time goes on, now and then to a limit; the display reads it, now and then late
 		if(step < 700) world += walk_random(200);
@@ -3672,6 +4129,7 @@ static bool walk(uint32_t seed, walk_result_t *result)
 		if(!poll.wifi && walk_random(20) == 0) operation = 885;
 		events_before = poll.events;
 		shown_before = shown_sum();
+		old_before = old_sum();
 		phase_before = poll.flow.phase;
 		strcpy(bound_before, poll.bound_id);
 
@@ -3710,6 +4168,8 @@ static bool walk(uint32_t seed, walk_result_t *result)
 					known = 2;
 				}
 				walk_deliver(&asked, &pending, now_ms, result);
+				answered = asked.kind;
+				if(expect_forget) result->catalogs_anew++;
 				if(asked.kind == POLL_RESULT && poll.has_list && phase_before == DTC_FLOW_READING)
 				{
 					// This result became the list
@@ -3735,10 +4195,8 @@ static bool walk(uint32_t seed, walk_result_t *result)
 					char path[POLL_PATH_SIZE];
 
 					snprintf(path, sizeof(path), "/api/dtc?action=clear&seq=%lu", (unsigned long)list_number);
-					if(!confirmed || list_number == 0 || strcmp(handed.path, path) != 0 || (poll.events & POLL_EVENT_OLD) == 0 || !poll.has_old ||
-					   strcmp(poll.old_text, list_text) != 0) result->broken[PROMISE_CLEAR]++;
-					handed_clear = true;
-					result->old_lists++;
+					if(!confirmed || list_number == 0 || strcmp(handed.path, path) != 0) result->broken[PROMISE_CLEAR]++;
+					result->clears_out++;
 				}
 				if(handed.kind <= POLL_DTC_CLEAR) result->prepared[handed.kind]++;
 				asked = handed;
@@ -3748,7 +4206,7 @@ static bool walk(uint32_t seed, walk_result_t *result)
 			// A clear that waited too long is not handed out; whatever else is due goes out
 			if(phase_before == DTC_FLOW_CLEAR_SENT && poll.flow.phase == DTC_FLOW_LIST)
 			{
-				if(handed.kind == POLL_DTC_CLEAR || (poll.events & POLL_EVENT_OLD) != 0) result->broken[PROMISE_CLEAR]++;
+				if(handed.kind == POLL_DTC_CLEAR) result->broken[PROMISE_CLEAR]++;
 				result->late_clears++;
 			}
 			what = "prepare";
@@ -3887,20 +4345,35 @@ static bool walk(uint32_t seed, walk_result_t *result)
 			uint32_t raised = poll.events & ~events_before;
 			bool shown_changed = shown_sum() != shown_before;
 			bool in_list = poll.flow.phase == DTC_FLOW_LIST || poll.flow.phase == DTC_FLOW_CLEAR_SENT || poll.flow.phase == DTC_FLOW_CLEARING;
+			// The clear that was sent is over. The adapter took it, or may have: it runs, nobody knows, or a state
+			// (not the answer to the POST, which would be a refusal) shows that it failed.
+			bool left_sent = phase_before == DTC_FLOW_CLEAR_SENT && poll.flow.phase != DTC_FLOW_CLEAR_SENT && !fresh_start;
+			bool expect_old = left_sent && (poll.flow.phase == DTC_FLOW_CLEARING || poll.flow.phase == DTC_FLOW_UNKNOWN ||
+			                                (poll.flow.phase == DTC_FLOW_FAILED && answered == POLL_STATE));
 			int bit;
 
 			// The promises
+			if(expect_old)
+			{
+				if(!poll.has_old || strcmp(poll.old_text, list_text) != 0 || list_number == 0) result->broken[PROMISE_OLD]++;
+				result->old_lists++;
+			}
+			else if(old_sum() != old_before && !fresh_start)
+			{
+				result->broken[PROMISE_OLD]++;
+			}
+			if(left_sent && !expect_old) result->clears_without_old++;
 			if(poll.has_list != in_list || poll.has_cleared != (poll.flow.phase == DTC_FLOW_CLEARED)) result->broken[PROMISE_SHOWN]++;
 			if(events_before == 0 && !fresh_start)
 			{
 				bool bound_now = bound_before[0] == '\0' && poll.bound_id[0] != '\0';
 
 				if(((raised & POLL_EVENT_BOUND) != 0) != bound_now) result->broken[PROMISE_EVENTS]++;
-				if(((raised & POLL_EVENT_OLD) != 0) != handed_clear) result->broken[PROMISE_EVENTS]++;
+				if(((raised & POLL_EVENT_OLD) != 0) != expect_old) result->broken[PROMISE_EVENTS]++;
 				if(((raised & POLL_EVENT_FORGET) != 0) != expect_forget) result->broken[PROMISE_EVENTS]++;
 				if((raised & POLL_EVENT_CATALOG) != 0 && !delivered) result->broken[PROMISE_EVENTS]++;
 				if(shown_changed && (raised & POLL_EVENT_LISTS) == 0) result->broken[PROMISE_EVENTS]++;
-				if((raised & POLL_EVENT_LISTS) != 0 && !shown_changed && !expect_forget && !handed_clear) result->broken[PROMISE_EVENTS]++;
+				if((raised & POLL_EVENT_LISTS) != 0 && !shown_changed && !expect_forget && !expect_old) result->broken[PROMISE_EVENTS]++;
 				for(bit = 0; bit < 5; bit++)
 				{
 					if((raised & (1u << bit)) != 0) result->raised[bit]++;
@@ -3976,8 +4449,9 @@ static void test_walk(void)
 	close(ends[0]);
 	alarm(0);
 
-	printf("  walk: %ld calls, %ld differences; promises broken: %ld one request, %ld clear, %ld shown, %ld events, %ld stuck\n", result.calls, result.different,
-	       result.broken[PROMISE_ONE_REQUEST], result.broken[PROMISE_CLEAR], result.broken[PROMISE_SHOWN], result.broken[PROMISE_EVENTS], result.broken[PROMISE_STUCK]);
+	printf("  walk: %ld calls, %ld differences; promises broken: %ld one request, %ld clear, %ld old, %ld shown, %ld events, %ld stuck\n", result.calls, result.different,
+	       result.broken[PROMISE_ONE_REQUEST], result.broken[PROMISE_CLEAR], result.broken[PROMISE_OLD], result.broken[PROMISE_SHOWN], result.broken[PROMISE_EVENTS],
+	       result.broken[PROMISE_STUCK]);
 	printf("  walk: requests");
 	for(i = POLL_STATE; i <= POLL_DTC_CLEAR; i++)
 	{
@@ -4003,16 +4477,20 @@ static void test_walk(void)
 		if(result.raised[i] < 60) every_event = false;
 	}
 	printf("\n  walk: %ld lists, %ld outcomes of a clear, %ld unknown, %ld failures, %ld clears that did not arrive, %ld that waited too long to be handed out, "
-	       "%ld old lists made; %ld answers ignored, %ld late after the network was lost, %ld steps back, %ld starts, %ld with stored texts, %ld answers with a fault, "
-	       "%ld without room, %ld results at the limit, %ld walks healed, %ld of them with a request under way\n",
-	       result.lists, result.outcomes, result.unknown, result.failures, result.back_to_list, result.late_clears, result.old_lists, result.ignored, result.stale,
-	       result.steps_back, result.starts, result.stored, result.faults, result.no_room, result.at_limit, result.heals, result.healed_under_way);
+	       "%ld clears handed out, %ld old lists made, %ld clears that ended without one; %ld answers ignored, %ld late after the network was lost, %ld steps back, "
+	       "%ld starts, %ld with stored texts, %ld answers with a fault, %ld without room, %ld results at the limit, %ld catalogues started anew, %ld walks healed, "
+	       "%ld of them with a request under way\n",
+	       result.lists, result.outcomes, result.unknown, result.failures, result.back_to_list, result.late_clears, result.clears_out, result.old_lists,
+	       result.clears_without_old, result.ignored, result.stale, result.steps_back, result.starts, result.stored, result.faults, result.no_room, result.at_limit,
+	       result.catalogs_anew, result.heals, result.healed_under_way);
 
 	check(complete && status != -1 && WIFEXITED(status) && WEXITSTATUS(status) == 0, "160 random conversations of 2500 calls each: no crash and no hang");
 	check(complete && result.different == 0 && result.calls == (long)WALKS * (WALK_CALLS + 1), "160 random conversations: module and model agree after every call");
 	check(complete && result.broken[PROMISE_ONE_REQUEST] == 0, "in every conversation: never two requests under way");
-	check(complete && result.broken[PROMISE_CLEAR] == 0 && result.old_lists > 100,
-	      "in every conversation: a clear is only handed out after poll_clear() allowed it, with the number of the list shown, POLL_EVENT_OLD raised and that list as old_text");
+	check(complete && result.broken[PROMISE_CLEAR] == 0 && result.clears_out > 100,
+	      "in every conversation: a clear is only handed out after poll_clear() allowed it, with the number of the list shown");
+	check(complete && result.broken[PROMISE_OLD] == 0 && result.old_lists > 100 && result.clears_without_old > 100,
+	      "in every conversation: the old list changes exactly when the flow leaves CLEAR_SENT with the clear accepted or its outcome unknown, and is then the list that was shown");
 	check(complete && result.broken[PROMISE_SHOWN] == 0, "in every conversation: has_list and has_cleared follow the flow after every call");
 	check(complete && result.broken[PROMISE_EVENTS] == 0 && every_event, "in every conversation: each event is raised when its cause happens, and only then");
 	check(complete && result.broken[PROMISE_STUCK] == 0 && result.heals == WALKS && result.healed_under_way > 10,
@@ -4047,6 +4525,10 @@ int main(void)
 	test_no_api();
 	test_other_scan();
 	test_outage();
+	test_old();
+	test_no_room();
+	test_wait();
+	test_slow_pass();
 	test_timing();
 	test_ignored();
 	test_dismiss();

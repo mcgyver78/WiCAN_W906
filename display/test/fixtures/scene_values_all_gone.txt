@@ -1,0 +1,9 @@
+kind: values
+ring: yellow
+title: Vier
+note:
+item: Drehzahl | – |  | dim | number | -1
+item: Kühlwasser | – |  | dim | arc | -1
+item: Fahrpedal | – |  | dim | bar | -1
+item: Regeneration | – |  | dim | state | -1
+dots: 5/6

@@ -1,0 +1,10 @@
+kind: values
+ring: yellow
+title: Fünf
+note:
+item: Abgas vor Turbo | – |  | dim | number | -1
+item: Abgas vor DPF | – |  | dim | number | -1
+item: Getriebeöl | n. v. |  | dim | number | -1
+item: Ruß | – |  | dim | bar | -1
+item: Glow Plug | – |  | dim | state | -1
+dots: 6/6

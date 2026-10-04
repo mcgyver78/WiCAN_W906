@@ -7,9 +7,11 @@ T = "test_dtc_flow"
 PASSED = "\treturn now_ms > since_ms ? now_ms - since_ms : 0;"
 CLEARING = "\treturn flow->phase == DTC_FLOW_CLEAR_SENT || flow->phase == DTC_FLOW_CLEARING;"
 UNDER_WAY = "\treturn flow->phase == DTC_FLOW_READ_SENT || flow->phase == DTC_FLOW_READING || clearing(flow);"
+ACCEPTED = "\treturn flow->phase == DTC_FLOW_READING || flow->phase == DTC_FLOW_CLEARING;"
 UNANSWERED = "\treturn (flow->phase == DTC_FLOW_READ_SENT || flow->phase == DTC_FLOW_CLEAR_SENT) && flow->posted;"
 REASON = "\twhile(reason != NULL && length + 1 < sizeof(flow->reason) && reason[length] != '\\0')"
-GIVE_UP = "\tflow->to_send = DTC_FLOW_SEND_NOTHING;\n\tif(clearing(flow)) flow->phase = DTC_FLOW_UNKNOWN;\n\telse fail(flow, reason);\n"
+GIVE_UP = "\tif(clearing(flow)) flow->phase = DTC_FLOW_UNKNOWN;\n\telse fail(flow, reason);\n"
+WITHDRAW = "\tflow->to_send = DTC_FLOW_SEND_NOTHING;\n\tif(clear && list) flow->phase = DTC_FLOW_LIST;\n\telse drop_list(flow);\n"
 DROP = "\tflow->phase = DTC_FLOW_IDLE;\n\tflow->read_seq = 0;\n\tflow->list_count = 0;\n\tflow->list_end_ms = 0;\n"
 INIT = "\tmemset(flow, 0, sizeof(*flow));\n"
 
@@ -23,9 +25,10 @@ B_BUSY = "\tif(view == CONN_VIEW_SCAN || under_way(flow)) return DTC_FLOW_BUSY;\
 B_OFFLINE = "\tif(view == CONN_VIEW_ECU_OFFLINE) return DTC_FLOW_ECU_OFFLINE;\n"
 
 E_CATALOG = "\tif(catalog_find(catalog, DTC_FLOW_RPM_NAME) < 0) return DTC_FLOW_ALLOWED;\n"
-E_FRESH = "\tfresh = values_age(value, now_ms) == VALUE_AGE_FRESH && value->kind == VALUE_NUMBER;"
-E_RUNNING = "\tif(fresh && !(value->number < DTC_FLOW_RPM_LIMIT)) return DTC_FLOW_ENGINE_RUNNING;\n"
-E_UNKNOWN = "\tif(!fresh || (newer && value->seen_ms <= than_ms)) return DTC_FLOW_RPM_UNKNOWN;\n"
+E_KNOWN = "\tknown = values_age(value, now_ms) != VALUE_AGE_GONE && value->kind == VALUE_NUMBER;"
+E_RUNNING = "\tif(known && !(value->number < DTC_FLOW_RPM_LIMIT)) return DTC_FLOW_ENGINE_RUNNING;\n"
+E_UNKNOWN = "\tif(!known || (newer && value->seen_ms <= than_ms)) return DTC_FLOW_RPM_UNKNOWN;\n"
+KEPT = "#define VALUE_KEPT_MS       10000u"
 READ_BLOCK = "\treturn block != DTC_FLOW_ALLOWED ? block : engine_block(values, catalog, false, 0, now_ms);"
 
 C_ADAPTER = "\tif(block != DTC_FLOW_ALLOWED) return block;\n\n\t// The list is void"
@@ -50,23 +53,27 @@ TAKE_SEQ = "\tif(seq != NULL) *seq = send == DTC_FLOW_SEND_CLEAR ? flow->read_se
 
 P_MATCH = "\tif((flow->phase != DTC_FLOW_READ_SENT && flow->phase != DTC_FLOW_CLEAR_SENT) || flow->to_send != DTC_FLOW_SEND_NOTHING || flow->posted) return;"
 P_ACCEPTED = "\tif(status == 202 && seq != 0)"
+P_TIME = "\t\tflow->seq = seq;\n\t\tflow->accepted_ms = now_ms;\n"
 P_PHASE = "\t\tflow->phase = clearing(flow) ? DTC_FLOW_CLEARING : DTC_FLOW_READING;"
 P_REFUSED = "\telse if(status != 0 && status != 202)\n\t{\n\t\tfail(flow, reason);\n\t}"
 
 S_IGNORED = "\tif(state == NULL || flow->phase == DTC_FLOW_FAILED || flow->phase == DTC_FLOW_UNKNOWN) return;"
 S_BOOT = "\tif(state->boot != flow->boot)"
-S_RESTART = "\t\tif(under_way(flow)) give_up(flow, \"restarted\");\n\t\telse drop_list(flow);\n"
+S_UNSENT = "\t\tif(flow->to_send != DTC_FLOW_SEND_NOTHING) withdraw(flow, false);\n"
+S_RESTART = S_UNSENT + "\t\telse if(under_way(flow)) give_up(flow, \"restarted\");\n\t\telse drop_list(flow);\n"
 S_SAME = "\t\tif(state->dtc.seq == flow->seq_before)"
 S_ROUNDS = "\t\t\tif(++flow->rounds_without_answer < DTC_FLOW_NO_ANSWER_ROUNDS) return;"
 S_NOT_ARRIVED = "\t\t\tif(clear) flow->phase = DTC_FLOW_LIST;\n\t\t\telse fail(flow, \"no_answer\");\n\t\t\treturn;\n"
 S_OTHERS = "\t\tif(state->dtc.seq == 0 || !state->dtc.has_request || !state->dtc.from_http || state->dtc.clear != clear)"
 S_NOT_FOUND = S_OTHERS + "\n\t\t{\n\t\t\tgive_up(flow, \"superseded\");\n\t\t\treturn;\n\t\t}\n"
-S_ADOPT = "\t\tflow->seq = state->dtc.seq;\n\t\tflow->phase = clear ? DTC_FLOW_CLEARING : DTC_FLOW_READING;\n"
-S_ACCEPTED = "\tif(flow->phase == DTC_FLOW_READING || flow->phase == DTC_FLOW_CLEARING)"
+S_ADOPT = "\t\tflow->seq = state->dtc.seq;\n\t\tflow->accepted_ms = now_ms;\n\t\tflow->phase = clear ? DTC_FLOW_CLEARING : DTC_FLOW_READING;\n"
+S_ACCEPTED = "\tif(accepted(flow))\n\t{\n"
 S_OWN = "\t\tif(state->dtc.seq == flow->seq)\n\t\t{\n\t\t\tif(state->dtc.phase == WICAN_DTC_ERROR) fail(flow, state->dtc.reason);\n\t\t}\n"
 S_COMMENT = "\t\t// A later request. The own one is over; its result may still be there to be fetched.\n"
 S_LATER = "\t\telse if(state->dtc.result_seq != flow->seq)\n\t\t{\n\t\t\tgive_up(flow, \"superseded\");\n\t\t}\n"
 S_LIST = "\telse if(flow->phase == DTC_FLOW_LIST && state->dtc.seq != flow->read_seq)\n\t{\n\t\tdrop_list(flow);\n\t}\n"
+S_WAIT = "\tif(accepted(flow) && passed(now_ms, flow->accepted_ms) > DTC_FLOW_WAIT_MS) give_up(flow, \"no_answer\");\n"
+WAIT = "#define DTC_FLOW_WAIT_MS        (180u * 1000u)"
 
 R_AGE = "\tuint64_t age_ms = (uint64_t)age_s * 1000;\n\n\tif(result_seq != flow->seq) return;\n"
 R_READ = "\tif(flow->phase == DTC_FLOW_READING && !clear)"
@@ -74,7 +81,9 @@ R_LIST = ("\t\tflow->phase = DTC_FLOW_LIST;\n\t\tflow->read_seq = result_seq;\n\
           "\t\tflow->list_end_ms = passed(now_ms, age_ms);\n")
 R_CLEAR = "\telse if(flow->phase == DTC_FLOW_CLEARING && clear)"
 
-LOST = "\tif(under_way(flow)) give_up(flow, \"no_answer\");"
+NO_RESULT = "\tif(accepted(flow)) give_up(flow, \"no_result\");"
+L_UNSENT = "\tif(flow->to_send != DTC_FLOW_SEND_NOTHING) withdraw(flow, true);\n"
+LOST = L_UNSENT + "\telse if(under_way(flow)) give_up(flow, \"no_answer\");"
 DISMISS = "\tif(!under_way(flow)) drop_list(flow);"
 LEFT = "\tif(flow->phase != DTC_FLOW_LIST || age_ms >= DTC_FLOW_LIST_MS) return 0;"
 ROUNDED = "\treturn (uint32_t)((DTC_FLOW_LIST_MS - age_ms + 999) / 1000);"
@@ -91,6 +100,10 @@ MUTATIONS = [
     ("flow_clear_not_under_way", T, F, UNDER_WAY, UNDER_WAY.replace(" || clearing(flow)", "")),
     ("flow_list_is_under_way", T, F, UNDER_WAY, UNDER_WAY.replace("clearing(flow)", "clearing(flow) || flow->phase == DTC_FLOW_LIST")),
     ("flow_failure_is_under_way", T, F, UNDER_WAY, UNDER_WAY.replace("clearing(flow)", "clearing(flow) || flow->phase == DTC_FLOW_FAILED")),
+    ("flow_reading_is_not_accepted", T, F, ACCEPTED, "\treturn flow->phase == DTC_FLOW_CLEARING;"),
+    ("flow_clearing_is_not_accepted", T, F, ACCEPTED, "\treturn flow->phase == DTC_FLOW_READING;"),
+    ("flow_read_sent_is_accepted", T, F, ACCEPTED, ACCEPTED.replace("flow->phase == DTC_FLOW_READING", "flow->phase == DTC_FLOW_READING || flow->phase == DTC_FLOW_READ_SENT")),
+    ("flow_clear_sent_is_accepted", T, F, ACCEPTED, "\treturn flow->phase == DTC_FLOW_READING || clearing(flow);"),
     ("flow_post_under_way_is_unanswered", T, F, UNANSWERED, UNANSWERED.replace(" && flow->posted", "")),
     ("flow_unanswered_read_not_followed", T, F, UNANSWERED, "\treturn flow->phase == DTC_FLOW_CLEAR_SENT && flow->posted;"),
     ("flow_unanswered_clear_not_followed", T, F, UNANSWERED, "\treturn flow->phase == DTC_FLOW_READ_SENT && flow->posted;"),
@@ -106,11 +119,20 @@ MUTATIONS = [
     ("flow_failure_keeps_phase", T, F, "\tflow->reason[length] = '\\0';\n\tflow->phase = DTC_FLOW_FAILED;", "\tflow->reason[length] = '\\0';"),
 
     # a request that cannot be followed any more
-    ("flow_withdrawn_request_handed_out", T, F, GIVE_UP, GIVE_UP.replace("\tflow->to_send = DTC_FLOW_SEND_NOTHING;\n", "")),
-    ("flow_given_up_clear_is_a_failure", T, F, GIVE_UP, "\tflow->to_send = DTC_FLOW_SEND_NOTHING;\n\tfail(flow, reason);\n"),
-    ("flow_given_up_read_is_unknown", T, F, GIVE_UP, "\t(void)reason;\n\tflow->to_send = DTC_FLOW_SEND_NOTHING;\n\tflow->phase = DTC_FLOW_UNKNOWN;\n"),
+    ("flow_given_up_clear_is_a_failure", T, F, GIVE_UP, "\tfail(flow, reason);\n"),
+    ("flow_given_up_read_is_unknown", T, F, GIVE_UP, "\t(void)reason;\n\tflow->phase = DTC_FLOW_UNKNOWN;\n"),
     ("flow_given_up_clear_back_to_list", T, F, GIVE_UP, GIVE_UP.replace("flow->phase = DTC_FLOW_UNKNOWN;", "flow->phase = DTC_FLOW_LIST;")),
     ("flow_given_up_clear_is_idle", T, F, GIVE_UP, GIVE_UP.replace("flow->phase = DTC_FLOW_UNKNOWN;", "flow->phase = DTC_FLOW_IDLE;")),
+
+    # a request that was never sent
+    ("flow_withdrawn_request_handed_out", T, F, WITHDRAW, WITHDRAW.replace("\tflow->to_send = DTC_FLOW_SEND_NOTHING;\n", "")),
+    ("flow_withdrawn_clear_drops_list", T, F, WITHDRAW, WITHDRAW.replace("if(clear && list)", "if(clear && list && false)")),
+    ("flow_withdrawn_clear_keeps_list_after_restart", T, F, WITHDRAW, WITHDRAW.replace("if(clear && list)", "if(clear && (list || !list))")),
+    ("flow_withdrawn_read_is_a_list", T, F, WITHDRAW, WITHDRAW.replace("if(clear && list)", "if(list && (clear || !clear))")),
+    ("flow_withdrawn_request_is_a_failure", T, F, WITHDRAW, WITHDRAW.replace("\telse drop_list(flow);\n", "\telse fail(flow, \"no_answer\");\n")),
+    ("flow_withdrawn_clear_is_unknown", T, F, WITHDRAW, WITHDRAW.replace("if(clear && list) flow->phase = DTC_FLOW_LIST;", "if(clear && (list || !list)) flow->phase = DTC_FLOW_UNKNOWN;")),
+    ("flow_withdrawn_request_keeps_phase", T, F, WITHDRAW, WITHDRAW.replace("\telse drop_list(flow);\n", "")),
+    ("flow_withdrawn_clear_stays_under_way", T, F, WITHDRAW, WITHDRAW.replace("if(clear && list) flow->phase = DTC_FLOW_LIST;", "if(clear && list) flow->phase = DTC_FLOW_CLEAR_SENT;")),
 
     # dropping the list
     ("flow_drop_keeps_phase", T, F, DROP, DROP.replace("\tflow->phase = DTC_FLOW_IDLE;\n", "")),
@@ -151,19 +173,25 @@ MUTATIONS = [
 
     # what stands against a command: the engine
     ("flow_engine_speed_asked_without_catalog_entry", T, F, E_CATALOG, "\t(void)catalog;\n"),
-    ("flow_old_engine_speed_is_fresh", T, F, E_FRESH, E_FRESH.replace("== VALUE_AGE_FRESH", "!= VALUE_AGE_GONE")),
-    ("flow_switch_is_a_speed", T, F, E_FRESH, E_FRESH.replace(" && value->kind == VALUE_NUMBER", "")),
-    ("flow_off_is_a_speed", T, F, E_FRESH, E_FRESH.replace("value->kind == VALUE_NUMBER", "value->kind != VALUE_ON")),
-    ("flow_on_is_a_speed", T, F, E_FRESH, E_FRESH.replace("value->kind == VALUE_NUMBER", "value->kind != VALUE_OFF")),
+    ("flow_engine_speed_only_while_fresh", T, F, E_KNOWN, E_KNOWN.replace("!= VALUE_AGE_GONE", "== VALUE_AGE_FRESH")),
+    ("flow_gone_engine_speed_counts", T, F, E_KNOWN, E_KNOWN.replace("values_age(value, now_ms) != VALUE_AGE_GONE", "(values_age(value, now_ms) != VALUE_AGE_GONE || value != NULL)")),
+    ("flow_engine_speed_only_while_old", T, F, E_KNOWN, E_KNOWN.replace("!= VALUE_AGE_GONE", "== VALUE_AGE_OLD")),
+    ("flow_engine_speed_age_at_half_the_time", T, F, E_KNOWN, E_KNOWN.replace("values_age(value, now_ms)", "values_age(value, now_ms / 2)")),
+    ("flow_engine_speed_kept_one_ms_longer", T, "components/core/values.h", KEPT, "#define VALUE_KEPT_MS       10001u"),
+    ("flow_engine_speed_kept_one_ms_shorter", T, "components/core/values.h", KEPT, "#define VALUE_KEPT_MS       9999u"),
+    ("flow_switch_is_a_speed", T, F, E_KNOWN, E_KNOWN.replace(" && value->kind == VALUE_NUMBER", "")),
+    ("flow_off_is_a_speed", T, F, E_KNOWN, E_KNOWN.replace("value->kind == VALUE_NUMBER", "value->kind != VALUE_ON")),
+    ("flow_on_is_a_speed", T, F, E_KNOWN, E_KNOWN.replace("value->kind == VALUE_NUMBER", "value->kind != VALUE_OFF")),
     ("flow_running_engine_not_seen", T, F, E_RUNNING, ""),
     ("flow_engine_stands_at_the_limit", T, F, E_RUNNING, E_RUNNING.replace("!(value->number < DTC_FLOW_RPM_LIMIT)", "!(value->number <= DTC_FLOW_RPM_LIMIT)")),
     ("flow_no_number_is_an_engine_that_stands", T, F, E_RUNNING, E_RUNNING.replace("!(value->number < DTC_FLOW_RPM_LIMIT)", "value->number >= DTC_FLOW_RPM_LIMIT")),
     ("flow_rpm_limit_higher", T, H, "#define DTC_FLOW_RPM_LIMIT      50.0", "#define DTC_FLOW_RPM_LIMIT      50.005"),
     ("flow_rpm_limit_lower", T, H, "#define DTC_FLOW_RPM_LIMIT      50.0", "#define DTC_FLOW_RPM_LIMIT      49.995"),
     ("flow_rpm_name_changed", T, H, "#define DTC_FLOW_RPM_NAME       \"ENGINE_RPM\"", "#define DTC_FLOW_RPM_NAME       \"ENGINE_RPm\""),
-    ("flow_old_running_engine_is_running", T, F, E_RUNNING,
-     E_RUNNING.replace("if(fresh && ", "if(value != NULL && value->kind == VALUE_NUMBER && values_age(value, now_ms) != VALUE_AGE_GONE && ")),
-    ("flow_old_engine_speed_allows", T, F, E_UNKNOWN, E_UNKNOWN.replace("!fresh || ", "value == NULL || value->kind != VALUE_NUMBER || ")),
+    ("flow_gone_running_engine_is_running", T, F, E_RUNNING, E_RUNNING.replace("if(known && ", "if(value != NULL && value->kind == VALUE_NUMBER && ")),
+    ("flow_old_running_engine_is_not_running", T, F, E_RUNNING, E_RUNNING.replace("if(known && ", "if(known && values_age(value, now_ms) == VALUE_AGE_FRESH && ")),
+    ("flow_gone_engine_speed_allows", T, F, E_UNKNOWN, E_UNKNOWN.replace("!known || ", "value == NULL || value->kind != VALUE_NUMBER || ")),
+    ("flow_old_engine_speed_is_unknown", T, F, E_UNKNOWN, E_UNKNOWN.replace("!known || ", "!known || values_age(value, now_ms) != VALUE_AGE_FRESH || ")),
     ("flow_engine_speed_from_before_the_read", T, F, E_UNKNOWN, E_UNKNOWN.replace("value->seen_ms <= than_ms", "value->seen_ms <= than_ms && false")),
     ("flow_engine_speed_from_the_end_of_the_read", T, F, E_UNKNOWN, E_UNKNOWN.replace("value->seen_ms <= than_ms", "value->seen_ms < than_ms")),
     ("flow_engine_speed_one_ms_later_needed", T, F, E_UNKNOWN, E_UNKNOWN.replace("value->seen_ms <= than_ms", "value->seen_ms <= than_ms + 1")),
@@ -261,6 +289,10 @@ MUTATIONS = [
     ("flow_all_2xx_accepted", T, F, P_ACCEPTED, "\tif(status >= 200 && status < 300 && seq != 0)"),
     ("flow_accepted_only_with_higher_number", T, F, P_ACCEPTED, "\tif(status == 202 && seq > flow->seq_before)"),
     ("flow_accepted_number_not_stored", T, F, "\t\tflow->seq = seq;\n", ""),
+    ("flow_accepted_time_not_stored", T, F, P_TIME, "\t\tflow->seq = seq;\n\t\t(void)now_ms;\n"),
+    ("flow_accepted_time_stored_in_32_bit", T, F, P_TIME, P_TIME.replace("= now_ms;", "= (uint32_t)now_ms;")),
+    ("flow_accepted_time_one_ms_early", T, F, P_TIME, P_TIME.replace("= now_ms;", "= now_ms > 0 ? now_ms - 1 : 0;")),
+    ("flow_accepted_time_one_ms_late", T, F, P_TIME, P_TIME.replace("= now_ms;", "= now_ms + 1;")),
     ("flow_accepted_clear_is_reading", T, F, P_PHASE, "\t\tflow->phase = DTC_FLOW_READING;"),
     ("flow_accepted_read_is_clearing", T, F, P_PHASE, "\t\tflow->phase = DTC_FLOW_CLEARING;"),
     ("flow_accepted_stays_sent", T, F, P_PHASE + "\n", ""),
@@ -285,13 +317,22 @@ MUTATIONS = [
     ("flow_restart_only_to_higher_boot_number", T, F, S_BOOT, "\tif(state->boot > flow->boot)"),
     ("flow_restart_only_to_lower_boot_number", T, F, S_BOOT, "\tif(state->boot < flow->boot)"),
     ("flow_restart_not_seen_with_same_number", T, F, S_BOOT, "\tif(state->boot != flow->boot && (!under_way(flow) || state->dtc.seq != flow->seq))"),
-    ("flow_restart_request_dropped_silently", T, F, S_RESTART, "\t\tdrop_list(flow);\n"),
-    ("flow_restart_keeps_list_and_outcome", T, F, S_RESTART, "\t\tif(under_way(flow)) give_up(flow, \"restarted\");\n"),
-    ("flow_restart_keeps_outcome_of_clear", T, F, S_RESTART, "\t\tif(under_way(flow)) give_up(flow, \"restarted\");\n\t\telse if(flow->phase == DTC_FLOW_LIST) drop_list(flow);\n"),
-    ("flow_restart_keeps_list", T, F, S_RESTART, "\t\tif(under_way(flow)) give_up(flow, \"restarted\");\n\t\telse if(flow->phase == DTC_FLOW_CLEARED) drop_list(flow);\n"),
+    ("flow_restart_request_dropped_silently", T, F, S_RESTART, "\t\tflow->to_send = DTC_FLOW_SEND_NOTHING;\n\t\tdrop_list(flow);\n"),
+    ("flow_restart_keeps_list_and_outcome", T, F, S_RESTART, S_RESTART.replace("\t\telse drop_list(flow);\n", "")),
+    ("flow_restart_keeps_outcome_of_clear", T, F, S_RESTART, S_RESTART.replace("\t\telse drop_list(flow);\n", "\t\telse if(flow->phase == DTC_FLOW_LIST) drop_list(flow);\n")),
+    ("flow_restart_keeps_list", T, F, S_RESTART, S_RESTART.replace("\t\telse drop_list(flow);\n", "\t\telse if(flow->phase == DTC_FLOW_CLEARED) drop_list(flow);\n")),
     ("flow_restart_only_of_accepted_requests", T, F, S_RESTART,
-     "\t\tif(flow->phase == DTC_FLOW_READING || flow->phase == DTC_FLOW_CLEARING) give_up(flow, \"restarted\");\n\t\telse if(!under_way(flow)) drop_list(flow);\n"),
+     S_UNSENT + "\t\telse if(accepted(flow)) give_up(flow, \"restarted\");\n\t\telse if(!under_way(flow)) drop_list(flow);\n"),
     ("flow_restart_reason_changed", T, F, S_RESTART, S_RESTART.replace("\"restarted\"", "\"no_answer\"")),
+    ("flow_restart_unsent_request_is_given_up", T, F, S_RESTART, S_RESTART.replace(S_UNSENT + "\t\telse if", "\t\tif")),
+    ("flow_restart_unsent_request_given_up_and_withdrawn", T, F, S_RESTART,
+     "\t\tif(under_way(flow))\n\t\t{\n\t\t\tflow->to_send = DTC_FLOW_SEND_NOTHING;\n\t\t\tgive_up(flow, \"restarted\");\n\t\t}\n\t\telse drop_list(flow);\n"),
+    ("flow_restart_unsent_clear_back_to_list", T, F, S_UNSENT, S_UNSENT.replace("withdraw(flow, false)", "withdraw(flow, true)")),
+    ("flow_restart_taken_request_never_sent", T, F, S_UNSENT,
+     S_UNSENT.replace("flow->to_send != DTC_FLOW_SEND_NOTHING", "(flow->phase == DTC_FLOW_READ_SENT || flow->phase == DTC_FLOW_CLEAR_SENT)")),
+    ("flow_restart_unanswered_request_never_sent", T, F, S_UNSENT, S_UNSENT.replace("flow->to_send != DTC_FLOW_SEND_NOTHING", "(flow->to_send != DTC_FLOW_SEND_NOTHING || unanswered(flow))")),
+    ("flow_restart_only_unsent_read_withdrawn", T, F, S_UNSENT, S_UNSENT.replace("!= DTC_FLOW_SEND_NOTHING", "== DTC_FLOW_SEND_READ")),
+    ("flow_restart_only_unsent_clear_withdrawn", T, F, S_UNSENT, S_UNSENT.replace("!= DTC_FLOW_SEND_NOTHING", "== DTC_FLOW_SEND_CLEAR")),
 
     # the states: a POST without an answer
     ("flow_number_of_before_never_decides", T, F, S_ROUNDS, "\t\t\tif(++flow->rounds_without_answer > 0) return;"),
@@ -318,18 +359,24 @@ MUTATIONS = [
     ("flow_foreign_request_sends_clear_back_to_list", T, F, S_NOT_FOUND, S_NOT_FOUND.replace("give_up(flow, \"superseded\");", "if(clear) flow->phase = DTC_FLOW_LIST;\n\t\t\telse give_up(flow, \"superseded\");")),
     ("flow_foreign_request_adopted_after_all", T, F, S_NOT_FOUND, S_NOT_FOUND.replace("\t\t\treturn;\n", "")),
     ("flow_found_number_not_stored", T, F, S_ADOPT, S_ADOPT.replace("\t\tflow->seq = state->dtc.seq;\n", "")),
+    ("flow_found_time_not_stored", T, F, S_ADOPT, S_ADOPT.replace("\t\tflow->accepted_ms = now_ms;\n", "")),
+    ("flow_found_time_stored_in_32_bit", T, F, S_ADOPT, S_ADOPT.replace("= now_ms;", "= (uint32_t)now_ms;")),
+    ("flow_found_time_one_ms_early", T, F, S_ADOPT, S_ADOPT.replace("= now_ms;", "= now_ms > 0 ? now_ms - 1 : 0;")),
+    ("flow_found_time_one_ms_late", T, F, S_ADOPT, S_ADOPT.replace("= now_ms;", "= now_ms + 1;")),
+    ("flow_found_time_is_end_of_scan", T, F, S_ADOPT, S_ADOPT.replace("= now_ms;", "= now_ms - state->dtc.age_s * 1000;")),
     ("flow_found_number_is_result_number", T, F, S_ADOPT, S_ADOPT.replace("flow->seq = state->dtc.seq;", "flow->seq = state->dtc.result_seq;")),
     ("flow_found_clear_is_reading", T, F, S_ADOPT, S_ADOPT.replace("clear ? DTC_FLOW_CLEARING : DTC_FLOW_READING", "DTC_FLOW_READING")),
     ("flow_found_read_is_clearing", T, F, S_ADOPT, S_ADOPT.replace("clear ? DTC_FLOW_CLEARING : DTC_FLOW_READING", "DTC_FLOW_CLEARING")),
     ("flow_found_request_stays_sent", T, F, S_ADOPT, S_ADOPT.replace("\t\tflow->phase = clear ? DTC_FLOW_CLEARING : DTC_FLOW_READING;\n", "")),
 
     # the states: an accepted request, a list
-    ("flow_accepted_read_not_followed", T, F, S_ACCEPTED, "\tif(flow->phase == DTC_FLOW_CLEARING)"),
-    ("flow_accepted_clear_not_followed", T, F, S_ACCEPTED, "\tif(flow->phase == DTC_FLOW_READING)"),
+    ("flow_accepted_read_not_followed", T, F, S_ACCEPTED, "\tif(flow->phase == DTC_FLOW_CLEARING)\n\t{\n"),
+    ("flow_accepted_clear_not_followed", T, F, S_ACCEPTED, "\tif(flow->phase == DTC_FLOW_READING)\n\t{\n"),
     ("flow_error_of_own_request_ignored", T, F, S_OWN, S_OWN.replace("\t\t\tif(state->dtc.phase == WICAN_DTC_ERROR) fail(flow, state->dtc.reason);\n", "")),
     ("flow_error_of_own_clear_is_unknown", T, F, S_OWN, S_OWN.replace("fail(flow, state->dtc.reason)", "give_up(flow, state->dtc.reason)")),
     ("flow_error_without_reason_of_state", T, F, S_OWN, S_OWN.replace("fail(flow, state->dtc.reason)", "fail(flow, \"\")")),
     ("flow_error_without_reason_ignored", T, F, S_OWN, S_OWN.replace("state->dtc.phase == WICAN_DTC_ERROR", "state->dtc.phase == WICAN_DTC_ERROR && state->dtc.reason[0] != '\\0'")),
+    ("flow_error_only_with_action", T, F, S_OWN, S_OWN.replace("state->dtc.phase == WICAN_DTC_ERROR", "state->dtc.phase == WICAN_DTC_ERROR && state->dtc.has_request")),
     ("flow_error_only_from_http", T, F, S_OWN, S_OWN.replace("state->dtc.phase == WICAN_DTC_ERROR", "state->dtc.phase == WICAN_DTC_ERROR && state->dtc.from_http")),
     ("flow_done_is_an_error", T, F, S_OWN, S_OWN.replace("state->dtc.phase == WICAN_DTC_ERROR", "state->dtc.phase >= WICAN_DTC_DONE")),
     ("flow_idle_is_an_error", T, F, S_OWN, S_OWN.replace("state->dtc.phase == WICAN_DTC_ERROR", "(state->dtc.phase == WICAN_DTC_ERROR || state->dtc.phase == WICAN_DTC_IDLE)")),
@@ -351,6 +398,46 @@ MUTATIONS = [
      S_LIST.replace("state->dtc.seq != flow->read_seq", "state->dtc.seq != flow->read_seq && state->dtc.phase != WICAN_DTC_DONE && state->dtc.phase != WICAN_DTC_ERROR")),
     ("flow_cleared_dropped_by_other_request", T, F, S_LIST, S_LIST.replace("flow->phase == DTC_FLOW_LIST && state->dtc.seq != flow->read_seq", "flow->phase != DTC_FLOW_IDLE && state->dtc.seq != flow->seq")),
     ("flow_foreign_request_is_a_failure_for_list", T, F, S_LIST, S_LIST.replace("drop_list(flow);", "fail(flow, \"superseded\");")),
+
+    # an accepted request that does not end
+    ("flow_wait_never_ends", T, F, S_WAIT, ""),
+    ("flow_wait_ends_one_ms_early", T, F, S_WAIT, S_WAIT.replace("> DTC_FLOW_WAIT_MS", ">= DTC_FLOW_WAIT_MS")),
+    ("flow_wait_ends_one_ms_late", T, F, S_WAIT, S_WAIT.replace("> DTC_FLOW_WAIT_MS", "> DTC_FLOW_WAIT_MS + 1")),
+    ("flow_wait_time_shorter", T, H, WAIT, "#define DTC_FLOW_WAIT_MS        (180u * 1000u - 1u)"),
+    ("flow_wait_time_longer", T, H, WAIT, "#define DTC_FLOW_WAIT_MS        (180u * 1000u + 1u)"),
+    ("flow_wait_is_the_time_of_a_list", T, F, S_WAIT, S_WAIT.replace("> DTC_FLOW_WAIT_MS", "> DTC_FLOW_LIST_MS")),
+    ("flow_wait_reason_changed", T, F, S_WAIT, S_WAIT.replace("\"no_answer\"", "\"superseded\"")),
+    ("flow_wait_clear_is_a_failure", T, F, S_WAIT, S_WAIT.replace("give_up(flow, \"no_answer\")", "fail(flow, \"no_answer\")")),
+    ("flow_wait_only_for_read", T, F, S_WAIT, S_WAIT.replace("accepted(flow) &&", "flow->phase == DTC_FLOW_READING &&")),
+    ("flow_wait_only_for_clear", T, F, S_WAIT, S_WAIT.replace("accepted(flow) &&", "flow->phase == DTC_FLOW_CLEARING &&")),
+    ("flow_wait_ends_request_not_accepted", T, F, S_WAIT, S_WAIT.replace("accepted(flow) &&", "under_way(flow) &&")),
+    ("flow_wait_ends_list", T, F, S_WAIT, S_WAIT.replace("accepted(flow) &&", "(accepted(flow) || flow->phase == DTC_FLOW_LIST) &&")),
+    ("flow_wait_ends_outcome_of_clear", T, F, S_WAIT, S_WAIT.replace("accepted(flow) &&", "(accepted(flow) || flow->phase == DTC_FLOW_CLEARED) &&")),
+    ("flow_wait_time_steps_back_with_the_caller", T, F, S_WAIT, S_WAIT.replace("passed(now_ms, flow->accepted_ms)", "now_ms - flow->accepted_ms")),
+    ("flow_wait_counted_in_32_bit", T, F, S_WAIT, S_WAIT.replace("passed(now_ms, flow->accepted_ms)", "(uint32_t)passed(now_ms, flow->accepted_ms)")),
+    ("flow_wait_compared_in_32_bit", T, F, S_WAIT, S_WAIT.replace("passed(now_ms, flow->accepted_ms)", "passed((uint32_t)now_ms, (uint32_t)flow->accepted_ms)")),
+    ("flow_wait_from_the_end_of_the_list", T, F, S_WAIT, S_WAIT.replace("flow->accepted_ms", "flow->list_end_ms")),
+    ("flow_wait_goes_before_the_state", T, F, S_ACCEPTED, S_WAIT + S_ACCEPTED),
+    ("flow_wait_not_when_done", T, F, S_WAIT, S_WAIT.replace("accepted(flow) &&", "accepted(flow) && state->dtc.phase != WICAN_DTC_DONE &&")),
+    ("flow_wait_only_while_own_number_shown", T, F, S_WAIT, S_WAIT.replace("accepted(flow) &&", "accepted(flow) && state->dtc.seq == flow->seq &&")),
+    ("flow_wait_not_after_error_of_later_request", T, F, S_WAIT, S_WAIT.replace("accepted(flow) &&", "accepted(flow) && state->dtc.phase != WICAN_DTC_ERROR &&")),
+    ("flow_wait_only_while_running", T, F, S_WAIT, S_WAIT.replace("accepted(flow) &&", "accepted(flow) && state->dtc.phase == WICAN_DTC_RUNNING &&")),
+    ("flow_late_result_ignored", T, F, R_AGE, R_AGE.replace("result_seq != flow->seq", "result_seq != flow->seq || passed(now_ms, flow->accepted_ms) > DTC_FLOW_WAIT_MS")),
+
+    # a result that cannot be had
+    ("flow_no_result_ignored", T, F, NO_RESULT, "\t(void)flow;"),
+    ("flow_no_result_reason_changed", T, F, NO_RESULT, NO_RESULT.replace("\"no_result\"", "\"no_answer\"")),
+    ("flow_no_result_only_for_read", T, F, NO_RESULT, NO_RESULT.replace("accepted(flow)", "flow->phase == DTC_FLOW_READING")),
+    ("flow_no_result_only_for_clear", T, F, NO_RESULT, NO_RESULT.replace("accepted(flow)", "flow->phase == DTC_FLOW_CLEARING")),
+    ("flow_no_result_ends_request_not_accepted", T, F, NO_RESULT, NO_RESULT.replace("accepted(flow)", "under_way(flow)")),
+    ("flow_no_result_in_any_phase", T, F, NO_RESULT, "\tgive_up(flow, \"no_result\");"),
+    ("flow_no_result_drops_list", T, F, NO_RESULT, NO_RESULT + "\n\telse if(flow->phase == DTC_FLOW_LIST) drop_list(flow);"),
+    ("flow_no_result_drops_outcome_of_clear", T, F, NO_RESULT, NO_RESULT + "\n\telse if(flow->phase == DTC_FLOW_CLEARED) drop_list(flow);"),
+    ("flow_no_result_clear_is_a_failure", T, F, NO_RESULT, NO_RESULT.replace("give_up(flow, ", "fail(flow, ")),
+    ("flow_no_result_read_is_unknown", T, F, NO_RESULT, "\tif(accepted(flow)) flow->phase = DTC_FLOW_UNKNOWN;"),
+    ("flow_no_result_withdraws_unsent_request", T, F, NO_RESULT, NO_RESULT + "\n\telse flow->to_send = DTC_FLOW_SEND_NOTHING;"),
+    ("flow_no_result_not_for_request_found_late", T, F, NO_RESULT, NO_RESULT.replace("accepted(flow)", "accepted(flow) && flow->rounds_without_answer == 0")),
+    ("flow_no_result_replaces_reason_of_failure", T, F, NO_RESULT, NO_RESULT.replace("accepted(flow)", "accepted(flow) || flow->phase == DTC_FLOW_FAILED")),
 
     # a result
     ("flow_result_age_in_32_bit", T, F, R_AGE, R_AGE.replace("(uint64_t)age_s * 1000", "age_s * 1000")),
@@ -405,16 +492,25 @@ MUTATIONS = [
 
     # the list a clear came back to
     ("flow_list_dropped_only_after_an_answer", T, F, S_LIST, S_LIST.replace("state->dtc.seq != flow->read_seq", "state->dtc.seq != flow->read_seq && flow->posted")),
-    ("flow_restart_drops_list_only_after_an_answer", T, F, S_RESTART, "\t\tif(under_way(flow)) give_up(flow, \"restarted\");\n\t\telse if(flow->posted || flow->phase != DTC_FLOW_LIST) drop_list(flow);\n"),
+    ("flow_restart_drops_list_only_after_an_answer", T, F, S_RESTART, S_RESTART.replace("\t\telse drop_list(flow);\n", "\t\telse if(flow->posted || flow->phase != DTC_FLOW_LIST) drop_list(flow);\n")),
     ("flow_seconds_left_only_after_an_answer", T, F, LEFT, LEFT.replace("flow->phase != DTC_FLOW_LIST || ", "flow->phase != DTC_FLOW_LIST || !flow->posted || ")),
     ("flow_dismiss_only_after_an_answer", T, F, DISMISS, "\tif(!under_way(flow) && (flow->posted || flow->phase != DTC_FLOW_LIST)) drop_list(flow);"),
 
     # lost and dismissed
     ("flow_lost_adapter_ignored", T, F, LOST, "\t(void)flow;"),
     ("flow_lost_adapter_drops_list", T, F, LOST, LOST + "\n\telse drop_list(flow);"),
-    ("flow_lost_adapter_only_ends_accepted", T, F, LOST, "\tif(flow->phase == DTC_FLOW_READING || flow->phase == DTC_FLOW_CLEARING) give_up(flow, \"no_answer\");"),
-    ("flow_lost_adapter_only_ends_sent", T, F, LOST, "\tif(flow->phase == DTC_FLOW_READ_SENT || flow->phase == DTC_FLOW_CLEAR_SENT) give_up(flow, \"no_answer\");"),
+    ("flow_lost_adapter_only_ends_accepted", T, F, LOST, LOST.replace("else if(under_way(flow))", "else if(accepted(flow))")),
+    ("flow_lost_adapter_only_ends_sent", T, F, LOST, LOST.replace("else if(under_way(flow))", "else if(flow->phase == DTC_FLOW_READ_SENT || flow->phase == DTC_FLOW_CLEAR_SENT)")),
     ("flow_lost_reason_changed", T, F, LOST, LOST.replace("\"no_answer\"", "\"restarted\"")),
+    ("flow_lost_unsent_request_is_given_up", T, F, LOST, LOST.replace(L_UNSENT + "\telse if", "\tif")),
+    ("flow_lost_unsent_request_given_up_and_withdrawn", T, F, LOST,
+     "\tif(under_way(flow))\n\t{\n\t\tflow->to_send = DTC_FLOW_SEND_NOTHING;\n\t\tgive_up(flow, \"no_answer\");\n\t}"),
+    ("flow_lost_unsent_clear_drops_list", T, F, L_UNSENT, L_UNSENT.replace("withdraw(flow, true)", "withdraw(flow, false)")),
+    ("flow_lost_taken_request_never_sent", T, F, L_UNSENT,
+     L_UNSENT.replace("flow->to_send != DTC_FLOW_SEND_NOTHING", "(flow->phase == DTC_FLOW_READ_SENT || flow->phase == DTC_FLOW_CLEAR_SENT)")),
+    ("flow_lost_request_under_way_never_sent", T, F, L_UNSENT, L_UNSENT.replace("flow->to_send != DTC_FLOW_SEND_NOTHING", "!flow->posted && !accepted(flow) && under_way(flow)")),
+    ("flow_lost_only_unsent_read_withdrawn", T, F, L_UNSENT, L_UNSENT.replace("!= DTC_FLOW_SEND_NOTHING", "== DTC_FLOW_SEND_READ")),
+    ("flow_lost_only_unsent_clear_withdrawn", T, F, L_UNSENT, L_UNSENT.replace("!= DTC_FLOW_SEND_NOTHING", "== DTC_FLOW_SEND_CLEAR")),
     ("flow_dismissed_while_under_way", T, F, DISMISS, "\tdrop_list(flow);"),
     ("flow_dismiss_ignored", T, F, DISMISS, "\t(void)flow;"),
     ("flow_dismiss_only_a_list", T, F, DISMISS, "\tif(flow->phase == DTC_FLOW_LIST) drop_list(flow);"),

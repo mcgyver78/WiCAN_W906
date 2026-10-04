@@ -59,6 +59,25 @@ static access_t at(const access_t *access, uint64_t now_ms)
 	return state;
 }
 
+// The release is given or renewed now. No renewal reaches beyond the latest end: who writes again and again
+// must not keep open what was released by somebody at the device.
+static void renew(access_t *access)
+{
+	uint64_t end = after(access->clock_ms, ACCESS_OPEN_MS);
+
+	access->open_until_ms = end < access->open_max_ms ? end : access->open_max_ms;
+}
+
+// Why a question cannot be asked in this state, which settle() has brought to the present. The closed
+// release goes first: who may not change anything learns nothing else.
+static access_refusal_t refusal(const access_t *access, access_ask_t ask)
+{
+	if(!access->open) return ACCESS_CLOSED;
+	if(ask != ACCESS_ASK_WIFI && ask != ACCESS_ASK_FIRMWARE && ask != ACCESS_ASK_RESET) return ACCESS_BAD_QUESTION;
+	if(access->asking != ACCESS_ASK_NONE) return ACCESS_ASKING;
+	return ACCESS_ALLOWED;
+}
+
 void access_init(access_t *access)
 {
 	memset(access, 0, sizeof(*access));
@@ -68,7 +87,8 @@ void access_open(access_t *access, uint64_t now_ms)
 {
 	settle(access, now_ms);
 	access->open = true;
-	access->open_until_ms = after(access->clock_ms, ACCESS_OPEN_MS);
+	access->open_max_ms = after(access->clock_ms, ACCESS_OPEN_MAX_MS);
+	renew(access);
 }
 
 void access_close(access_t *access, uint64_t now_ms)
@@ -95,24 +115,31 @@ bool access_write(access_t *access, uint64_t now_ms)
 	settle(access, now_ms);
 	if(!access->open) return false;
 
-	access->open_until_ms = after(access->clock_ms, ACCESS_OPEN_MS);
+	renew(access);
 	return true;
 }
 
 uint32_t access_ask(access_t *access, access_ask_t ask, uint64_t now_ms)
 {
 	settle(access, now_ms);
-	if(!access->open || access->asking != ACCESS_ASK_NONE) return 0;
-	if(ask != ACCESS_ASK_WIFI && ask != ACCESS_ASK_FIRMWARE && ask != ACCESS_ASK_RESET) return 0;
+	if(refusal(access, ask) != ACCESS_ALLOWED) return 0;
 
 	// The last ticket has ended, settle() saw to that: its end is final and moves on with it
 	access->previous_end = access->ticket_end;
 	access->ticket = access->ticket == UINT32_MAX ? 1 : access->ticket + 1;
 	access->ticket_end = ACCESS_TICKET_WAITING;
 	access->asking = ask;
+	access->asking_since_ms = access->clock_ms;
 	access->asking_until_ms = after(access->clock_ms, ACCESS_CONFIRM_MS);
-	access->open_until_ms = after(access->clock_ms, ACCESS_OPEN_MS);
+	renew(access);
 	return access->ticket;
+}
+
+access_refusal_t access_may_ask(const access_t *access, access_ask_t ask, uint64_t now_ms)
+{
+	access_t state = at(access, now_ms);
+
+	return refusal(&state, ask);
 }
 
 access_ask_t access_asking(const access_t *access, uint64_t now_ms)
@@ -123,8 +150,10 @@ access_ask_t access_asking(const access_t *access, uint64_t now_ms)
 uint32_t access_ask_seconds_left(const access_t *access, uint64_t now_ms)
 {
 	access_t state = at(access, now_ms);
+	// The release may end before the time of the question is over, and the question with it
+	uint64_t end = state.asking_until_ms < state.open_until_ms ? state.asking_until_ms : state.open_until_ms;
 
-	return state.asking != ACCESS_ASK_NONE ? seconds_rounded_up(state.asking_until_ms - state.clock_ms) : 0;
+	return state.asking != ACCESS_ASK_NONE ? seconds_rounded_up(end - state.clock_ms) : 0;
 }
 
 access_ask_t access_confirm(access_t *access, uint64_t now_ms)
@@ -132,6 +161,10 @@ access_ask_t access_confirm(access_t *access, uint64_t now_ms)
 	access_ask_t confirmed;
 
 	settle(access, now_ms);
+	// A press that comes this soon was meant for the screen the question appeared over: the question waits
+	// on. If none waits there is nothing to confirm either way.
+	if(access->clock_ms - access->asking_since_ms < ACCESS_ASK_SHOWN_MS) return ACCESS_ASK_NONE;
+
 	confirmed = access->asking;
 	end_question(access, ACCESS_TICKET_CONFIRMED);
 	return confirmed;

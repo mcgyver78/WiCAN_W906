@@ -1,0 +1,6 @@
+kind: choice
+ring: progress 277
+title: Neu starten?
+note:
+option: > Abbrechen
+option: - Ausführen

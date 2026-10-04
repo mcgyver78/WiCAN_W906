@@ -1,5 +1,5 @@
 kind: progress
-ring: progress 277
+ring: none
 title: Fehlerspeicher lesen
 note:
 line: ESP

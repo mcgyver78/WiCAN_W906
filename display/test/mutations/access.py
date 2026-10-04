@@ -14,31 +14,53 @@ EXPIRES = ("\tif(access->clock_ms >= access->asking_until_ms && access->asking_u
 RELEASE_ENDS = ("\tif(access->clock_ms >= access->open_until_ms)\n"
                 "\t{\n\t\tend_question(access, ACCESS_TICKET_REFUSED);\n\t\taccess->open = false;\n\t}\n")
 AT = "\tsettle(&state, now_ms);\n\treturn state;"
+RENEW_CUT = "\taccess->open_until_ms = end < access->open_max_ms ? end : access->open_max_ms;\n"
+CLOSED = "\tif(!access->open) return ACCESS_CLOSED;\n"
+KINDS = "\tif(ask != ACCESS_ASK_WIFI && ask != ACCESS_ASK_FIRMWARE && ask != ACCESS_ASK_RESET) return ACCESS_BAD_QUESTION;\n"
+WAITING = "\tif(access->asking != ACCESS_ASK_NONE) return ACCESS_ASKING;\n"
 INIT = "\tmemset(access, 0, sizeof(*access));"
-OPEN = "\tsettle(access, now_ms);\n\taccess->open = true;\n\taccess->open_until_ms = after(access->clock_ms, ACCESS_OPEN_MS);\n"
+LATEST = "\taccess->open_max_ms = after(access->clock_ms, ACCESS_OPEN_MAX_MS);\n"
+OPEN = "\tsettle(access, now_ms);\n\taccess->open = true;\n" + LATEST + "\trenew(access);\n}"
 CLOSE = "\tsettle(access, now_ms);\n\tend_question(access, ACCESS_TICKET_REFUSED);\n\taccess->open = false;\n"
 IS_OPEN = "\treturn at(access, now_ms).open;"
 SECONDS_LEFT = "\treturn state.open ? seconds_rounded_up(state.open_until_ms - state.clock_ms) : 0;"
-WRITE = ("\tsettle(access, now_ms);\n\tif(!access->open) return false;\n\n"
-         "\taccess->open_until_ms = after(access->clock_ms, ACCESS_OPEN_MS);\n\treturn true;\n")
+WRITE = "\tsettle(access, now_ms);\n\tif(!access->open) return false;\n\n\trenew(access);\n\treturn true;\n"
+WRITE_RENEWS = "\trenew(access);\n\treturn true;\n"
 ASK_SETTLE = "\tsettle(access, now_ms);\n"
-ASK_STATE = "\tif(!access->open || access->asking != ACCESS_ASK_NONE) return 0;\n"
-ASK_KINDS = "\tif(ask != ACCESS_ASK_WIFI && ask != ACCESS_ASK_FIRMWARE && ask != ACCESS_ASK_RESET) return 0;\n"
+ASK_REFUSED = "\tif(refusal(access, ask) != ACCESS_ALLOWED) return 0;\n"
 ASK_PREVIOUS = "\taccess->previous_end = access->ticket_end;\n"
 ASK_NUMBER = "\taccess->ticket = access->ticket == UINT32_MAX ? 1 : access->ticket + 1;\n"
 ASK_WAITING = "\taccess->ticket_end = ACCESS_TICKET_WAITING;\n"
 ASK_KIND = "\taccess->asking = ask;\n"
+ASK_SINCE = "\taccess->asking_since_ms = access->clock_ms;\n"
 ASK_UNTIL = "\taccess->asking_until_ms = after(access->clock_ms, ACCESS_CONFIRM_MS);\n"
-ASK_RENEWS = "\taccess->open_until_ms = after(access->clock_ms, ACCESS_OPEN_MS);\n\treturn access->ticket;\n"
+ASK_RENEWS = "\trenew(access);\n\treturn access->ticket;\n"
+MAY_ASK = "\taccess_t state = at(access, now_ms);\n\n\treturn refusal(&state, ask);\n"
 ASKING = "\treturn at(access, now_ms).asking;"
-ASK_SECONDS = "\treturn state.asking != ACCESS_ASK_NONE ? seconds_rounded_up(state.asking_until_ms - state.clock_ms) : 0;"
-CONFIRM = "\tsettle(access, now_ms);\n\tconfirmed = access->asking;\n\tend_question(access, ACCESS_TICKET_CONFIRMED);\n\treturn confirmed;\n"
+ASK_END = "\tuint64_t end = state.asking_until_ms < state.open_until_ms ? state.asking_until_ms : state.open_until_ms;\n"
+ASK_SECONDS = "\treturn state.asking != ACCESS_ASK_NONE ? seconds_rounded_up(end - state.clock_ms) : 0;"
+CONFIRM_SETTLE = "\tsettle(access, now_ms);\n\t// A press that comes this soon"
+TOO_SOON = "\tif(access->clock_ms - access->asking_since_ms < ACCESS_ASK_SHOWN_MS) return ACCESS_ASK_NONE;\n"
+CONFIRM = "\tconfirmed = access->asking;\n\tend_question(access, ACCESS_TICKET_CONFIRMED);\n\treturn confirmed;\n"
 REFUSE = "\tsettle(access, now_ms);\n\tend_question(access, ACCESS_TICKET_REFUSED);\n}"
 TICKET_STATE = "\taccess_t state = at(access, now_ms);\n\n\t// While no ticket"
 TICKET_LAST = "\tif(ticket == state.ticket) return state.ticket_end;\n"
 TICKET_BEFORE = "\tif(ticket == (state.ticket == 1 ? UINT32_MAX : state.ticket - 1)) return state.previous_end;\n"
 TICKET_UNKNOWN = "\treturn ACCESS_TICKET_UNKNOWN;"
-RENEW = "access->open_until_ms = after(access->clock_ms, ACCESS_OPEN_MS);"
+RENEW = "renew(access);"
+# A renewal as it was before the release got a latest end, and one that is cut there but counts from another time
+UNCUT = "access->open_until_ms = after(access->clock_ms, ACCESS_OPEN_MS);"
+CUT = "if(access->open_until_ms > access->open_max_ms) access->open_until_ms = access->open_max_ms;"
+# The latest end is brought nearer: to the end a renewal at this moment has
+NEARER = "if(access->open_max_ms > after(access->clock_ms, ACCESS_OPEN_MS)) access->open_max_ms = after(access->clock_ms, ACCESS_OPEN_MS);"
+MAX_H = "#define ACCESS_OPEN_MAX_MS  (1800u * 1000u)"
+SHOWN_H = "#define ACCESS_ASK_SHOWN_MS 1500u"
+
+
+def too_soon(then):
+    """The press that comes too soon does `then` before it returns."""
+    return TOO_SOON.replace(" return ACCESS_ASK_NONE;\n", "\n\t{\n\t\t" + then + "\n\t\treturn ACCESS_ASK_NONE;\n\t}\n")
+
 
 MUTATIONS = [
     # the time
@@ -52,25 +74,28 @@ MUTATIONS = [
     ("access_asking_functions_store_their_time", T, F, AT, "\tsettle(&state, now_ms);\n\tsettle((access_t *)access, now_ms);\n\treturn state;"),
     ("access_asking_functions_see_no_end_without_time_passing", T, F, AT, "\tif(now_ms > state.clock_ms) settle(&state, now_ms);\n\treturn state;"),
     ("access_seconds_left_from_the_time_of_the_caller", T, F, SECONDS_LEFT, SECONDS_LEFT.replace("state.open_until_ms - state.clock_ms", "state.open_until_ms - now_ms")),
-    ("access_ask_seconds_left_from_the_time_of_the_caller", T, F, ASK_SECONDS, ASK_SECONDS.replace("state.asking_until_ms - state.clock_ms", "state.asking_until_ms - now_ms")),
+    ("access_ask_seconds_left_from_the_time_of_the_caller", T, F, ASK_SECONDS, ASK_SECONDS.replace("end - state.clock_ms", "end - now_ms")),
     ("access_seconds_left_from_the_time_stored", T, F, SECONDS_LEFT, SECONDS_LEFT.replace("state.open_until_ms - state.clock_ms", "state.open_until_ms - access->clock_ms")),
-    ("access_ask_seconds_left_from_the_time_stored", T, F, ASK_SECONDS, ASK_SECONDS.replace("state.asking_until_ms - state.clock_ms", "state.asking_until_ms - access->clock_ms")),
+    ("access_ask_seconds_left_from_the_time_stored", T, F, ASK_SECONDS, ASK_SECONDS.replace("end - state.clock_ms", "end - access->clock_ms")),
     ("access_open_ignores_its_time", T, F, OPEN, OPEN.replace("\tsettle(access, now_ms);\n", "\t(void)now_ms;\n")),
-    ("access_open_counts_from_the_time_of_the_caller", T, F, OPEN, OPEN.replace("after(access->clock_ms", "after(now_ms")),
+    ("access_open_counts_from_the_time_of_the_caller", T, F, OPEN, OPEN.replace("\t" + RENEW + "\n", "\taccess->open_until_ms = after(now_ms, ACCESS_OPEN_MS);\n")),
+    ("access_open_latest_end_from_the_time_of_the_caller", T, F, LATEST, LATEST.replace("access->clock_ms", "now_ms")),
     ("access_close_ignores_its_time", T, F, CLOSE, CLOSE.replace("\tsettle(access, now_ms);\n", "\t(void)now_ms;\n")),
     ("access_write_ignores_its_time", T, F, WRITE, WRITE.replace("\tsettle(access, now_ms);\n", "\t(void)now_ms;\n")),
-    ("access_write_counts_from_the_time_of_the_caller", T, F, WRITE, WRITE.replace("after(access->clock_ms", "after(now_ms")),
-    ("access_ask_ignores_its_time", T, F, ASK_SETTLE + ASK_STATE, "\t(void)now_ms;\n" + ASK_STATE),
+    ("access_write_counts_from_the_time_of_the_caller", T, F, WRITE_RENEWS,
+     "\taccess->open_until_ms = after(now_ms, ACCESS_OPEN_MS);\n\t" + CUT + "\n\treturn true;\n"),
+    ("access_ask_ignores_its_time", T, F, ASK_SETTLE + ASK_REFUSED, "\t(void)now_ms;\n" + ASK_REFUSED),
     ("access_question_counts_from_the_time_of_the_caller", T, F, ASK_UNTIL, ASK_UNTIL.replace("access->clock_ms", "now_ms")),
-    ("access_ask_renews_from_the_time_of_the_caller", T, F, ASK_RENEWS, ASK_RENEWS.replace("access->clock_ms", "now_ms")),
-    ("access_confirm_ignores_its_time", T, F, CONFIRM, CONFIRM.replace("\tsettle(access, now_ms);\n", "\t(void)now_ms;\n")),
+    ("access_ask_renews_from_the_time_of_the_caller", T, F, ASK_RENEWS,
+     "\taccess->open_until_ms = after(now_ms, ACCESS_OPEN_MS);\n\t" + CUT + "\n\treturn access->ticket;\n"),
+    ("access_confirm_ignores_its_time", T, F, CONFIRM_SETTLE, CONFIRM_SETTLE.replace("\tsettle(access, now_ms);\n", "\t(void)now_ms;\n")),
     ("access_refuse_ignores_its_time", T, F, REFUSE, REFUSE.replace("\tsettle(access, now_ms);\n", "\t(void)now_ms;\n")),
     ("access_refused_change_does_not_take_its_time_over", T, F,
      "\tsettle(access, now_ms);\n\tif(!access->open) return false;\n", "\tif(!at(access, now_ms).open) return false;\n\tsettle(access, now_ms);\n"),
     ("access_refused_question_does_not_take_its_time_over", T, F,
-     ASK_SETTLE + ASK_STATE + ASK_KINDS,
-     "\tif(!at(access, now_ms).open || at(access, now_ms).asking != ACCESS_ASK_NONE) return 0;\n" + ASK_KINDS + ASK_SETTLE),
-    ("access_question_that_is_none_does_not_take_its_time_over", T, F, ASK_SETTLE + ASK_STATE + ASK_KINDS, ASK_KINDS + ASK_SETTLE + ASK_STATE),
+     ASK_SETTLE + ASK_REFUSED, "\tif(access_may_ask(access, ask, now_ms) != ACCESS_ALLOWED) return 0;\n" + ASK_SETTLE),
+    ("access_question_that_is_none_does_not_take_its_time_over", T, F, ASK_SETTLE + ASK_REFUSED,
+     "\tif(ask != ACCESS_ASK_WIFI && ask != ACCESS_ASK_FIRMWARE && ask != ACCESS_ASK_RESET) return 0;\n" + ASK_SETTLE + ASK_REFUSED),
 
     # the largest time
     ("access_end_wraps_around", T, F, AFTER, "\treturn now + duration_ms;"),
@@ -95,16 +120,17 @@ MUTATIONS = [
     ("access_open_does_not_open", T, F, OPEN, OPEN.replace("\taccess->open = true;\n", "")),
     ("access_open_keeps_the_old_end", T, F, OPEN, OPEN.replace("\t" + RENEW + "\n", "")),
     ("access_open_again_does_not_start_the_time_anew", T, F, OPEN,
-     "\tsettle(access, now_ms);\n\tif(!access->open) " + RENEW + "\n\taccess->open = true;\n"),
+     "\tsettle(access, now_ms);\n" + LATEST + "\tif(!access->open) " + RENEW + "\n\taccess->open = true;\n}"),
     ("access_open_before_the_old_release_is_ended", T, F, OPEN,
-     "\taccess->open = true;\n\tsettle(access, now_ms);\n\taccess->open_until_ms = after(access->clock_ms, ACCESS_OPEN_MS);\n"),
-    ("access_open_refuses_the_question_that_waits", T, F, OPEN, OPEN + "\tend_question(access, ACCESS_TICKET_REFUSED);\n"),
+     "\taccess->open = true;\n\tsettle(access, now_ms);\n" + LATEST + "\t" + RENEW + "\n}"),
+    ("access_open_refuses_the_question_that_waits", T, F, OPEN, OPEN.replace("\n}", "\n\tend_question(access, ACCESS_TICKET_REFUSED);\n}")),
     ("access_open_gives_the_question_new_time", T, F, OPEN,
-     OPEN + "\tif(access->asking != ACCESS_ASK_NONE) access->asking_until_ms = after(access->clock_ms, ACCESS_CONFIRM_MS);\n"),
-    ("access_open_lasts_as_long_as_a_question", T, F, OPEN, OPEN.replace("ACCESS_OPEN_MS", "ACCESS_CONFIRM_MS")),
+     OPEN.replace("\n}", "\n\tif(access->asking != ACCESS_ASK_NONE) access->asking_until_ms = after(access->clock_ms, ACCESS_CONFIRM_MS);\n}")),
+    ("access_open_lasts_as_long_as_a_question", T, F, OPEN,
+     OPEN.replace("\t" + RENEW + "\n", "\taccess->open_until_ms = after(access->clock_ms, ACCESS_CONFIRM_MS);\n")),
     ("access_open_does_not_end_what_ran_out", T, F, OPEN, OPEN.replace("\tsettle(access, now_ms);\n", CLOCK)),
     ("access_open_counts_from_the_time_before_the_call", T, F, OPEN,
-     "\taccess->open = true;\n\taccess->open_until_ms = after(access->clock_ms, ACCESS_OPEN_MS);\n\tsettle(access, now_ms);\n"),
+     "\taccess->open = true;\n" + LATEST + "\t" + RENEW + "\n\tsettle(access, now_ms);\n}"),
     ("access_open_time_1_ms_longer", T, H, "#define ACCESS_OPEN_MS      (600u * 1000u)", "#define ACCESS_OPEN_MS      (600u * 1000u + 1u)"),
     ("access_open_time_1_ms_shorter", T, H, "#define ACCESS_OPEN_MS      (600u * 1000u)", "#define ACCESS_OPEN_MS      (600u * 1000u - 1u)"),
     ("access_release_ends_1_ms_late", T, F, RELEASE_ENDS, RELEASE_ENDS.replace(">=", ">")),
@@ -133,7 +159,8 @@ MUTATIONS = [
      "\tif(!access->open) return false;\n\n", "\tif(!access->open || access->asking != ACCESS_ASK_NONE) return false;\n\n"),
     ("access_write_after_the_switch_off", T, F, WRITE, WRITE.replace("if(!access->open) return false;", "if(access->clock_ms >= access->open_until_ms) return false;")),
     ("access_write_does_not_end_what_ran_out", T, F, WRITE, WRITE.replace("\tsettle(access, now_ms);\n", CLOCK)),
-    ("access_write_renews_for_the_time_of_a_question", T, F, WRITE, WRITE.replace("ACCESS_OPEN_MS", "ACCESS_CONFIRM_MS")),
+    ("access_write_renews_for_the_time_of_a_question", T, F, WRITE,
+     WRITE.replace("\t" + RENEW + "\n", "\taccess->open_until_ms = after(access->clock_ms, ACCESS_CONFIRM_MS);\n")),
     ("access_write_refuses_the_question_that_waits", T, F, WRITE, WRITE.replace("\treturn true;\n", "\tend_question(access, ACCESS_TICKET_REFUSED);\n\treturn true;\n")),
     ("access_write_gives_the_question_new_time", T, F, WRITE,
      WRITE.replace("\treturn true;\n", "\tif(access->asking != ACCESS_ASK_NONE) access->asking_until_ms = after(access->clock_ms, ACCESS_CONFIRM_MS);\n\treturn true;\n")),
@@ -143,24 +170,22 @@ MUTATIONS = [
      WRITE.replace("\t" + RENEW + "\n", "\tif(access->asking != ACCESS_ASK_RESET) " + RENEW + "\n")),
 
     # a question
-    ("access_ask_without_release", T, F, ASK_STATE, "\tif(access->asking != ACCESS_ASK_NONE) return 0;\n"),
-    ("access_ask_replaces_the_question_that_waits", T, F, ASK_STATE, "\tif(!access->open) return 0;\n"),
-    ("access_ask_replaces_a_question_of_the_same_kind", T, F, ASK_STATE,
-     "\tif(!access->open || (access->asking != ACCESS_ASK_NONE && access->asking != ask)) return 0;\n"),
-    ("access_ask_after_the_switch_off", T, F, ASK_STATE, ASK_STATE.replace("!access->open", "access->clock_ms >= access->open_until_ms")),
-    ("access_ask_refused_only_if_closed_and_asked", T, F, ASK_STATE, ASK_STATE.replace("||", "&&")),
-    ("access_ask_none_is_a_question", T, F, ASK_KINDS, "\tif(ask > ACCESS_ASK_RESET) return 0;\n"),
-    ("access_ask_values_behind_the_enum_are_questions", T, F, ASK_KINDS, "\tif(ask == ACCESS_ASK_NONE) return 0;\n"),
-    ("access_ask_value_4_is_a_question", T, F, ASK_KINDS, "\tif(ask == ACCESS_ASK_NONE || ask > ACCESS_ASK_RESET + 1) return 0;\n"),
-    ("access_ask_wifi_refused", T, F, ASK_KINDS, ASK_KINDS.replace("ask != ACCESS_ASK_WIFI && ", "")),
-    ("access_ask_firmware_refused", T, F, ASK_KINDS, ASK_KINDS.replace("ask != ACCESS_ASK_FIRMWARE && ", "")),
-    ("access_ask_reset_refused", T, F, ASK_KINDS, ASK_KINDS.replace(" && ask != ACCESS_ASK_RESET", "")),
+    ("access_ask_without_release", T, F, CLOSED, ""),
+    ("access_ask_replaces_the_question_that_waits", T, F, WAITING, ""),
+    ("access_ask_replaces_a_question_of_the_same_kind", T, F, WAITING, WAITING.replace("NONE)", "NONE && access->asking != ask)")),
+    ("access_ask_after_the_switch_off", T, F, CLOSED, CLOSED.replace("!access->open", "access->clock_ms >= access->open_until_ms")),
+    ("access_ask_refuses_only_what_is_no_question", T, F, ASK_REFUSED, ASK_REFUSED.replace("!= ACCESS_ALLOWED", "== ACCESS_BAD_QUESTION")),
+    ("access_ask_none_is_a_question", T, F, KINDS, "\tif(ask > ACCESS_ASK_RESET) return ACCESS_BAD_QUESTION;\n"),
+    ("access_ask_values_behind_the_enum_are_questions", T, F, KINDS, "\tif(ask == ACCESS_ASK_NONE) return ACCESS_BAD_QUESTION;\n"),
+    ("access_ask_value_4_is_a_question", T, F, KINDS, "\tif(ask == ACCESS_ASK_NONE || ask > ACCESS_ASK_RESET + 1) return ACCESS_BAD_QUESTION;\n"),
+    ("access_ask_wifi_refused", T, F, KINDS, KINDS.replace("ask != ACCESS_ASK_WIFI && ", "")),
+    ("access_ask_firmware_refused", T, F, KINDS, KINDS.replace("ask != ACCESS_ASK_FIRMWARE && ", "")),
+    ("access_ask_reset_refused", T, F, KINDS, KINDS.replace(" && ask != ACCESS_ASK_RESET", "")),
     ("access_ask_does_not_renew", T, F, ASK_RENEWS, "\treturn access->ticket;\n"),
-    ("access_ask_renews_for_the_time_of_a_question", T, F, ASK_RENEWS, ASK_RENEWS.replace("ACCESS_OPEN_MS", "ACCESS_CONFIRM_MS")),
-    ("access_refused_second_question_renews", T, F, ASK_STATE,
-     "\tif(!access->open) return 0;\n\tif(access->asking != ACCESS_ASK_NONE)\n\t{\n\t\t" + RENEW + "\n\t\treturn 0;\n\t}\n"),
-    ("access_question_that_is_none_renews", T, F, ASK_KINDS,
-     ASK_KINDS.replace(" return 0;\n", "\n\t{\n\t\t" + RENEW + "\n\t\treturn 0;\n\t}\n")),
+    ("access_ask_renews_for_the_time_of_a_question", T, F, ASK_RENEWS,
+     "\taccess->open_until_ms = after(access->clock_ms, ACCESS_CONFIRM_MS);\n\treturn access->ticket;\n"),
+    ("access_refused_second_question_renews", T, F, ASK_REFUSED, "\tif(refusal(access, ask) == ACCESS_ASKING) " + RENEW + "\n" + ASK_REFUSED),
+    ("access_question_that_is_none_renews", T, F, ASK_REFUSED, "\tif(refusal(access, ask) == ACCESS_BAD_QUESTION) " + RENEW + "\n" + ASK_REFUSED),
     ("access_confirm_time_1_ms_longer", T, H, "#define ACCESS_CONFIRM_MS   (60u * 1000u)", "#define ACCESS_CONFIRM_MS   (60u * 1000u + 1u)"),
     ("access_confirm_time_1_ms_shorter", T, H, "#define ACCESS_CONFIRM_MS   (60u * 1000u)", "#define ACCESS_CONFIRM_MS   (60u * 1000u - 1u)"),
     ("access_question_time_not_set", T, F, ASK_UNTIL, ""),
@@ -178,12 +203,12 @@ MUTATIONS = [
     ("access_ticket_number_starts_again_at_1", T, F, ASK_NUMBER, "\taccess->ticket = 1;\n"),
     ("access_ticket_after_4294967294_is_1", T, F, ASK_NUMBER, ASK_NUMBER.replace("== UINT32_MAX", ">= UINT32_MAX - 1")),
     ("access_ticket_after_the_largest_is_2", T, F, ASK_NUMBER, ASK_NUMBER.replace("? 1 :", "? 2 :")),
-    ("access_refused_question_takes_a_number", T, F, ASK_SETTLE + ASK_STATE,
-     ASK_SETTLE + "\tif(access->open && access->asking != ACCESS_ASK_NONE) access->ticket++;\n" + ASK_STATE),
-    ("access_question_that_is_none_takes_a_number", T, F, ASK_KINDS, ASK_KINDS.replace(" return 0;\n", "\n\t{\n\t\taccess->ticket++;\n\t\treturn 0;\n\t}\n")),
+    ("access_refused_question_takes_a_number", T, F, ASK_SETTLE + ASK_REFUSED,
+     ASK_SETTLE + "\tif(access->open && access->asking != ACCESS_ASK_NONE) access->ticket++;\n" + ASK_REFUSED),
+    ("access_question_that_is_none_takes_a_number", T, F, ASK_REFUSED, "\tif(refusal(access, ask) == ACCESS_BAD_QUESTION) access->ticket++;\n" + ASK_REFUSED),
     ("access_end_of_the_ticket_before_not_kept", T, F, ASK_PREVIOUS, ""),
     ("access_end_of_the_ticket_before_taken_after_the_new_one_waits", T, F, ASK_PREVIOUS + ASK_NUMBER + ASK_WAITING, ASK_NUMBER + ASK_WAITING + ASK_PREVIOUS),
-    ("access_refused_question_moves_the_end_of_the_last_ticket_on", T, F, ASK_SETTLE + ASK_STATE, ASK_SETTLE + ASK_PREVIOUS + ASK_STATE),
+    ("access_refused_question_moves_the_end_of_the_last_ticket_on", T, F, ASK_SETTLE + ASK_REFUSED, ASK_SETTLE + ASK_PREVIOUS + ASK_REFUSED),
     ("access_end_of_the_ticket_before_kept_only_if_confirmed", T, F, ASK_PREVIOUS,
      "\tif(access->ticket_end == ACCESS_TICKET_CONFIRMED) " + ASK_PREVIOUS[1:]),
     ("access_end_of_the_ticket_before_not_kept_if_expired", T, F, ASK_PREVIOUS, "\tif(access->ticket_end != ACCESS_TICKET_EXPIRED) " + ASK_PREVIOUS[1:]),
@@ -232,15 +257,17 @@ MUTATIONS = [
     ("access_close_does_not_end_what_ran_out", T, F, CLOSE, CLOSE.replace("\tsettle(access, now_ms);\n", CLOCK)),
     ("access_confirm_returns_nothing", T, F, CONFIRM, CONFIRM.replace("\treturn confirmed;", "\treturn confirmed == ACCESS_ASK_NONE ? confirmed : ACCESS_ASK_NONE;")),
     ("access_confirm_again_and_again", T, F, CONFIRM, CONFIRM.replace("\tend_question(access, ACCESS_TICKET_CONFIRMED);\n", "")),
-    ("access_confirm_after_the_time_of_the_question", T, F, CONFIRM,
-     "\tconfirmed = access->asking;\n\tsettle(access, now_ms);\n\tend_question(access, ACCESS_TICKET_CONFIRMED);\n\treturn confirmed;\n"),
-    ("access_confirm_marks_before_the_ends_are_seen", T, F, CONFIRM,
-     "\tconfirmed = access->asking;\n\tend_question(access, ACCESS_TICKET_CONFIRMED);\n\tsettle(access, now_ms);\n\treturn confirmed;\n"),
+    ("access_confirm_after_the_time_of_the_question", T, F, CONFIRM_SETTLE,
+     "\tconfirmed = access->asking;\n\tsettle(access, now_ms);\n\tif(access->asking == ACCESS_ASK_NONE) return confirmed;\n\t// A press that comes this soon"),
+    ("access_confirm_marks_before_the_ends_are_seen", T, F, CONFIRM_SETTLE,
+     "\tif((now_ms > access->clock_ms ? now_ms : access->clock_ms) - access->asking_since_ms >= ACCESS_ASK_SHOWN_MS && access->asking != ACCESS_ASK_NONE)\n"
+     "\t{\n\t\tconfirmed = access->asking;\n\t\tend_question(access, ACCESS_TICKET_CONFIRMED);\n\t\tsettle(access, now_ms);\n\t\treturn confirmed;\n\t}\n"
+     "\tsettle(access, now_ms);\n\t// A press that comes this soon"),
     ("access_confirm_only_the_wifi_question", T, F, CONFIRM,
      CONFIRM.replace("\treturn confirmed;", "\treturn confirmed == ACCESS_ASK_WIFI ? confirmed : ACCESS_ASK_NONE;")),
     ("access_confirm_reset_as_firmware", T, F, CONFIRM,
      CONFIRM.replace("\treturn confirmed;", "\treturn confirmed == ACCESS_ASK_RESET ? ACCESS_ASK_FIRMWARE : confirmed;")),
-    ("access_confirm_does_not_end_what_ran_out", T, F, CONFIRM, CONFIRM.replace("\tsettle(access, now_ms);\n", CLOCK)),
+    ("access_confirm_does_not_end_what_ran_out", T, F, CONFIRM_SETTLE, CONFIRM_SETTLE.replace("\tsettle(access, now_ms);\n", CLOCK)),
     ("access_confirmed_firmware_ticket_is_refused", T, F, CONFIRM,
      CONFIRM.replace("end_question(access, ACCESS_TICKET_CONFIRMED)",
                      "end_question(access, confirmed == ACCESS_ASK_FIRMWARE ? ACCESS_TICKET_REFUSED : ACCESS_TICKET_CONFIRMED)")),
@@ -264,8 +291,11 @@ MUTATIONS = [
 
     # what the display shows
     ("access_asking_sees_no_end", T, F, ASKING, "\t(void)now_ms;\n\treturn access->asking;"),
-    ("access_ask_seconds_left_while_nothing_waits", T, F, ASK_SECONDS, "\treturn seconds_rounded_up(state.asking_until_ms - state.clock_ms);"),
-    ("access_ask_seconds_left_are_those_of_the_release", T, F, ASK_SECONDS, ASK_SECONDS.replace("state.asking_until_ms", "state.open_until_ms")),
+    ("access_ask_seconds_left_while_nothing_waits", T, F, ASK_SECONDS, "\treturn seconds_rounded_up(end - state.clock_ms);"),
+    ("access_ask_seconds_left_are_those_of_the_release", T, F, ASK_END, "\tuint64_t end = state.open_until_ms;\n"),
+    ("access_ask_seconds_left_are_those_of_the_question_alone", T, F, ASK_END, "\tuint64_t end = state.asking_until_ms;\n"),
+    ("access_ask_seconds_left_up_to_the_later_end", T, F, ASK_END, ASK_END.replace("state.asking_until_ms < state.open_until_ms ?", "state.asking_until_ms > state.open_until_ms ?")),
+    ("access_ask_seconds_left_end_with_the_latest_end_only", T, F, ASK_END, ASK_END.replace("state.open_until_ms", "state.open_max_ms")),
 
     # access_ticket
     ("access_ticket_sees_no_end", T, F, TICKET_STATE, "\taccess_t state = *access;\n\n\t(void)now_ms;\n\t// While no ticket"),
@@ -310,8 +340,8 @@ MUTATIONS = [
      SECONDS_LEFT.replace("seconds_rounded_up(state.open_until_ms - state.clock_ms)",
                           "(state.open_until_ms - state.clock_ms > ACCESS_OPEN_MS ? 600 : seconds_rounded_up(state.open_until_ms - state.clock_ms))")),
     ("access_ask_seconds_left_capped_at_the_time_of_a_question", T, F, ASK_SECONDS,
-     ASK_SECONDS.replace("seconds_rounded_up(state.asking_until_ms - state.clock_ms)",
-                         "(state.asking_until_ms - state.clock_ms > ACCESS_CONFIRM_MS ? 60 : seconds_rounded_up(state.asking_until_ms - state.clock_ms))")),
+     ASK_SECONDS.replace("seconds_rounded_up(end - state.clock_ms)",
+                         "(end - state.clock_ms > ACCESS_CONFIRM_MS ? 60 : seconds_rounded_up(end - state.clock_ms))")),
     ("access_seconds_left_0_while_a_question_waits", T, F, SECONDS_LEFT, SECONDS_LEFT.replace("state.open ?", "state.open && state.asking == ACCESS_ASK_NONE ?")),
     ("access_ticket_number_1000_skipped", T, F, ASK_NUMBER, ASK_NUMBER + "\tif(access->ticket == 1000) access->ticket = 1001;\n"),
     ("access_ticket_number_65536_skipped", T, F, ASK_NUMBER, ASK_NUMBER + "\tif(access->ticket == 65536) access->ticket = 65537;\n"),
@@ -324,22 +354,20 @@ MUTATIONS = [
      ASK_UNTIL + "\tif(access->asking_until_ms > access->open_until_ms) access->asking_until_ms = access->open_until_ms;\n"),
     ("access_ask_does_not_renew_for_the_reset", T, F, ASK_RENEWS, "\tif(ask != ACCESS_ASK_RESET) " + ASK_RENEWS[1:]),
     ("access_ask_does_not_renew_for_the_firmware", T, F, ASK_RENEWS, "\tif(ask != ACCESS_ASK_FIRMWARE) " + ASK_RENEWS[1:]),
+    ("access_ask_does_not_renew_for_the_wifi", T, F, ASK_RENEWS, "\tif(ask != ACCESS_ASK_WIFI) " + ASK_RENEWS[1:]),
     ("access_question_for_the_wifi_stored_as_the_firmware", T, F, ASK_KIND, "\taccess->asking = ask == ACCESS_ASK_WIFI ? ACCESS_ASK_FIRMWARE : ask;\n"),
     ("access_question_for_the_wifi_never_expires", T, F, EXPIRES, EXPIRES.replace("if(access->clock_ms", "if(access->asking != ACCESS_ASK_WIFI && access->clock_ms")),
-    ("access_second_question_gets_the_number_of_the_first", T, F, ASK_STATE,
-     "\tif(!access->open) return 0;\n\tif(access->asking != ACCESS_ASK_NONE) return access->ticket;\n"),
-    ("access_ask_refused_in_the_last_millisecond_of_the_release", T, F, ASK_STATE,
-     "\tif(!access->open || access->asking != ACCESS_ASK_NONE || access->open_until_ms - access->clock_ms <= 1) return 0;\n"),
-    ("access_ask_refused_after_a_refused_ticket", T, F, ASK_STATE,
-     "\tif(!access->open || access->asking != ACCESS_ASK_NONE || access->ticket_end == ACCESS_TICKET_REFUSED) return 0;\n"),
-    ("access_ask_refused_after_an_expired_ticket", T, F, ASK_STATE,
-     "\tif(!access->open || access->asking != ACCESS_ASK_NONE || access->ticket_end == ACCESS_TICKET_EXPIRED) return 0;\n"),
+    ("access_second_question_gets_the_number_of_the_first", T, F, ASK_REFUSED,
+     "\tif(refusal(access, ask) == ACCESS_ASKING) return access->ticket;\n" + ASK_REFUSED),
+    ("access_ask_refused_in_the_last_millisecond_of_the_release", T, F, ASK_REFUSED,
+     ASK_REFUSED.replace(") return 0;", " || access->open_until_ms - access->clock_ms <= 1) return 0;")),
+    ("access_ask_refused_after_a_refused_ticket", T, F, ASK_REFUSED,
+     ASK_REFUSED.replace(") return 0;", " || access->ticket_end == ACCESS_TICKET_REFUSED) return 0;")),
+    ("access_ask_refused_after_an_expired_ticket", T, F, ASK_REFUSED,
+     ASK_REFUSED.replace(") return 0;", " || access->ticket_end == ACCESS_TICKET_EXPIRED) return 0;")),
     ("access_end_of_the_ticket_before_lost_at_the_wrap", T, F, ASK_PREVIOUS, "\tif(access->ticket != UINT32_MAX) " + ASK_PREVIOUS[1:]),
     ("access_end_of_the_ticket_before_confirmed_kept_as_refused", T, F, ASK_PREVIOUS,
      "\taccess->previous_end = access->ticket_end == ACCESS_TICKET_CONFIRMED ? ACCESS_TICKET_REFUSED : access->ticket_end;\n"),
-    ("access_confirm_not_in_the_first_second", T, F, CONFIRM,
-     CONFIRM.replace("\tconfirmed = access->asking;\n",
-                     "\tconfirmed = access->asking_until_ms - access->clock_ms > ACCESS_CONFIRM_MS - 1000 ? ACCESS_ASK_NONE : access->asking;\n")),
     ("access_confirmed_reset_ticket_has_expired", T, F, CONFIRM,
      CONFIRM.replace("end_question(access, ACCESS_TICKET_CONFIRMED)",
                      "end_question(access, confirmed == ACCESS_ASK_RESET ? ACCESS_TICKET_EXPIRED : ACCESS_TICKET_CONFIRMED)")),
@@ -362,8 +390,8 @@ MUTATIONS = [
     ("access_close_keeps_the_question_for_the_wifi", T, F, CLOSE, CLOSE.replace("\tend_question(", "\tif(access->asking != ACCESS_ASK_WIFI) end_question(")),
     ("access_close_forgets_the_ticket_before", T, F, CLOSE, CLOSE + "\taccess->previous_end = ACCESS_TICKET_UNKNOWN;\n"),
     ("access_close_forgets_the_last_ticket", T, F, CLOSE, CLOSE + "\taccess->ticket_end = ACCESS_TICKET_UNKNOWN;\n"),
-    ("access_open_forgets_the_ticket_before", T, F, OPEN, OPEN + "\taccess->previous_end = ACCESS_TICKET_UNKNOWN;\n"),
-    ("access_open_begins_the_numbers_anew", T, F, OPEN, OPEN + "\tif(access->asking == ACCESS_ASK_NONE) access->ticket = 0;\n"),
+    ("access_open_forgets_the_ticket_before", T, F, OPEN, OPEN.replace("\n}", "\n\taccess->previous_end = ACCESS_TICKET_UNKNOWN;\n}")),
+    ("access_open_begins_the_numbers_anew", T, F, OPEN, OPEN.replace("\n}", "\n\tif(access->asking == ACCESS_ASK_NONE) access->ticket = 0;\n}")),
     ("access_open_not_after_a_confirmed_ticket", T, F, OPEN,
      OPEN.replace("\taccess->open = true;\n", "\tif(access->ticket_end != ACCESS_TICKET_CONFIRMED) access->open = true;\n")),
     ("access_open_not_after_a_refused_ticket", T, F, OPEN,
@@ -371,8 +399,9 @@ MUTATIONS = [
     ("access_open_not_after_an_expired_ticket", T, F, OPEN,
      OPEN.replace("\taccess->open = true;\n", "\tif(access->ticket_end != ACCESS_TICKET_EXPIRED) access->open = true;\n")),
     ("access_open_adds_to_the_time_left", T, F, OPEN,
-     OPEN.replace("after(access->clock_ms, ACCESS_OPEN_MS)", "after(access->open ? access->open_until_ms : access->clock_ms, ACCESS_OPEN_MS)")),
-    ("access_write_adds_to_the_time_left", T, F, WRITE, WRITE.replace("after(access->clock_ms, ACCESS_OPEN_MS)", "after(access->open_until_ms, ACCESS_OPEN_MS)")),
+     OPEN.replace("\t" + RENEW + "\n", "\taccess->open_until_ms = after(access->open_until_ms > access->clock_ms ? access->open_until_ms : access->clock_ms, ACCESS_OPEN_MS);\n")),
+    ("access_write_adds_to_the_time_left", T, F, WRITE_RENEWS,
+     "\taccess->open_until_ms = after(access->open_until_ms, ACCESS_OPEN_MS);\n\t" + CUT + "\n\treturn true;\n"),
     ("access_write_refused_in_the_last_millisecond", T, F, WRITE,
      WRITE.replace("if(!access->open) return false;", "if(!access->open || access->open_until_ms - access->clock_ms <= 1) return false;")),
     ("access_write_renews_only_in_the_second_half", T, F, WRITE,
@@ -394,4 +423,163 @@ MUTATIONS = [
                      "\t\tif(access->asking != ACCESS_ASK_NONE) access->open = false;\n\t\tend_question(access, ACCESS_TICKET_EXPIRED);\n")),
     ("access_release_does_not_end_while_a_question_waits", T, F, RELEASE_ENDS,
      RELEASE_ENDS.replace("if(access->clock_ms", "if(access->asking == ACCESS_ASK_NONE && access->clock_ms")),
+
+    # the release ends ACCESS_OPEN_MAX_MS after it was switched on, whatever was written since
+    ("access_release_without_a_latest_end", T, F, RENEW_CUT, "\taccess->open_until_ms = end;\n"),
+    ("access_latest_end_1_ms_late", T, F, RENEW_CUT, RENEW_CUT.replace("end < access->open_max_ms ?", "end <= access->open_max_ms ?").replace(": access->open_max_ms;", ": access->open_max_ms + 1;")),
+    ("access_latest_end_1_ms_early", T, F, RENEW_CUT, RENEW_CUT.replace("end < access->open_max_ms ?", "end < access->open_max_ms - 1 ?").replace(": access->open_max_ms;", ": access->open_max_ms - 1;")),
+    ("access_latest_end_time_1_ms_longer", T, H, MAX_H, MAX_H.replace("1000u)", "1000u + 1u)")),
+    ("access_latest_end_time_1_ms_shorter", T, H, MAX_H, MAX_H.replace("1000u)", "1000u - 1u)")),
+    ("access_release_always_lasts_up_to_the_latest_end", T, F, RENEW_CUT, "\taccess->open_until_ms = access->open_max_ms > end ? access->open_max_ms : end;\n"),
+    ("access_latest_end_not_while_a_question_waits", T, F, RENEW_CUT, RENEW_CUT.replace("end < access->open_max_ms ?", "end < access->open_max_ms || access->asking != ACCESS_ASK_NONE ?")),
+    ("access_change_renews_beyond_the_latest_end", T, F, WRITE_RENEWS, "\t" + UNCUT + "\n\treturn true;\n"),
+    ("access_change_renews_beyond_the_latest_end_while_a_question_waits", T, F, WRITE_RENEWS,
+     "\t" + RENEW + "\n\tif(access->asking != ACCESS_ASK_NONE) " + UNCUT + "\n\treturn true;\n"),
+    ("access_question_renews_beyond_the_latest_end", T, F, ASK_RENEWS, "\t" + UNCUT + "\n\treturn access->ticket;\n"),
+    ("access_change_starts_the_latest_end_anew", T, F, WRITE_RENEWS, LATEST + WRITE_RENEWS),
+    ("access_question_starts_the_latest_end_anew", T, F, ASK_RENEWS, LATEST + ASK_RENEWS),
+    ("access_confirm_starts_the_latest_end_anew", T, F, CONFIRM,
+     CONFIRM.replace("\treturn confirmed;", "\tif(confirmed != ACCESS_ASK_NONE) " + LATEST[1:] + "\treturn confirmed;")),
+    ("access_refuse_starts_the_latest_end_anew", T, F, REFUSE, REFUSE.replace("\n}", "\n" + LATEST + "}")),
+    ("access_expired_question_starts_the_latest_end_anew", T, F, EXPIRES,
+     EXPIRES.replace("\t\tend_question(access, ACCESS_TICKET_EXPIRED);\n",
+                     "\t\tif(access->asking != ACCESS_ASK_NONE) access->open_max_ms = after(access->asking_until_ms, ACCESS_OPEN_MAX_MS);\n"
+                     "\t\tend_question(access, ACCESS_TICKET_EXPIRED);\n")),
+    ("access_open_again_keeps_the_latest_end", T, F, OPEN,
+     "\tsettle(access, now_ms);\n\tif(!access->open) " + LATEST[1:] + "\taccess->open = true;\n\t" + RENEW + "\n}"),
+    ("access_latest_end_set_once_for_ever", T, F, LATEST, "\tif(access->open_max_ms == 0) " + LATEST[1:]),
+    ("access_latest_end_adds_up_when_given_again", T, F, LATEST,
+     LATEST.replace("after(access->clock_ms,", "after(access->open_max_ms > access->clock_ms ? access->open_max_ms : access->clock_ms,")),
+    ("access_latest_end_kept_until_it_has_passed", T, F, LATEST, "\tif(access->open_max_ms <= access->clock_ms) " + LATEST[1:]),
+    ("access_latest_end_wraps_around", T, F, LATEST, "\taccess->open_max_ms = access->clock_ms + ACCESS_OPEN_MAX_MS;\n"),
+    ("access_latest_end_after_twice_the_time_of_a_release", T, F, LATEST, LATEST.replace("ACCESS_OPEN_MAX_MS", "2 * ACCESS_OPEN_MS")),
+    ("access_latest_end_counted_from_the_first_end", T, F, LATEST, LATEST.replace("after(access->clock_ms,", "after(after(access->clock_ms, ACCESS_OPEN_MS),")),
+    ("access_latest_end_keeps_the_question", T, F, RELEASE_ENDS,
+     RELEASE_ENDS.replace("\t\tend_question(", "\t\tif(access->open_until_ms != access->open_max_ms) end_question(")),
+    ("access_latest_end_lets_the_question_expire", T, F, RELEASE_ENDS,
+     RELEASE_ENDS.replace("end_question(access, ACCESS_TICKET_REFUSED)",
+                          "end_question(access, access->open_until_ms == access->open_max_ms ? ACCESS_TICKET_EXPIRED : ACCESS_TICKET_REFUSED)")),
+    ("access_latest_end_leaves_it_open", T, F, RELEASE_ENDS,
+     RELEASE_ENDS.replace("\t\taccess->open = false;\n", "\t\tif(access->open_until_ms != access->open_max_ms) access->open = false;\n")),
+    ("access_question_refused_in_the_last_minute_before_the_latest_end", T, F, ASK_REFUSED,
+     ASK_REFUSED.replace(") return 0;", " || access->open_max_ms - access->clock_ms < ACCESS_CONFIRM_MS) return 0;")),
+    ("access_question_refused_when_it_ends_together_with_the_latest_end", T, F, EXPIRES,
+     EXPIRES.replace("access->asking_until_ms <= access->open_until_ms",
+                     "(access->asking_until_ms < access->open_until_ms || (access->asking_until_ms == access->open_until_ms && access->open_until_ms != access->open_max_ms))")),
+
+    # no press confirms a question in its first ACCESS_ASK_SHOWN_MS
+    ("access_confirm_at_once", T, F, TOO_SOON, ""),
+    ("access_confirm_1_ms_sooner", T, F, TOO_SOON, TOO_SOON.replace("< ACCESS_ASK_SHOWN_MS", "< ACCESS_ASK_SHOWN_MS - 1")),
+    ("access_confirm_1_ms_later", T, F, TOO_SOON, TOO_SOON.replace("< ACCESS_ASK_SHOWN_MS", "<= ACCESS_ASK_SHOWN_MS")),
+    ("access_shown_time_1_ms_longer", T, H, SHOWN_H, SHOWN_H.replace("1500u", "1501u")),
+    ("access_shown_time_1_ms_shorter", T, H, SHOWN_H, SHOWN_H.replace("1500u", "1499u")),
+    ("access_confirm_at_once_from_the_second_ticket_on", T, F, TOO_SOON, TOO_SOON.replace("if(", "if(access->ticket == 1 && ")),
+    ("access_confirm_at_once_for_the_reset", T, F, TOO_SOON, TOO_SOON.replace("if(", "if(access->asking != ACCESS_ASK_RESET && ")),
+    ("access_confirm_at_once_for_the_firmware", T, F, TOO_SOON, TOO_SOON.replace("if(", "if(access->asking != ACCESS_ASK_FIRMWARE && ")),
+    ("access_confirm_at_once_for_the_wifi", T, F, TOO_SOON, TOO_SOON.replace("if(", "if(access->asking != ACCESS_ASK_WIFI && ")),
+    ("access_confirm_at_once_after_a_press_too_soon", T, F, TOO_SOON, too_soon("access->asking_since_ms = 0;")),
+    ("access_press_too_soon_refuses_the_question", T, F, TOO_SOON, too_soon("end_question(access, ACCESS_TICKET_REFUSED);")),
+    ("access_press_too_soon_lets_the_question_expire", T, F, TOO_SOON, too_soon("end_question(access, ACCESS_TICKET_EXPIRED);")),
+    ("access_press_too_soon_makes_the_question_wait_anew", T, F, TOO_SOON, too_soon("access->asking_since_ms = access->clock_ms;")),
+    ("access_press_too_soon_gives_the_question_new_time", T, F, TOO_SOON,
+     too_soon("if(access->asking != ACCESS_ASK_NONE) access->asking_until_ms = after(access->clock_ms, ACCESS_CONFIRM_MS);")),
+    ("access_press_too_soon_renews_the_release", T, F, TOO_SOON, too_soon("if(access->asking != ACCESS_ASK_NONE) " + RENEW)),
+    ("access_press_too_soon_ends_the_release", T, F, TOO_SOON, too_soon("if(access->asking != ACCESS_ASK_NONE) access->open = false;")),
+    ("access_press_too_soon_forgets_the_ticket_before", T, F, TOO_SOON, too_soon("if(access->asking != ACCESS_ASK_NONE) access->previous_end = ACCESS_TICKET_UNKNOWN;")),
+    ("access_press_too_soon_does_not_take_its_time_over", T, F, CONFIRM_SETTLE,
+     "\tif(at(access, now_ms).asking != ACCESS_ASK_NONE && at(access, now_ms).clock_ms - access->asking_since_ms < ACCESS_ASK_SHOWN_MS) return ACCESS_ASK_NONE;\n"
+     + CONFIRM_SETTLE),
+    ("access_question_waits_since_the_time_of_the_caller", T, F, ASK_SINCE, ASK_SINCE.replace("access->clock_ms", "now_ms")),
+    ("access_question_does_not_note_since_when_it_waits", T, F, ASK_SINCE, ""),
+    ("access_only_the_first_question_notes_since_when_it_waits", T, F, ASK_SINCE, "\tif(access->asking_since_ms == 0) " + ASK_SINCE[1:]),
+    ("access_too_soon_counted_back_from_the_end_of_the_question", T, F, TOO_SOON,
+     TOO_SOON.replace("access->clock_ms - access->asking_since_ms < ACCESS_ASK_SHOWN_MS",
+                      "access->asking != ACCESS_ASK_NONE && access->asking_until_ms - access->clock_ms > ACCESS_CONFIRM_MS - ACCESS_ASK_SHOWN_MS")),
+    ("access_too_soon_compared_in_32_bit", T, F, TOO_SOON,
+     TOO_SOON.replace("access->clock_ms - access->asking_since_ms < ACCESS_ASK_SHOWN_MS",
+                      "(uint32_t)access->clock_ms < (uint32_t)access->asking_since_ms + ACCESS_ASK_SHOWN_MS")),
+    ("access_too_soon_sum_wraps_around", T, F, TOO_SOON,
+     TOO_SOON.replace("access->clock_ms - access->asking_since_ms < ACCESS_ASK_SHOWN_MS", "access->clock_ms < access->asking_since_ms + ACCESS_ASK_SHOWN_MS")),
+    ("access_too_soon_judged_by_the_time_of_the_caller", T, F, TOO_SOON, TOO_SOON.replace("access->clock_ms - access->asking_since_ms", "now_ms - access->asking_since_ms")),
+    ("access_refuse_too_soon_does_nothing", T, F, REFUSE,
+     REFUSE.replace("\tend_question(", "\tif(access->clock_ms - access->asking_since_ms >= ACCESS_ASK_SHOWN_MS) end_question(")),
+    ("access_close_too_soon_keeps_the_question", T, F, CLOSE,
+     CLOSE.replace("\tend_question(", "\tif(access->clock_ms - access->asking_since_ms >= ACCESS_ASK_SHOWN_MS) end_question(")),
+    ("access_refused_second_question_moves_the_moment_the_knob_counts", T, F, ASK_REFUSED,
+     "\tif(refusal(access, ask) == ACCESS_ASKING) " + ASK_SINCE[1:] + ASK_REFUSED),
+    ("access_question_that_is_none_moves_the_moment_the_knob_counts", T, F, ASK_REFUSED,
+     "\tif(refusal(access, ask) == ACCESS_BAD_QUESTION) " + ASK_SINCE[1:] + ASK_REFUSED),
+    ("access_change_moves_the_moment_the_knob_counts", T, F, WRITE_RENEWS, ASK_SINCE + WRITE_RENEWS),
+    ("access_open_moves_the_moment_the_knob_counts", T, F, OPEN, OPEN.replace("\n}", "\n" + ASK_SINCE + "}")),
+
+    # access_may_ask
+    ("access_may_ask_closed_told_as_asking", T, F, CLOSED, CLOSED.replace("ACCESS_CLOSED", "ACCESS_ASKING")),
+    ("access_may_ask_closed_told_as_a_bad_question", T, F, CLOSED, CLOSED.replace("ACCESS_CLOSED", "ACCESS_BAD_QUESTION")),
+    ("access_may_ask_asking_told_as_closed", T, F, WAITING, WAITING.replace("ACCESS_ASKING", "ACCESS_CLOSED")),
+    ("access_may_ask_asking_told_as_a_bad_question", T, F, WAITING, WAITING.replace("ACCESS_ASKING", "ACCESS_BAD_QUESTION")),
+    ("access_may_ask_bad_question_told_as_closed", T, F, KINDS, KINDS.replace("ACCESS_BAD_QUESTION", "ACCESS_CLOSED")),
+    ("access_may_ask_bad_question_told_as_asking", T, F, KINDS, KINDS.replace("ACCESS_BAD_QUESTION", "ACCESS_ASKING")),
+    ("access_may_ask_bad_question_goes_before_closed", T, F, CLOSED + KINDS, KINDS + CLOSED),
+    ("access_may_ask_asking_goes_before_bad_question", T, F, KINDS + WAITING, WAITING + KINDS),
+    ("access_may_ask_sees_no_end", T, F, MAY_ASK, "\t(void)now_ms;\n\treturn refusal(access, ask);\n"),
+    ("access_may_ask_sees_no_end_without_a_question", T, F, MAY_ASK,
+     "\taccess_t state = access->asking != ACCESS_ASK_NONE ? at(access, now_ms) : *access;\n\n\treturn refusal(&state, ask);\n"),
+    ("access_may_ask_stores_its_time", T, F, MAY_ASK, "\tsettle((access_t *)access, now_ms);\n\treturn refusal(access, ask);\n"),
+    ("access_may_ask_stores_its_time_when_it_refuses", T, F, MAY_ASK,
+     "\taccess_t state = at(access, now_ms);\n\n\tif(refusal(&state, ask) != ACCESS_ALLOWED) settle((access_t *)access, now_ms);\n\treturn refusal(&state, ask);\n"),
+    ("access_may_ask_asks", T, F, MAY_ASK,
+     "\taccess_t state = at(access, now_ms);\n\n\tif(refusal(&state, ask) == ACCESS_ALLOWED) access_ask((access_t *)access, ask, now_ms);\n\treturn refusal(&state, ask);\n"),
+    ("access_may_ask_renews_the_release", T, F, MAY_ASK,
+     "\taccess_t state = at(access, now_ms);\n\n\tif(refusal(&state, ask) == ACCESS_ALLOWED) ((access_t *)access)->open_until_ms = after(state.clock_ms, ACCESS_OPEN_MS);\n"
+     "\treturn refusal(&state, ask);\n"),
+    ("access_may_ask_allows_what_is_no_question", T, F, MAY_ASK,
+     MAY_ASK.replace("return refusal(&state, ask);", "return refusal(&state, ask) == ACCESS_BAD_QUESTION ? ACCESS_ALLOWED : refusal(&state, ask);")),
+    ("access_may_ask_allows_while_a_question_waits", T, F, MAY_ASK,
+     MAY_ASK.replace("return refusal(&state, ask);", "return refusal(&state, ask) == ACCESS_ASKING ? ACCESS_ALLOWED : refusal(&state, ask);")),
+    ("access_may_ask_allows_under_a_closed_release", T, F, MAY_ASK,
+     MAY_ASK.replace("return refusal(&state, ask);", "return refusal(&state, ask) == ACCESS_CLOSED ? ACCESS_ALLOWED : refusal(&state, ask);")),
+    ("access_may_ask_never_allows", T, F, MAY_ASK,
+     MAY_ASK.replace("return refusal(&state, ask);", "return refusal(&state, ask) == ACCESS_ALLOWED ? ACCESS_ASKING : refusal(&state, ask);")),
+    ("access_may_ask_closed_in_the_last_millisecond", T, F, MAY_ASK,
+     MAY_ASK.replace("return refusal(&state, ask);", "return state.open && state.open_until_ms - state.clock_ms <= 1 ? ACCESS_CLOSED : refusal(&state, ask);")),
+    ("access_may_ask_asking_for_a_second_after_the_question", T, F, MAY_ASK,
+     MAY_ASK.replace("return refusal(&state, ask);",
+                     "return refusal(&state, ask) == ACCESS_ALLOWED && access->asking != ACCESS_ASK_NONE && state.clock_ms - access->asking_until_ms < 1000 ? ACCESS_ASKING : refusal(&state, ask);")),
+    ("access_may_ask_judges_the_wifi_question_only", T, F, MAY_ASK, MAY_ASK.replace("refusal(&state, ask)", "refusal(&state, ask == ACCESS_ASK_NONE ? ask : ACCESS_ASK_WIFI)")),
+
+    # found by the hunt for survivors after the three changes: what is a question in 8 or 16 bit only, the
+    # question asked at the time 0, and what only the walks had noticed - the question after a refused one,
+    # the press shortly after a question ended, the release given again with a question or after one, the
+    # ticket before the last at the latest end, and a latest end that comes nearer
+    ("access_ask_kinds_compared_in_8_bit", T, F, KINDS, KINDS.replace("ask !=", "(uint8_t)ask !=")),
+    ("access_ask_kinds_compared_in_16_bit", T, F, KINDS, KINDS.replace("ask !=", "(uint16_t)ask !=")),
+    ("access_confirm_at_once_after_a_refused_ticket", T, F, TOO_SOON, TOO_SOON.replace("if(", "if(access->previous_end != ACCESS_TICKET_REFUSED && ")),
+    ("access_confirm_at_once_after_a_confirmed_ticket", T, F, TOO_SOON, TOO_SOON.replace("if(", "if(access->previous_end != ACCESS_TICKET_CONFIRMED && ")),
+    ("access_confirm_at_once_after_an_expired_ticket", T, F, TOO_SOON, TOO_SOON.replace("if(", "if(access->previous_end != ACCESS_TICKET_EXPIRED && ")),
+    ("access_confirm_at_once_for_the_largest_ticket_number", T, F, TOO_SOON, TOO_SOON.replace("if(", "if(access->ticket != UINT32_MAX && ")),
+    ("access_press_soon_after_the_end_of_a_question_makes_its_ticket_wait", T, F, TOO_SOON, too_soon("if(access->ticket != 0) access->ticket_end = ACCESS_TICKET_WAITING;")),
+    ("access_press_soon_after_the_end_of_a_question_brings_it_back", T, F, TOO_SOON,
+     too_soon("if(access->asking == ACCESS_ASK_NONE && access->ticket_end == ACCESS_TICKET_REFUSED && access->open) access->asking = ACCESS_ASK_WIFI;")),
+    ("access_latest_end_not_anew_while_a_question_waits", T, F, LATEST, "\tif(access->asking == ACCESS_ASK_NONE) " + LATEST[1:]),
+    ("access_latest_end_not_anew_after_a_confirmed_ticket", T, F, LATEST, "\tif(access->ticket_end != ACCESS_TICKET_CONFIRMED) " + LATEST[1:]),
+    ("access_latest_end_not_anew_after_a_refused_ticket", T, F, LATEST, "\tif(access->ticket_end != ACCESS_TICKET_REFUSED) " + LATEST[1:]),
+    ("access_renewal_after_a_press_too_soon_is_not_cut", T, F, WRITE_RENEWS,
+     "\t" + RENEW + "\n\tif(access->asking != ACCESS_ASK_NONE && access->clock_ms - access->asking_since_ms < ACCESS_ASK_SHOWN_MS) " + UNCUT + "\n\treturn true;\n"),
+    ("access_question_waits_since_a_time_in_32_bit", T, F, ASK_SINCE, ASK_SINCE.replace("access->clock_ms;", "(uint32_t)access->clock_ms;")),
+    ("access_confirm_at_once_for_a_question_asked_at_the_time_0", T, F, TOO_SOON, TOO_SOON.replace("if(", "if(access->asking_since_ms != 0 && ")),
+    ("access_latest_end_not_set_at_the_time_0", T, F, LATEST, "\tif(access->clock_ms != 0) " + LATEST[1:] + "\telse access->open_max_ms = UINT64_MAX;\n"),
+    ("access_latest_end_forgets_the_ticket_before", T, F, RELEASE_ENDS,
+     RELEASE_ENDS.replace("\t\taccess->open = false;\n",
+                          "\t\tif(access->open && access->open_until_ms == access->open_max_ms) access->previous_end = ACCESS_TICKET_UNKNOWN;\n\t\taccess->open = false;\n")),
+    ("access_refuse_brings_the_latest_end_nearer", T, F, REFUSE, REFUSE.replace("\n}", "\n\t" + NEARER + "\n}")),
+    ("access_confirm_brings_the_latest_end_nearer", T, F, CONFIRM, CONFIRM.replace("\treturn confirmed;", "\tif(confirmed != ACCESS_ASK_NONE) " + NEARER + "\n\treturn confirmed;")),
+    ("access_press_too_soon_brings_the_latest_end_nearer", T, F, TOO_SOON, too_soon("if(access->asking != ACCESS_ASK_NONE) " + NEARER)),
+    ("access_refused_second_question_brings_the_latest_end_nearer", T, F, ASK_REFUSED, "\tif(refusal(access, ask) == ACCESS_ASKING) " + NEARER + "\n" + ASK_REFUSED),
+    ("access_question_that_is_none_brings_the_latest_end_nearer", T, F, ASK_REFUSED, "\tif(refusal(access, ask) == ACCESS_BAD_QUESTION) " + NEARER + "\n" + ASK_REFUSED),
+    ("access_question_brings_the_latest_end_nearer", T, F, ASK_RENEWS, "\t" + NEARER + "\n" + ASK_RENEWS),
+    ("access_change_while_a_question_waits_brings_the_latest_end_nearer", T, F, WRITE_RENEWS, "\tif(access->asking != ACCESS_ASK_NONE) " + NEARER + "\n" + WRITE_RENEWS),
+    ("access_expired_question_brings_the_latest_end_nearer", T, F, EXPIRES,
+     EXPIRES.replace("\t\tend_question(access, ACCESS_TICKET_EXPIRED);\n",
+                     "\t\tif(access->asking != ACCESS_ASK_NONE && access->open_max_ms > after(access->asking_until_ms, ACCESS_OPEN_MS)) "
+                     "access->open_max_ms = after(access->asking_until_ms, ACCESS_OPEN_MS);\n\t\tend_question(access, ACCESS_TICKET_EXPIRED);\n")),
 ]

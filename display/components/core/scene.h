@@ -104,7 +104,9 @@ typedef struct
 	scene_kind_t kind;
 	ring_t ring;                        // texts.h
 	char title[SCENE_TEXT_SIZE];
-	char note[SCENE_TEXT_SIZE];         // one line at the lower edge of the content, may be empty
+	char note[SCENE_TEXT_SIZE];         // one or two lines at the lower edge of the content, may be empty:
+	                                    // the chord of the round screen there holds about 20 characters,
+	                                    // most notes have more, and the drawing code breaks them
 
 	scene_item_t items[LAYOUT_ITEMS_MAX];   // SCENE_VALUES
 	int item_count;
@@ -174,9 +176,18 @@ typedef struct
  * of the own request come from `flow`.
  *
  * ring: ring_state() with the view of the connection, its state, and - on a value page - the worst level
- * and whether a value of the page is old; level 0 and not old on every other screen. Only a value that is
- * shown counts (LIVE or OLD, with a text): one that became a dash raises no level, although values.h still
- * has its last number.
+ * and `old`; level 0 and not old on every other screen.
+ *   level  Only a value that is shown counts (LIVE or OLD, with a text): one that became a dash raises no
+ *          level, although values.h still has its last number.
+ *   old    At least one item of the page is LAYOUT_ITEM_OLD or shows the dash: LAYOUT_ITEM_NO_VALUE (the
+ *          profile has the value, but it is not there), or a value whose text cannot be made. So a page in
+ *          the view LIVE on which a value is missing never has the ring of "live, all well", also when all
+ *          of its values have become dashes. LAYOUT_ITEM_UNAVAILABLE does not count: the profile does not
+ *          provide the value, nothing is wrong.
+ * On NAV_DTC_BUSY and NAV_DTC_CONFIRM the screen has an arc of its own (permille), and two arcs on one
+ * screen would be read as one: the ring is never RING_PROGRESS there. Where ring_state() gives
+ * RING_PROGRESS the scene carries RING_NONE with permille 0; every other ring stays, and so does the ring
+ * of every other screen.
  *
  * NAV_PAGES
  *   The view of the connection decides (conn_view):
@@ -212,6 +223,16 @@ typedef struct
  * NAV_DTC        SCENE_LIST "Fehlerspeicher": "Lesen" (enabled if can_read); "Liste ansehen" (enabled if
  *                world->flow is LIST, CLEARED, FAILED or UNKNOWN); "Zuletzt gelöscht" (enabled if old_lines > 0);
  *                "Zurück". note = text_block(read_block), empty if allowed.
+ *                One line says where things stand, by the phase of `flow`:
+ *                  IDLE                  "Noch nicht gelesen"
+ *                  READ_SENT, READING    "Lesen läuft …"
+ *                  LIST                  "3 Fehler in 2 Steuergeräten", the line of the clear dialog (see
+ *                                        there); without a summary "Liste gelesen"
+ *                  CLEAR_SENT, CLEARING  "Löschen läuft …"
+ *                  CLEARED               "Gelöscht"
+ *                  FAILED                "Letzter Auftrag fehlgeschlagen"
+ *                  UNKNOWN               "Stand des Löschens unbekannt"
+ *                A phase that is no member of the enum counts as IDLE, as it does for nav.h.
  * NAV_DTC_BUSY   SCENE_PROGRESS, title "Fehlerspeicher lesen" (flow READ_SENT, READING) or "Fehlerspeicher
  *                löschen" (CLEAR_SENT, CLEARING); in every other phase title "Fehlerspeicher", big "…",
  *                permille 0 and no line (nothing is under way; nav_tick() leaves the screen).
@@ -243,8 +264,10 @@ typedef struct
  *                permille = nav->value * 10, kept within 0..1000; note "Drehen zum Ändern, Drücken zum
  *                Speichern"
  * NAV_WEB        SCENE_LIST "Web-Zugriff": "Freigabe" detail "an – noch 9:12" (access_seconds_left()) or
- *                "aus" (when that is 0); "Zurück". lines: the address, or "Kein WLAN" without one; and with
- *                the own access point on: "WLAN: <ap_ssid>" and "Passwort: <ap_password>".
+ *                "aus" (when that is 0); "Zurück". lines: the address; without one "Kein WLAN" while the
+ *                own access point is off, and no line in its place while it is on (a phone is to join the
+ *                network named next, not to read that there is none); then, with the own access point on,
+ *                "WLAN: <ap_ssid>" and "Passwort: <ap_password>".
  * NAV_INFO       SCENE_LIST "Info": the texts of `info` as rows of the kind SCENE_ROW_LINE
  * NAV_SETTINGS   SCENE_LIST "Einstellungen": "Drehrichtung" detail "umgekehrt" / "normal"; "Hotspot" detail
  *                "an" / "aus"; "Neustart"; "Vorherige Version" (enabled if previous_firmware);

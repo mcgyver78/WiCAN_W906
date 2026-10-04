@@ -71,10 +71,10 @@ typedef struct
 // What the caller has to do because of an answer or a request. Bits, taken with poll_take_events().
 #define POLL_EVENT_BOUND    0x01u   // the display was bound to an adapter: store poll_t.bound_id
 #define POLL_EVENT_CATALOG  0x02u   // store the catalogue (guard.h decided that it is time)
-#define POLL_EVENT_OLD      0x04u   // a clear is about to be sent: store old_text (the list that is being
-                                    // cleared) BEFORE the request goes out
+#define POLL_EVENT_OLD      0x04u   // `old` is another list now: store old_text (see poll_apply())
 #define POLL_EVENT_LISTS    0x08u   // list, cleared or old changed: the lines for the screen are to be rebuilt
-#define POLL_EVENT_FORGET   0x10u   // the adapter restarted or was replaced: values and lists were dropped
+#define POLL_EVENT_FORGET   0x10u   // the adapter restarted or was replaced: values and lists were dropped, the
+                                    // catalogue was started anew
 
 typedef struct
 {
@@ -92,7 +92,7 @@ typedef struct
 	char list_text[POLL_TEXT_SIZE];     // as the adapter sent it, for the web interface
 	bool has_cleared;           // the result of the own clear
 	dtc_result_t cleared;
-	bool has_old;               // the list before the last clear
+	bool has_old;               // the list before the last clear the adapter accepted, or may have
 	dtc_result_t old;
 	char old_text[POLL_TEXT_SIZE];
 
@@ -121,39 +121,47 @@ void poll_stored(poll_t *poll, const char *catalog_json, size_t catalog_length, 
 
 // The display joined a network and knows where the adapter is, or lost that (conn_wifi()).
 // Losing it ends a request under way - its answer will be ignored - and with it a fault memory request of
-// the display: dtc_flow_lost(), also for one that still waits to be sent; list and cleared follow the flow
-// as after an answer. Joining forgets the values (values_clear()): the adapter may have restarted in
-// between, and its pass counter means nothing then. conn asks for the profile again, so the catalogue counts
-// as not complete until it is loaded, and guard.h is told (guard_catalog_connected()).
+// the display: dtc_flow_lost(). One that still waits to be sent was never sent and ends without a failure,
+// a clear with its list shown again (dtc_flow.h). old, list and cleared follow the flow as after an answer:
+// a clear whose POST was under way may have arrived, and its list becomes `old`.
+// Joining forgets the values (values_clear()): the adapter may have restarted in between, and its pass
+// counter means nothing then. conn asks for the profile again, so the catalogue counts as not complete
+// until it is loaded, and guard.h is told (guard_catalog_connected()). The catalogue itself stays: the one
+// of poll_stored() serves until the profile of this connection is loaded.
 // Calling it again with the same value changes nothing.
 void poll_wifi(poll_t *poll, bool up, uint64_t now_ms);
 
 // The request to send now. Returns false if there is none (a request is under way, no network, or it is not
 // time yet); *request is then POLL_NONE with an empty path. A fault memory request the user started
-// (dtc_flow_take() with now_ms) goes before everything else; then what conn_next() asks for. Only when
-// dtc_flow_take() really hands out a clear (it may refuse a list that has grown too old), the list being
-// cleared becomes `old` (and old_text) and POLL_EVENT_OLD is raised, with POLL_EVENT_LISTS.
+// (dtc_flow_take() with now_ms) goes before everything else; then what conn_next() asks for. Handing out a
+// clear changes nothing that is shown or stored and raises no event: the list stays `list` until the
+// answers tell what became of the clear (`old` below).
 bool poll_prepare(poll_t *poll, uint64_t now_ms, poll_request_t *request);
 
 /*
  * The answer to the request that was handed out. request: what poll_prepare() filled. status: the HTTP
- * status, 0 if no answer came (timeout, connection refused or lost, body larger than the room); a negative
- * number counts as 0 (what an HTTP client reports when it has no status). body: zero terminated, `length`
- * bytes; NULL counts as an empty one. seq_header: value of the header POLL_SEQ_HEADER, NULL if it was not
- * sent. work: POLL_TOKENS tokens.
+ * status, 0 if no answer came (timeout, connection refused or lost); a negative number counts as 0 (what
+ * an HTTP client reports when it has no status). body: zero terminated, `length` bytes; NULL counts as an
+ * empty one. An answer whose body is larger than the room (POLL_BODY_SIZE) did come: the caller passes the
+ * status it received with an empty body (length 0), not status 0, and the request is treated as with any
+ * other body it cannot read. seq_header: value of the header POLL_SEQ_HEADER, NULL if it was not sent.
+ * work: POLL_TOKENS tokens.
  * A call without a request under way is ignored, and so is one whose request is NULL or of another kind
  * than the one under way: its body would be read as something it is not.
  *
  * POLL_STATE    200 and wican_state_parse() takes it: conn_got_state(OK), then dtc_flow_state(). The battery
  *               voltage of the state becomes the value CATALOG_BATTERY (in volts; no value if not measured,
  *               and none of a foreign adapter: that is not the vehicle of this display).
- *               404: conn_got_state(NOT_FOUND). Anything else, also a body that cannot be read: FAILED.
+ *               404: conn_got_state(NOT_FOUND). Anything else, also a 200 with a body that cannot be read
+ *               or is empty: FAILED.
  *               After it: conn_take_bind() -> bound_id and POLL_EVENT_BOUND; conn_take_restarted() -> values,
- *               list, cleared (not old) are dropped, the catalogue counts as not complete,
- *               guard_catalog_connected(), POLL_EVENT_FORGET and POLL_EVENT_LISTS; and the flow must not
- *               go on with numbers of another adapter or boot: dtc_flow_lost(), then dtc_flow_dismiss()
- *               if it still shows a list or an outcome (LIST, CLEARED). The battery voltage of the very
- *               state that showed the restart stays: it is one of the adapter that answers now.
+ *               list, cleared (not old) are dropped, the catalogue is started anew (catalog_init(): a
+ *               profile of another vehicle must not leave entries behind, and what was delivered once
+ *               would stay for ever) and counts as not complete, guard_catalog_connected(),
+ *               POLL_EVENT_FORGET and POLL_EVENT_LISTS; and the flow must not go on with numbers of
+ *               another adapter or boot: dtc_flow_lost(), then dtc_flow_dismiss() if it still shows a list
+ *               or an outcome (LIST, CLEARED). The battery voltage of the very state that showed the
+ *               restart stays: it is one of the adapter that answers now.
  * POLL_RESULT   200, the header carries the number that was asked for (its decimal digits and nothing
  *               else), the body is shorter than POLL_TEXT_SIZE and dtc_result_parse() takes it:
  *               conn_got_result(OK) and dtc_flow_result(). If the flow is then LIST the result is `list`
@@ -163,21 +171,22 @@ bool poll_prepare(poll_t *poll, uint64_t now_ms, poll_request_t *request);
  *               Status 0 (no answer): FAILED, conn asks again in the next round.
  *               Any other answer - 204, a 200 with another number in the header or without the header (the
  *               result was replaced meanwhile, the next state names the new one), a 200 whose body cannot be
- *               read or has no room in list_text, any other status: the result cannot be had, and asking
- *               again would bring the same - conn_got_result(NOT_FOUND), so that the rounds go on.
+ *               read, is empty or has no room in list_text, any other status: the result cannot be had, and
+ *               asking again would bring the same - conn_got_result(NOT_FOUND), so that the rounds go on.
  *               If the flow waits for the very result that was asked for (READING or CLEARING with that
- *               number) and still waits after an answer came: dtc_flow_lost(). conn does not ask for that
- *               result again, the flow would wait for ever. A flow that waits for another number is not
- *               concerned.
+ *               number) and still waits after an answer came: dtc_flow_no_result(). conn does not ask for
+ *               that result again, the flow would wait until its time is over. A flow that waits for
+ *               another number is not concerned.
  * POLL_CATALOG  200 and catalog_apply_config() takes it: conn_got_catalog(OK), the catalogue is complete.
- *               200 with a body that cannot be used: conn_got_catalog(OK) as well - asking again would bring
- *               the same; the catalogue of this connection is then what the values bring. 404: NOT_FOUND.
+ *               200 with a body that cannot be used, also an empty one: conn_got_catalog(OK) as well -
+ *               asking again would bring the same; the catalogue of this connection is then what the
+ *               values bring. 404: NOT_FOUND.
  *               Anything else: FAILED - but an answer (not status 0) while the last state says that AutoPID
  *               is off: NOT_FOUND. The adapter has no profile then and answers 500 (API.md); conn asks for
  *               it all the same, and the failed rounds would show "no answer" for an adapter that answers.
  * POLL_VALUES   200: values_apply() with the pass counter of the last state (-1 without the API);
  *               RENEWED or REPEATED: conn_got_values(OK), and catalog_note_values() if renewed.
- *               INVALID, or any other status: FAILED.
+ *               INVALID (also an empty body), or any other status: FAILED.
  * POLL_DTC_READ, POLL_DTC_CLEAR
  *               dtc_flow_posted() with the status and with "seq" and "reason" of the body (0 and an empty
  *               reason if the body cannot be read; a status that is not 202 without a reason gets the reason
@@ -187,6 +196,12 @@ bool poll_prepare(poll_t *poll, uint64_t now_ms, poll_request_t *request);
  *
  * After every answer, in this order:
  * - if conn_view() is NO_WIFI or NO_ANSWER: dtc_flow_lost(), once per outage
+ * - the list before the last clear is only replaced by a list that was cleared or may have been: if the
+ *   flow was CLEAR_SENT before the answer and has left it with the clear accepted or its outcome unknown -
+ *   it is CLEARING (accepted with 202, or taken over from the state after a POST without an answer),
+ *   UNKNOWN, or FAILED by the error of the very state that showed the clear as accepted - `list` becomes
+ *   `old` (and list_text old_text), and POLL_EVENT_OLD is raised with POLL_EVENT_LISTS. A clear that the
+ *   adapter refused, that did not arrive or was never sent has cleared nothing: `old` stays what it was.
  * - if the flow dropped its list by itself (it is not LIST, CLEAR_SENT or CLEARING any more while has_list):
  *   has_list follows the flow - a list is kept only while the flow is LIST, CLEAR_SENT or CLEARING; `cleared`
  *   only while it is CLEARED. POLL_EVENT_LISTS if something changed.

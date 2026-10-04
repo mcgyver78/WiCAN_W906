@@ -10,7 +10,8 @@
  *   - what holds for every scene (sound()): every scene of this test is built twice, between guard bytes over
  *     memory filled with 0xAA and over zeros, and both have to be the same memory
  *   - made-up inputs of every kind, compared with the rules of the header written a second way (tables by
- *     screen for kind, title, note, lines, choices and overlay, and a search for the window of a list)
+ *     screen for kind, title, note, lines, choices and overlay, a search for the window of a list, and the
+ *     ring of a value page from the age of each of its values)
  * Every group runs in a child process: a crash or a hang of the module is then a failed check.
  *
  * The time of all scenes is NOW. The adapter is "a1b2c3d4e5f6", the views are fixtures/scene_layout.json,
@@ -139,6 +140,7 @@ static bool sound(const scene_t *s)
 	NEED((unsigned)s->kind <= SCENE_LEVEL, "kind is no member of its enum");
 	NEED((unsigned)s->ring.kind <= RING_PROGRESS, "ring is no member of its enum");
 	NEED(s->ring.permille >= 0 && s->ring.permille <= 1000 && (s->ring.kind == RING_PROGRESS || s->ring.permille == 0), "ring.permille");
+	NEED(s->ring.kind != RING_PROGRESS || (s->kind != SCENE_PROGRESS && (s->kind != SCENE_CHOICE || s->permille == -1)), "the ring is a second arc next to the one of the screen");
 	NEED(TEXT_OK(s->title) && TEXT_OK(s->note) && TEXT_OK(s->big) && TEXT_OK(s->options[0]) && TEXT_OK(s->options[1]), "a text of the scene has no end, or bytes behind it");
 
 	NEED(s->item_count >= 0 && s->item_count <= LAYOUT_ITEMS_MAX, "item_count");
@@ -734,15 +736,28 @@ static void test_values_screens(void)
 
 	stage();
 	values_init(&values);
-	screen("values_none", "no value at all: every value a dimmed dash without unit, arc and bar without a position, the ring off");
+	screen("values_none", "no value at all: every value a dimmed dash without unit, arc and bar without a position; the ring is yellow - a page of dashes is not one on which all is well");
+	stage();
+	values_init(&values);
+	seen(base_values, 10000);
+	nav.page = 4;
+	screen("values_all_gone", "every value seen 10000 ms ago: all of them have become dashes, and the ring stays yellow as it was while they were old");
+	stage();
+	seen("{\"COOLANT_TMP\":88.4}", 10000);
+	nav.page = 1;
+	screen("values_one_gone", "a page of one value that is gone, while other values are fresh: a dash, the ring yellow");
+	stage();
+	values_init(&values);
+	nav.page = 5;
+	screen("values_five_gone", "a page of dashes and of one value the profile does not have: the ring is yellow for the dashes");
 
 	stage();
 	world.catalog = &unloaded;
 	nav.page = 7;
-	screen("values_unloaded", "before the profile arrived a page of foreign values is one of seven and shows dashes");
+	screen("values_unloaded", "before the profile arrived a page of foreign values is one of seven and shows dashes: nobody knows yet that the profile lacks them, the ring is yellow");
 	stage();
 	nav.page = 7;
-	screen("values_foreign", "values the profile does not have are n. v., dimmed, without unit; their page is still shown but no dot is lit");
+	screen("values_foreign", "values the profile does not have are n. v., dimmed, without unit; their page is still shown but no dot is lit; the ring is off - nothing is missing");
 	stage();
 	nav.page = 6;
 	screen("values_hidden", "a hidden page the knob is still on is shown, with no dot lit");
@@ -758,10 +773,10 @@ static void test_values_screens(void)
 	screen("values_old_alarm", "an old value beyond its crit limit is dimmed like every old value, and the ring is red: the value is still shown");
 	stage();
 	seen("{\"COOLANT_TMP\":120}", 10000);
-	screen("values_gone_alarm", "a value beyond its crit limit that is gone is a dash and leaves the ring off");
+	screen("values_gone_alarm", "a value beyond its crit limit that is gone is a dash: the ring is yellow for the missing value, not red for its last number");
 	stage();
 	seen("{\"ENGINE_RPM\":1000000000000,\"BOOST_PRESSURE\":1000000000000000}", 500);
-	screen("values_no_text", "a fresh value too large to be printed counts as no value: a dimmed dash without unit and range, and it raises no level");
+	screen("values_no_text", "a fresh value too large to be printed counts as no value: a dimmed dash without unit and range; it raises no level, and the ring is yellow for the dash");
 
 	stage();
 	view_scan();
@@ -806,6 +821,41 @@ static void test_items(void)
 		{"ABCDEFGHIJKLMNOPQRSTUVWXY", ""},
 		{"A_B_C_D_E_F_G_H_I_J_K_L_M", ""},
 		{"DPF_KM_SINCE_REGENERATION_TOTAL", ""},
+	};
+	static const struct
+	{
+		uint64_t age_ms;
+		const char *text;
+		ring_kind_t ring;
+		const char *rule;
+	} gone[] = {
+		{0, "88", RING_NONE, "fresh, the ring off"},
+		{2999, "88", RING_NONE, "still fresh, the ring off"},
+		{3000, "88", RING_YELLOW, "old, the ring yellow"},
+		{9999, "88", RING_YELLOW, "still old and shown, the ring yellow"},
+		{10000, SCENE_DASH, RING_YELLOW, "gone, a dash, and the ring stays yellow"},
+		{10001, SCENE_DASH, RING_YELLOW, "a dash, the ring yellow"},
+		{600000, SCENE_DASH, RING_YELLOW, "a dash for ten minutes, the ring still yellow"},
+	};
+	// ENGINE_RPM is fresh, FUEL_L old, COOLANT_TMP gone; the profile has neither TRANS_TEMP nor TURBO_SPEED
+	static const struct
+	{
+		const char *first, *first_text;
+		const char *second, *second_text;
+		ring_kind_t ring;
+		const char *rule;
+	} pairs[] = {
+		{"ENGINE_RPM", "812", "TRANS_TEMP", SCENE_UNAVAILABLE, RING_NONE, "a fresh one and one the profile does not provide"},
+		{"TRANS_TEMP", SCENE_UNAVAILABLE, "ENGINE_RPM", "812", RING_NONE, "one the profile does not provide and a fresh one"},
+		{"TRANS_TEMP", SCENE_UNAVAILABLE, "TURBO_SPEED", SCENE_UNAVAILABLE, RING_NONE, "both not provided by the profile"},
+		{"COOLANT_TMP", SCENE_DASH, "TRANS_TEMP", SCENE_UNAVAILABLE, RING_YELLOW, "a dash and one the profile does not provide"},
+		{"TRANS_TEMP", SCENE_UNAVAILABLE, "COOLANT_TMP", SCENE_DASH, RING_YELLOW, "one the profile does not provide and a dash"},
+		{"COOLANT_TMP", SCENE_DASH, "ENGINE_RPM", "812", RING_YELLOW, "a dash and a fresh one"},
+		{"ENGINE_RPM", "812", "COOLANT_TMP", SCENE_DASH, RING_YELLOW, "a fresh one and a dash"},
+		{"FUEL_L", "43", "TRANS_TEMP", SCENE_UNAVAILABLE, RING_YELLOW, "an old one and one the profile does not provide"},
+		{"TRANS_TEMP", SCENE_UNAVAILABLE, "FUEL_L", "43", RING_YELLOW, "one the profile does not provide and an old one"},
+		{"COOLANT_TMP", SCENE_DASH, "FUEL_L", "43", RING_YELLOW, "a dash and an old one"},
+		{"COOLANT_TMP", SCENE_DASH, "COOLANT_TMP", SCENE_DASH, RING_YELLOW, "both dashes"},
 	};
 	layout_item_t *item, *second;
 
@@ -889,7 +939,7 @@ static void test_items(void)
 	check(item_is(0, "X", "-999999999999,999", "", SCENE_TONE_NORMAL, LAYOUT_WIDGET_NUMBER, -1), "the longest number that can be printed is passed on whole");
 	seen("{\"X\":1e999}", 500);
 	build();
-	check(item_is(0, "X", SCENE_DASH, "", SCENE_TONE_DIM, LAYOUT_WIDGET_NUMBER, -1) && ring_is(RING_NONE, 0), "a value that is not finite is a dimmed dash");
+	check(item_is(0, "X", SCENE_DASH, "", SCENE_TONE_DIM, LAYOUT_WIDGET_NUMBER, -1) && ring_is(RING_YELLOW, 0), "a value that is not finite is a dimmed dash, and the ring is yellow for it");
 
 	// The widget
 	stage();
@@ -937,10 +987,11 @@ static void test_items(void)
 	      "a value at its crit limit that is gone, of a key the profile does not have: n. v., and the ring is off");
 	seen("{\"X\":1e12}", 500);
 	build();
-	check(scene->items[0].tone == SCENE_TONE_DIM && strcmp(scene->items[0].text, SCENE_DASH) == 0 && ring_is(RING_NONE, 0), "a fresh value beyond its crit limit that cannot be printed: the ring is off");
+	check(scene->items[0].tone == SCENE_TONE_DIM && strcmp(scene->items[0].text, SCENE_DASH) == 0 && ring_is(RING_YELLOW, 0),
+	      "a fresh value beyond its crit limit that cannot be printed: a dash; the ring is yellow for the dash, not red for the number");
 	seen("{\"X\":1e12}", 3000);
 	build();
-	check(strcmp(scene->items[0].text, SCENE_DASH) == 0 && ring_is(RING_NONE, 0), "an old value that cannot be printed is not shown and does not count as old: the ring is off");
+	check(strcmp(scene->items[0].text, SCENE_DASH) == 0 && ring_is(RING_YELLOW, 0), "an old value that cannot be printed is a dash, and the ring is yellow");
 
 	// A limit counts whatever the widget
 	stage();
@@ -1037,6 +1088,111 @@ static void test_items(void)
 	seen("{\"X\":1}", 500);
 	build();
 	check(scene->items[0].tone == SCENE_TONE_DIM && strcmp(scene->items[0].text, "1") == 0, "during a scan a value within its limits is dimmed");
+
+	// What the ring takes for old: an old value and a dash, not what the profile does not provide
+	for(int i = 0; i < COUNT(gone); i++)
+	{
+		stage();
+		item = probe();
+		SET(item->key, "COOLANT_TMP");
+		seen("{\"COOLANT_TMP\":88.4}", gone[i].age_ms);
+		build();
+		snprintf(what, sizeof(what), "a page of one value of the profile, seen %lu ms ago: %s", (unsigned long)gone[i].age_ms, gone[i].rule);
+		check(scene->item_count == 1 && strcmp(scene->items[0].text, gone[i].text) == 0 && ring_is(gone[i].ring, 0), what);
+	}
+	stage();
+	item = probe();
+	SET(item->key, "COOLANT_TMP");
+	values_init(&values);
+	build();
+	check(strcmp(scene->items[0].text, SCENE_DASH) == 0 && ring_is(RING_YELLOW, 0), "a page of one value of the profile that never arrived: a dash, the ring yellow");
+	SET(item->key, "TRANS_TEMP");
+	build();
+	check(strcmp(scene->items[0].text, SCENE_UNAVAILABLE) == 0 && ring_is(RING_NONE, 0), "a page of one value the profile does not provide: n. v., the ring off - nothing is missing");
+	world.catalog = &unloaded;
+	build();
+	check(strcmp(scene->items[0].text, SCENE_DASH) == 0 && ring_is(RING_YELLOW, 0), "the same value before the profile arrived: a dash, the ring yellow");
+
+	// Whichever value of the page it is
+	for(int i = 0; i < COUNT(pairs); i++)
+	{
+		stage();
+		seen("{\"COOLANT_TMP\":88.4}", 10000);
+		seen("{\"FUEL_L\":43}", 5000);
+		item = probe();
+		SET(item->key, pairs[i].first);
+		second = probe_more(pairs[i].second);
+		build();
+		snprintf(what, sizeof(what), "a page of two values, %s: the ring is %s", pairs[i].rule, pairs[i].ring == RING_YELLOW ? "yellow" : "off");
+		check(scene->item_count == 2 && strcmp(scene->items[0].text, pairs[i].first_text) == 0 && strcmp(scene->items[1].text, pairs[i].second_text) == 0 && ring_is(pairs[i].ring, 0), what);
+	}
+
+	// A limit goes before a dash, as it goes before an old value
+	stage();
+	seen("{\"COOLANT_TMP\":88.4}", 10000);
+	item = probe();
+	SET(item->key, "ENGINE_RPM");
+	limit(&item->warn_hi, 800);
+	second = probe_more("COOLANT_TMP");
+	build();
+	check(scene->items[0].tone == SCENE_TONE_WARN && strcmp(scene->items[1].text, SCENE_DASH) == 0 && ring_is(RING_YELLOW, 0), "a value at its warn limit next to a dash: the ring is yellow");
+	limit(&item->crit_hi, 812);
+	build();
+	check(scene->items[0].tone == SCENE_TONE_ALARM && strcmp(scene->items[1].text, SCENE_DASH) == 0 && ring_is(RING_RED, 0), "a value at its crit limit next to a dash: the ring is red");
+
+	// Only in the view LIVE the ring tells of the values, and only on their page
+	stage();
+	item = probe();
+	SET(item->key, "COOLANT_TMP");
+	values_init(&values);
+	view_no_api();
+	build();
+	check(strcmp(scene->items[0].text, SCENE_DASH) == 0 && ring_is(RING_GREY, 0), "a page of one dash with a firmware without the API: the ring stays grey");
+	view_scan();
+	build();
+	check(strcmp(scene->items[0].text, SCENE_DASH) == 0 && ring_is(RING_PROGRESS, 277), "a page of one dash during a scan: the ring is the progress of the scan");
+	stage();
+	item = probe();
+	SET(item->key, "COOLANT_TMP");
+	values_init(&values);
+	nav.screen = NAV_MENU;
+	build();
+	check(ring_is(RING_NONE, 0), "the menu over a page of one dash: the ring is off, the page is not on the screen");
+	nav.screen = NAV_INFO;
+	build();
+	check(ring_is(RING_NONE, 0), "the info over a page of one dash: the ring is off");
+
+	// Whatever the widget, and whatever else the display has to say
+	stage();
+	item = probe();
+	SET(item->key, "DPF_REGEN_STATUS");
+	item->widget = LAYOUT_WIDGET_STATE;
+	seen("{\"DPF_REGEN_STATUS\":1}", 10000);
+	build();
+	check(item_is(0, "Dpf Regen Status", SCENE_DASH, "", SCENE_TONE_DIM, LAYOUT_WIDGET_STATE, -1) && ring_is(RING_YELLOW, 0), "a page of one state that is gone: a dash, the ring yellow");
+	input.safe_mode = true;
+	build();
+	check(ring_is(RING_YELLOW, 0) && strcmp(scene->note, SAFE_NOTE) == 0, "a page of one dash in safe mode: the ring is yellow all the same");
+	input.safe_mode = false;
+	input.heat = GUARD_HEAT_DIM;
+	build();
+	check(ring_is(RING_YELLOW, 0) && strcmp(scene->note, HOT_NOTE) == 0, "a page of one dash when it is too hot: the ring is yellow all the same");
+	stage();
+	item = probe();
+	SET(item->key, "BOOST_PRESSURE");
+	SET(item->label, "Ladedruck");
+	item->scale = 0.001;
+	item->decimals = 2;
+	item->has_unit = true;
+	SET(item->unit, "bar");
+	item->map_count = 1;
+	SET(item->map[0].raw, "*");
+	SET(item->map[0].text, "da");
+	world.night_mode = true;
+	seen("{\"BOOST_PRESSURE\":1013}", 10000);
+	build();
+	check(item_is(0, "Ladedruck", SCENE_DASH, "", SCENE_TONE_DIM, LAYOUT_WIDGET_NUMBER, -1) && ring_is(RING_YELLOW, 0),
+	      "a page of one value with a label, a scale, decimals, a unit and a map that is gone, in night mode: a dash, the ring yellow");
 }
 
 static void test_ranges(void)
@@ -1448,6 +1604,18 @@ static void test_menu(void)
 	check(enabled, "every row of the menu is enabled, whatever may be read, shown or reached: what a row leads to tells why nothing can be done there");
 }
 
+// What a list holds, in the words of the clear dialog and of the start of the fault memory
+static const struct
+{
+	uint32_t codes;
+	int units;
+	const char *line;
+} SUMS[] = {
+	{0, 0, "0 Fehler in 0 Steuergeräten"}, {1, 1, "1 Fehler in 1 Steuergerät"}, {2, 1, "2 Fehler in 1 Steuergerät"}, {2, 2, "2 Fehler in 2 Steuergeräten"},
+	{128, 24, "128 Fehler in 24 Steuergeräten"}, {4294967295u, 24, "4294967295 Fehler in 24 Steuergeräten"}, {1, -1, "1 Fehler in -1 Steuergeräten"},
+	{7, 11, "7 Fehler in 11 Steuergeräten"}, {3, INT_MAX, "3 Fehler in 2147483647 Steuergeräten"},
+};
+
 static void test_dtc(void)
 {
 	static const struct
@@ -1470,21 +1638,82 @@ static void test_dtc(void)
 		{DTC_FLOW_NOT_SUPPORTED, "Profil ohne Fehlerspeicher"}, {DTC_FLOW_BUSY, "Scan läuft bereits"}, {DTC_FLOW_RPM_UNKNOWN, "Drehzahl nicht lesbar"},
 		{(dtc_flow_block_t)99, "WiCAN nicht erreichbar"},
 	};
+	// Where things stand, by the phase of the flow; without a summary
+	static const struct
+	{
+		dtc_flow_phase_t phase;
+		const char *name;
+		const char *line;
+	} stands[] = {
+		{DTC_FLOW_IDLE, "IDLE", "Noch nicht gelesen"}, {DTC_FLOW_READ_SENT, "READ_SENT", "Lesen läuft …"}, {DTC_FLOW_READING, "READING", "Lesen läuft …"},
+		{DTC_FLOW_LIST, "LIST", "Liste gelesen"}, {DTC_FLOW_CLEAR_SENT, "CLEAR_SENT", "Löschen läuft …"}, {DTC_FLOW_CLEARING, "CLEARING", "Löschen läuft …"},
+		{DTC_FLOW_CLEARED, "CLEARED", "Gelöscht"}, {DTC_FLOW_FAILED, "FAILED", "Letzter Auftrag fehlgeschlagen"}, {DTC_FLOW_UNKNOWN, "UNKNOWN", "Stand des Löschens unbekannt"},
+		{(dtc_flow_phase_t)9, "9", "Noch nicht gelesen"}, {(dtc_flow_phase_t)-1, "-1", "Noch nicht gelesen"}, {(dtc_flow_phase_t)(256 + DTC_FLOW_LIST), "259", "Noch nicht gelesen"},
+		{(dtc_flow_phase_t)(256 + DTC_FLOW_READING), "258", "Noch nicht gelesen"}, {(dtc_flow_phase_t)(256 + DTC_FLOW_UNKNOWN), "264", "Noch nicht gelesen"},
+	};
+	static const int no_rows[] = {-1, 4, INT_MAX, INT_MIN};
+	dtc_summary_t summary = {0, 0, 0, 0};
 
 	stage_on(NAV_DTC, 0);
-	screen("dtc_start", "the fault memory before anything was read: reading is offered, nothing to look at");
+	screen("dtc_start", "the fault memory before anything was read: reading is offered, nothing to look at, and the line says that nothing was read");
 	stage_on(NAV_DTC, 2);
 	world.can_read = false;
 	input.read_block = DTC_FLOW_ENGINE_RUNNING;
 	world.flow = DTC_FLOW_LIST;
+	flow.phase = DTC_FLOW_LIST;
+	input.summary = &mixed_summary;
 	world.old_lines = codes_count;
 	input.old = codes_lines;
-	screen("dtc_blocked", "the fault memory with the engine running: reading is not offered and the note tells why; a list and an old list can be looked at");
+	screen("dtc_blocked", "the fault memory with the engine running: reading is not offered and the note tells why; a list and an old list can be looked at, and the line says what the list holds");
 	stage_on(NAV_DTC, 3);
 	view_ecu_offline();
 	world.can_read = false;
 	input.read_block = DTC_FLOW_ECU_OFFLINE;
 	screen("dtc_offline", "the fault memory with the ignition off: only the way back does something, the ring is grey");
+	stage_on(NAV_DTC, 0);
+	world.flow = flow.phase = DTC_FLOW_READING;
+	flow.seq = 41;
+	world.can_read = false;
+	input.read_block = DTC_FLOW_BUSY;
+	view_scan();
+	screen("dtc_reading", "the fault memory while the own read runs: the line says so, nothing is offered; this screen has no arc of its own, so the ring shows the progress");
+	stage_on(NAV_DTC, 3);
+	world.flow = flow.phase = DTC_FLOW_CLEARING;
+	flow.seq = 42;
+	world.can_read = false;
+	input.read_block = DTC_FLOW_BUSY;
+	scan(WICAN_DTC_RUNNING, 42, true, 4, 18, "N15/5 Wählhebelmodul");
+	answer(CONN_VIEW_SCAN);
+	screen("dtc_clearing", "the fault memory while the own clear runs: the line says so, the ring shows the progress");
+	stage_on(NAV_DTC, 1);
+	have_list(mixed_lines, mixed_count);
+	screen("dtc_list_no_summary", "the fault memory with a list and no summary of it: \"Liste gelesen\"");
+	stage_on(NAV_DTC, 1);
+	have_list(codes_lines, codes_count);
+	summary.codes = 1;
+	summary.ecus_with_codes = 1;
+	input.summary = &summary;
+	screen("dtc_list_one", "the fault memory with a list of one trouble code in one control unit: \"1 Steuergerät\", as the clear dialog says it");
+	stage_on(NAV_DTC, 1);
+	world.flow = flow.phase = DTC_FLOW_CLEARED;
+	world.cleared_lines = cleared_count;
+	input.cleared = cleared_lines;
+	world.old_lines = codes_count;
+	input.old = codes_lines;
+	screen("dtc_cleared", "the fault memory after the own clear: \"Gelöscht\"; the outcome and the list before it can be looked at");
+	stage_failed(DTC_FLOW_FAILED, "engine_running");
+	nav.screen = NAV_DTC;
+	nav.row = 1;
+	world.can_read = false;
+	input.read_block = DTC_FLOW_ENGINE_RUNNING;
+	screen("dtc_failed", "the fault memory after a request that failed: the line says that it failed, not why - the failure can be looked at");
+	stage_failed(DTC_FLOW_UNKNOWN, "");
+	nav.screen = NAV_DTC;
+	nav.row = 1;
+	view_no_answer();
+	world.can_read = false;
+	input.read_block = DTC_FLOW_NO_ADAPTER;
+	screen("dtc_unknown", "the fault memory after a clear whose outcome is not known: the line says so, the ring is that of the connection");
 
 	for(int i = 0; i < COUNT(phases); i++)
 	{
@@ -1496,6 +1725,85 @@ static void test_dtc(void)
 		snprintf(what, sizeof(what), "\"Liste ansehen\" with the world in the phase %s: %s", phases[i].name, phases[i].view ? "enabled" : "disabled");
 		check(row_is(1, false, SCENE_ROW_ACTION, "Liste ansehen", "", phases[i].view) && row_is(0, true, SCENE_ROW_ACTION, "Lesen", "", true), what);
 	}
+	for(int i = 0; i < COUNT(stands); i++)
+	{
+		stage_on(NAV_DTC, 0);
+		flow.phase = stands[i].phase;
+		// The world says another phase, and a reason is left in the flow: the line follows the phase of the flow
+		world.flow = stands[i].phase == DTC_FLOW_FAILED ? DTC_FLOW_IDLE : DTC_FLOW_FAILED;
+		SET(flow.reason, "busy");
+		build();
+		snprintf(what, sizeof(what), "the line of the fault memory with the flow in the phase %s, without a summary: \"%s\", above the four rows", stands[i].name, stands[i].line);
+		check(head_is(SCENE_LIST, "Fehlerspeicher", "") && lines_are(stands[i].line, NULL, NULL, NULL) && scene->total == 4 && scene->row_count == 4, what);
+		input.summary = &mixed_summary;
+		build();
+		snprintf(what, sizeof(what), "the line of the fault memory with the flow in the phase %s, with a summary: %s", stands[i].name,
+		         stands[i].phase == DTC_FLOW_LIST ? "what the list holds" : "the same, the summary is not told");
+		check(lines_are(stands[i].phase == DTC_FLOW_LIST ? "10 Fehler in 3 Steuergeräten" : stands[i].line, NULL, NULL, NULL), what);
+	}
+	for(int i = 0; i < COUNT(SUMS); i++)
+	{
+		stage_on(NAV_DTC, 0);
+		have_list(mixed_lines, mixed_count);
+		summary.codes = SUMS[i].codes;
+		summary.ecus_with_codes = SUMS[i].units;
+		// The other numbers of a summary are not the ones the line names
+		summary.ecus_not_ok = 5;
+		summary.ecus_clean = 9;
+		input.summary = &summary;
+		build();
+		snprintf(what, sizeof(what), "the line of the fault memory names the numbers of the list as the clear dialog does: \"%s\"", SUMS[i].line);
+		check(lines_are(SUMS[i].line, NULL, NULL, NULL), what);
+	}
+	stage_on(NAV_DTC, 0);
+	world.flow = DTC_FLOW_LIST;
+	world.list_lines = mixed_count;
+	input.list = mixed_lines;
+	input.summary = &mixed_summary;
+	build();
+	check(lines_are("Noch nicht gelesen", NULL, NULL, NULL) && row_is(1, false, SCENE_ROW_ACTION, "Liste ansehen", "", true),
+	      "a list, its lines and its summary named by the world while the flow is idle: the line is that of the flow, the row follows the world");
+	stage_on(NAV_DTC, 0);
+	flow.phase = DTC_FLOW_LIST;
+	world.can_read = false;
+	input.read_block = DTC_FLOW_ENGINE_RUNNING;
+	input.clear_block = DTC_FLOW_NO_CODES;
+	build();
+	check(head_is(SCENE_LIST, "Fehlerspeicher", "Motor läuft – nur bei Motor aus") && lines_are("Liste gelesen", NULL, NULL, NULL),
+	      "the line of the fault memory stands next to the note: the note tells why nothing can be read, the line what was read");
+	stage_failed(DTC_FLOW_FAILED, "");
+	nav.screen = NAV_DTC;
+	build();
+	check(lines_are("Letzter Auftrag fehlgeschlagen", NULL, NULL, NULL), "the line of the fault memory after a request that failed without a reason: that it failed");
+	stage_on(NAV_DTC, 0);
+	world.old_lines = codes_count;
+	input.old = codes_lines;
+	world.cleared_lines = cleared_count;
+	input.cleared = cleared_lines;
+	build();
+	check(lines_are("Noch nicht gelesen", NULL, NULL, NULL) && row_is(2, false, SCENE_ROW_ACTION, "Zuletzt gelöscht", "", true),
+	      "an idle flow next to an old list and the lines of an outcome: the line follows the phase");
+	stage_on(NAV_DTC, 0);
+	flow.seq = 41;
+	flow.read_seq = 41;
+	flow.list_count = 10;
+	flow.list_end_ms = NOW - 48000;
+	build();
+	check(lines_are("Noch nicht gelesen", NULL, NULL, NULL), "an idle flow that still holds the numbers of a list: the line follows the phase, not the numbers");
+	for(int i = 0; i < COUNT(no_rows); i++)
+	{
+		stage_on(NAV_DTC, no_rows[i]);
+		build();
+		snprintf(what, sizeof(what), "the fault memory with the focus on row %d, which is none: the line is there all the same", no_rows[i]);
+		check(lines_are("Noch nicht gelesen", NULL, NULL, NULL) && scene->total == 4, what);
+	}
+	stage_on(NAV_DTC, 0);
+	have_list(mixed_lines, mixed_count);
+	world.can_clear = true;
+	input.clear_block = DTC_FLOW_ALLOWED;
+	build();
+	check(lines_are("Liste gelesen", NULL, NULL, NULL), "a list without a summary that may be cleared: \"Liste gelesen\"");
+
 	for(int i = 0; i < COUNT(blocks); i++)
 	{
 		stage_on(NAV_DTC, 0);
@@ -1571,18 +1879,18 @@ static void test_busy(void)
 	stage_busy(DTC_FLOW_READING, 41);
 	scan(WICAN_DTC_QUEUED, 41, false, 0, 0, "");
 	answer(CONN_VIEW_SCAN);
-	screen("busy_read_queued", "the own read is queued: still \"Auftrag gesendet\"");
+	screen("busy_read_queued", "the own read is queued: still \"Auftrag gesendet\"; the ring is off - an arc of nothing at the edge would be a second one");
 	stage_busy(DTC_FLOW_READING, 41);
 	scan(WICAN_DTC_RUNNING, 41, false, 0, 18, "");
 	answer(CONN_VIEW_SCAN);
-	screen("busy_read_engine", "the own read runs at step 0: \"0/18\" and \"Prüfe Motor …\"");
+	screen("busy_read_engine", "the own read runs at step 0: \"0/18\" and \"Prüfe Motor …\"; the ring is off");
 	stage_busy(DTC_FLOW_READING, 41);
 	view_scan();
-	screen("busy_read_running", "the own read at control unit 5 of 18: \"5/18\", its short name, 277 permille");
+	screen("busy_read_running", "the own read at control unit 5 of 18: \"5/18\", its short name, 277 permille - on the arc of the screen, the ring is off");
 	stage_busy(DTC_FLOW_READING, 41);
 	scan(WICAN_DTC_RUNNING, 41, false, 17, 18, "N2/14 Rückhaltesystem (SRS)");
 	answer(CONN_VIEW_SCAN);
-	screen("busy_read_last", "the own read at control unit 17 of 18: the short name is what stands in the parentheses");
+	screen("busy_read_last", "the own read at control unit 17 of 18: the short name is what stands in the parentheses; the ring is off");
 	stage_busy(DTC_FLOW_READING, 41);
 	scan(WICAN_DTC_DONE, 41, false, 18, 18, "");
 	adapter.dtc.result_seq = 41;
@@ -1591,7 +1899,7 @@ static void test_busy(void)
 	stage_busy(DTC_FLOW_READING, 41);
 	scan(WICAN_DTC_RUNNING, 42, false, 3, 18, "N10 SAM");
 	answer(CONN_VIEW_SCAN);
-	screen("busy_read_overtaken", "the adapter runs another request than the own one: no step of it is shown as the own progress");
+	screen("busy_read_overtaken", "the adapter runs another request than the own one: no step of it is shown as the own progress, not by the ring either");
 	stage_busy(DTC_FLOW_CLEAR_SENT, 0);
 	scan(WICAN_DTC_DONE, 41, false, 18, 18, "");
 	answer(CONN_VIEW_LIVE);
@@ -1599,7 +1907,7 @@ static void test_busy(void)
 	stage_busy(DTC_FLOW_CLEARING, 42);
 	scan(WICAN_DTC_RUNNING, 42, true, 4, 18, "N15/5 Wählhebelmodul");
 	answer(CONN_VIEW_SCAN);
-	screen("busy_clear_running", "the own clear at control unit 4 of 18: the title of the clear, the name without its component designation");
+	screen("busy_clear_running", "the own clear at control unit 4 of 18: the title of the clear, the name without its component designation; the ring is off");
 	stage_busy(DTC_FLOW_LIST, 41);
 	screen("busy_over", "the progress while no request is under way any more: a title without action, no step, no line");
 
@@ -1682,8 +1990,8 @@ static void test_busy(void)
 		scan(WICAN_DTC_RUNNING, 41, false, steps[i].step, steps[i].total, "N10 SAM");
 		answer(CONN_VIEW_SCAN);
 		build();
-		snprintf(what, sizeof(what), "the own read at step %lu of %lu: \"%s\", %d permille", (unsigned long)steps[i].step, (unsigned long)steps[i].total, steps[i].big, steps[i].permille);
-		check(strcmp(scene->big, steps[i].big) == 0 && scene->permille == steps[i].permille && lines_are("SAM", HINT, NULL, NULL), what);
+		snprintf(what, sizeof(what), "the own read at step %lu of %lu: \"%s\", %d permille, the ring off", (unsigned long)steps[i].step, (unsigned long)steps[i].total, steps[i].big, steps[i].permille);
+		check(strcmp(scene->big, steps[i].big) == 0 && scene->permille == steps[i].permille && lines_are("SAM", HINT, NULL, NULL) && ring_is(RING_NONE, 0), what);
 	}
 	stage_busy(DTC_FLOW_READING, 41);
 	scan(WICAN_DTC_RUNNING, 41, false, 0, 0, "N3/28 Motorelektronik (CDID3)");
@@ -1712,6 +2020,36 @@ static void test_busy(void)
 	build();
 	check(strlen(adapter.dtc.name) == 63 && lines_are("Steuergerät für die Überwachung des Reifendrucks vorn rechts", HINT, NULL, NULL),
 	      "a name of 63 bytes without component designation and parentheses is passed on whole");
+
+	// The screen has an arc of its own: the ring never is a second one, and every other ring stays
+	for(int v = 0; v < COUNT(VIEWS); v++)
+	{
+		bool scanning = VIEWS[v].view == CONN_VIEW_SCAN;
+
+		stage_busy(DTC_FLOW_READING, 41);
+		VIEWS[v].make();
+		build();
+		snprintf(what, sizeof(what), "the progress in the view %s: %s", VIEWS[v].name, scanning ? "the ring is off, not a second arc" : "the ring of the view");
+		check(scene->kind == SCENE_PROGRESS && ring_is(scanning ? RING_NONE : VIEWS[v].ring, 0), what);
+	}
+	stage_busy(DTC_FLOW_LIST, 41);
+	scan(WICAN_DTC_RUNNING, 42, false, 3, 18, "N10 SAM");
+	answer(CONN_VIEW_SCAN);
+	build();
+	check(head_is(SCENE_PROGRESS, "Fehlerspeicher", "") && scene->permille == 0 && ring_is(RING_NONE, 0),
+	      "the progress screen with no request under way while somebody else scans: the ring is off there as well, the screen still has its arc");
+	stage_busy(DTC_FLOW_READING, 41);
+	view_scan();
+	input.safe_mode = true;
+	input.heat = GUARD_HEAT_DIM;
+	build();
+	check(scene->permille == 277 && ring_is(RING_NONE, 0), "the progress during a scan in safe mode and when it is too hot: the ring is off all the same");
+	input.safe_mode = false;
+	input.heat = GUARD_HEAT_NORMAL;
+	world.night_mode = true;
+	world.release_open = true;
+	build();
+	check(scene->permille == 277 && ring_is(RING_NONE, 0), "the progress during a scan in night mode with the web access released: the ring is off all the same");
 }
 
 /* Lists ------------------------------------------------------------------------------------------------ */
@@ -2076,16 +2414,6 @@ static void test_clear_dialog(void)
 	static const int options[] = {0, 1, 1, 1, 0, 1, 0};
 	static const struct
 	{
-		uint32_t codes;
-		int units;
-		const char *line;
-	} sums[] = {
-		{0, 0, "0 Fehler in 0 Steuergeräten"}, {1, 1, "1 Fehler in 1 Steuergerät"}, {2, 1, "2 Fehler in 1 Steuergerät"}, {2, 2, "2 Fehler in 2 Steuergeräten"},
-		{128, 24, "128 Fehler in 24 Steuergeräten"}, {4294967295u, 24, "4294967295 Fehler in 24 Steuergeräten"}, {1, -1, "1 Fehler in -1 Steuergeräten"},
-		{7, 11, "7 Fehler in 11 Steuergeräten"}, {3, INT_MAX, "3 Fehler in 2147483647 Steuergeräten"},
-	};
-	static const struct
-	{
 		uint64_t held_ms;
 		int permille;
 	} holds[] = {
@@ -2109,19 +2437,44 @@ static void test_clear_dialog(void)
 	summary.ecus_with_codes = 1;
 	input.summary = &summary;
 	screen("clear_one_unit", "the clear dialog for one trouble code in one control unit: \"1 Steuergerät\"; the focus on \"Löschen\", not held");
+	stage_dialog(1, 2997);
+	view_scan();
+	screen("clear_scan", "the clear dialog with the knob held for 2997 ms while a scan runs: the hold is the only arc, the ring is off");
+	for(int v = 0; v < COUNT(VIEWS); v++)
+	{
+		bool scanning = VIEWS[v].view == CONN_VIEW_SCAN;
 
-	for(int i = 0; i < COUNT(sums); i++)
+		stage_dialog(0, 0);
+		VIEWS[v].make();
+		build();
+		snprintf(what, sizeof(what), "the clear dialog in the view %s: %s", VIEWS[v].name, scanning ? "the ring is off, not a second arc next to the hold" : "the ring of the view");
+		check(scene->kind == SCENE_CHOICE && scene->permille == 0 && ring_is(scanning ? RING_NONE : VIEWS[v].ring, 0), what);
+	}
+	for(int i = 0; i < COUNT(rows); i++)
 	{
 		stage_dialog(0, 0);
-		summary.codes = sums[i].codes;
-		summary.ecus_with_codes = sums[i].units;
+		view_scan();
+		nav.row = rows[i];
+		// A scan of somebody else: the list may not be cleared any more, and nav_tick() will leave the dialog
+		world.can_clear = false;
+		input.clear_block = DTC_FLOW_BUSY;
+		build();
+		snprintf(what, sizeof(what), "the clear dialog during a scan with the focus on row %d: the ring is off wherever the focus is, and whether or not the list may still be cleared", rows[i]);
+		check(scene->kind == SCENE_CHOICE && ring_is(RING_NONE, 0), what);
+	}
+
+	for(int i = 0; i < COUNT(SUMS); i++)
+	{
+		stage_dialog(0, 0);
+		summary.codes = SUMS[i].codes;
+		summary.ecus_with_codes = SUMS[i].units;
 		// The other numbers of a summary are not the ones the dialog names
 		summary.ecus_not_ok = 5;
 		summary.ecus_clean = 9;
 		input.summary = &summary;
 		build();
-		snprintf(what, sizeof(what), "the clear dialog names its numbers: \"%s\"", sums[i].line);
-		check(lines_are(sums[i].line, "Betrifft alle Steuergeräte, auch SRS und ESP.", "Zündung an, Motor aus, Fahrzeug steht.", NULL), what);
+		snprintf(what, sizeof(what), "the clear dialog names its numbers: \"%s\"", SUMS[i].line);
+		check(lines_are(SUMS[i].line, "Betrifft alle Steuergeräte, auch SRS und ESP.", "Zündung an, Motor aus, Fahrzeug steht.", NULL), what);
 	}
 	for(int i = 0; i < COUNT(rows); i++)
 	{
@@ -2309,6 +2662,13 @@ static void test_brightness(void)
 	build();
 	check(head_is(SCENE_LEVEL, "Helligkeit", "Drehen zum Ändern, Drücken zum Speichern") && strcmp(scene->big, "5 %") == 0, "the brightness of the day at 5: the title of the day, whatever the value");
 
+	stage_on(NAV_BRIGHTNESS, 0);
+	nav.value = 80;
+	view_scan();
+	build();
+	check(scene->kind == SCENE_LEVEL && scene->permille == 800 && ring_is(RING_PROGRESS, 277),
+	      "the brightness while a scan runs: the ring shows the progress - only the progress screen and the clear dialog go without it");
+
 	for(int i = 0; i < COUNT(levels); i++)
 	{
 		stage_on(NAV_BRIGHTNESS, 0);
@@ -2329,6 +2689,21 @@ static void test_web(void)
 		{0, "an – noch 10:00"}, {1, "an – noch 10:00"}, {1000, "an – noch 9:59"}, {48000, "an – noch 9:12"}, {540000, "an – noch 1:00"}, {540001, "an – noch 1:00"},
 		{541000, "an – noch 0:59"}, {590000, "an – noch 0:10"}, {591000, "an – noch 0:09"}, {599000, "an – noch 0:01"}, {599999, "an – noch 0:01"}, {600000, "aus"}, {700000, "aus"},
 	};
+	// The access point of the stage is "WiCAN-Display" with the password "geheim1234"
+	static const struct
+	{
+		const char *address;
+		bool ap_on;
+		const char *lines[3];
+		const char *rule;
+	} firsts[] = {
+		{NULL, false, {"Kein WLAN", NULL, NULL}, "without an address (NULL) and without the own access point: \"Kein WLAN\""},
+		{"", false, {"Kein WLAN", NULL, NULL}, "with an empty address and without the own access point: \"Kein WLAN\""},
+		{NULL, true, {"WLAN: WiCAN-Display", "Passwort: geheim1234", NULL}, "without an address (NULL) and with the own access point: its name and password, two lines"},
+		{"", true, {"WLAN: WiCAN-Display", "Passwort: geheim1234", NULL}, "with an empty address and with the own access point: its name and password, two lines"},
+		{"http://192.168.4.1", true, {"http://192.168.4.1", "WLAN: WiCAN-Display", "Passwort: geheim1234"}, "with an address and with the own access point: the address, then name and password"},
+		{"http://192.168.88.37", false, {"http://192.168.88.37", NULL, NULL}, "with an address and without the own access point: the address alone"},
+	};
 
 	stage_on(NAV_WEB, 0);
 	screen("web_closed", "the web access while it is locked, in a network: the release is off, the address of the display");
@@ -2338,7 +2713,7 @@ static void test_web(void)
 	stage_on(NAV_WEB, 0);
 	view_no_wifi();
 	input.address = NULL;
-	screen("web_no_wifi", "the web access in no network: \"Kein WLAN\" in place of the address");
+	screen("web_no_wifi", "the web access in no network and without the own access point: \"Kein WLAN\" in place of the address");
 	stage_on(NAV_WEB, 0);
 	input.address = "http://192.168.4.1";
 	input.ap_on = true;
@@ -2348,7 +2723,7 @@ static void test_web(void)
 	access_open(&gate, NOW);
 	input.address = "";
 	input.ap_on = true;
-	screen("web_hotspot_alone", "the web access with the own access point and without an address: \"Kein WLAN\", then name and password; released just now for 10:00");
+	screen("web_hotspot_alone", "the web access with the own access point and without an address: name and password of the network to join, and no \"Kein WLAN\" above them; released just now for 10:00");
 
 	for(int i = 0; i < COUNT(times); i++)
 	{
@@ -2376,6 +2751,41 @@ static void test_web(void)
 	gate.open_until_ms = NOW + 4000000;
 	build();
 	check(row_is(0, true, SCENE_ROW_ACTION, "Freigabe", "an – noch 66:40", true), "a release made by hand that lasts 4000 seconds: the time is what access.h says, 66:40");
+
+	// The first line: the address, "Kein WLAN" only where nothing else can be told
+	for(int i = 0; i < COUNT(firsts); i++)
+	{
+		stage_on(NAV_WEB, 0);
+		input.address = firsts[i].address;
+		input.ap_on = firsts[i].ap_on;
+		build();
+		snprintf(what, sizeof(what), "the lines of the web access %s", firsts[i].rule);
+		check(lines_are(firsts[i].lines[0], firsts[i].lines[1], firsts[i].lines[2], NULL) && scene->total == 2 && scene->row_count == 2, what);
+	}
+	stage_on(NAV_WEB, 0);
+	input.address = NULL;
+	input.ap_on = true;
+	input.ap_ssid = NULL;
+	input.ap_password = NULL;
+	build();
+	check(lines_are("WLAN: ", "Passwort: ", NULL, NULL), "the own access point without an address, a name and a password: its two lines with nothing behind the colon, and still no \"Kein WLAN\"");
+	stage_on(NAV_WEB, 1);
+	input.address = NULL;
+	build();
+	check(lines_are("Kein WLAN", NULL, NULL, NULL) && row_is(1, true, SCENE_ROW_ACTION, "Zurück", "", true), "without an address and without the own access point, the focus on the way back: \"Kein WLAN\" wherever the focus is");
+	input.ap_ssid = NULL;
+	input.ap_password = NULL;
+	world.release_open = true;
+	world.night_mode = true;
+	build();
+	check(lines_are("Kein WLAN", NULL, NULL, NULL), "without an address and without the own access point, which has no name and no password either: \"Kein WLAN\"");
+	stage_on(NAV_WEB, 0);
+	view_no_wifi();
+	input.address = NULL;
+	input.ap_on = true;
+	input.safe_mode = true;
+	build();
+	check(lines_are("WLAN: WiCAN-Display", "Passwort: geheim1234", NULL, NULL), "the own access point without an address, in safe mode and out of reach of the adapter: its two lines, no \"Kein WLAN\"");
 
 	stage_on(NAV_WEB, 0);
 	input.ap_on = false;
@@ -2464,6 +2874,10 @@ static void test_confirm(void)
 	stage_on(NAV_CONFIRM, 0);
 	nav.confirm = NAV_DO_FACTORY_RESET;
 	screen("confirm_reset", "the question before a factory reset: what is erased and what stays");
+	stage_on(NAV_CONFIRM, 0);
+	nav.confirm = NAV_DO_REBOOT;
+	view_scan();
+	screen("confirm_scan", "the question before a restart while a scan runs: this dialog has no hold and no arc, the ring shows the progress");
 
 	for(int i = 0; i < COUNT(rows); i++)
 	{
@@ -2675,13 +3089,14 @@ static void test_overlays(void)
 	build();
 	check(over_is(SCENE_OVER_UPDATE, -1, "Update in Ordnung?", "Knopf drücken oder Bildschirm berühren", "sonst alte Version in 4:12"), "the update question alone");
 
-	// Every overlay over every screen: the screen below is filled as without it
-	for(int s = 0; s < COUNT(screens); s++)
+	// Every overlay over every screen, live and during a scan: the screen below is filled as without it
+	for(int s = 0; s < 2 * COUNT(screens); s++)
 	{
 		for(int over = 1; over <= 3; over++)
 		{
 			stage_dialog(1, 1500);
-			nav.screen = screens[s];
+			if(s >= COUNT(screens)) view_scan();
+			nav.screen = screens[s % COUNT(screens)];
 			nav.row = 1;
 			nav.value = 55;
 			nav.confirm = NAV_DO_FACTORY_RESET;
@@ -2706,11 +3121,11 @@ static void test_overlays(void)
 			build();
 			if(scene->over == (scene_over_t)over && scene->over_line_count >= 2) laid++;
 			if(below_is_kept()) kept++;
-			else printf("  screen %d under overlay %d is not the screen without it\n", (int)screens[s], over);
+			else printf("  screen %d under overlay %d is not the screen without it\n", (int)screens[s % COUNT(screens)], over);
 		}
 	}
-	check(laid == 42, "each of the three overlays lies over each of the 14 screens");
-	check(kept == 42, "under each overlay each of the 14 screens is filled as without it, byte for byte");
+	check(laid == 84, "each of the three overlays lies over each of the 14 screens, live and during a scan");
+	check(kept == 84, "under each overlay each of the 14 screens is filled as without it, byte for byte, the ring as well");
 }
 
 /* Every screen in every view, and what is no screen ---------------------------------------------------- */
@@ -2722,14 +3137,16 @@ static void test_screens_and_views(void)
 		nav_screen_t on;
 		scene_kind_t kind;
 		const char *title;
+		bool own_arc;       // the screen has an arc of its own
 	} screens[] = {
-		{NAV_MENU, SCENE_LIST, "Menü"}, {NAV_DTC, SCENE_LIST, "Fehlerspeicher"}, {NAV_DTC_BUSY, SCENE_PROGRESS, "Fehlerspeicher"},
-		{NAV_DTC_LIST, SCENE_LIST, "Fehlerspeicher"}, {NAV_DTC_CONFIRM, SCENE_CHOICE, "Fehler löschen?"}, {NAV_DTC_CLEARED, SCENE_LIST, "Gelöscht"},
-		{NAV_DTC_FAILED, SCENE_NOTICE, "Fehlerspeicher"}, {NAV_DTC_OLD, SCENE_LIST, "Zuletzt gelöscht"}, {NAV_BRIGHTNESS, SCENE_LEVEL, "Helligkeit"},
-		{NAV_WEB, SCENE_LIST, "Web-Zugriff"}, {NAV_INFO, SCENE_LIST, "Info"}, {NAV_SETTINGS, SCENE_LIST, "Einstellungen"}, {NAV_CONFIRM, SCENE_CHOICE, ""},
+		{NAV_MENU, SCENE_LIST, "Menü", false}, {NAV_DTC, SCENE_LIST, "Fehlerspeicher", false}, {NAV_DTC_BUSY, SCENE_PROGRESS, "Fehlerspeicher", true},
+		{NAV_DTC_LIST, SCENE_LIST, "Fehlerspeicher", false}, {NAV_DTC_CONFIRM, SCENE_CHOICE, "Fehler löschen?", true}, {NAV_DTC_CLEARED, SCENE_LIST, "Gelöscht", false},
+		{NAV_DTC_FAILED, SCENE_NOTICE, "Fehlerspeicher", false}, {NAV_DTC_OLD, SCENE_LIST, "Zuletzt gelöscht", false}, {NAV_BRIGHTNESS, SCENE_LEVEL, "Helligkeit", false},
+		{NAV_WEB, SCENE_LIST, "Web-Zugriff", false}, {NAV_INFO, SCENE_LIST, "Info", false}, {NAV_SETTINGS, SCENE_LIST, "Einstellungen", false},
+		{NAV_CONFIRM, SCENE_CHOICE, "", false},
 	};
-	static const int no_screens[] = {14, 15, -1, 100, INT_MAX, INT_MIN, 256, 256 + NAV_MENU, 65536 + NAV_DTC_LIST};
-	int wrong = 0, wrong_ring = 0, wrong_dots = 0;
+	static const int no_screens[] = {14, 15, -1, 100, INT_MAX, INT_MIN, 256, 256 + NAV_MENU, 65536 + NAV_DTC_LIST, 256 + NAV_DTC_BUSY, 256 + NAV_DTC_CONFIRM};
+	int wrong = 0, wrong_ring = 0, wrong_dots = 0, progress = 0, taken = 0;
 
 	for(int s = 0; s < COUNT(screens); s++)
 	{
@@ -2743,12 +3160,19 @@ static void test_screens_and_views(void)
 				printf("  screen %d in the view %s: kind %d, title \"%s\"\n", (int)screens[s].on, VIEWS[v].name, (int)scene->kind, scene->title);
 				wrong++;
 			}
-			if(!ring_is(VIEWS[v].ring, VIEWS[v].permille)) wrong_ring++;
+			if(VIEWS[v].ring == RING_PROGRESS && screens[s].own_arc)
+			{
+				if(!ring_is(RING_NONE, 0)) wrong_ring++;
+				taken++;
+			}
+			else if(!ring_is(VIEWS[v].ring, VIEWS[v].permille)) wrong_ring++;
+			if(scene->ring.kind == RING_PROGRESS) progress++;
 			if(scene->dots != 0 || scene->dot != -1 || scene->item_count != 0) wrong_dots++;
 		}
 	}
 	check(wrong == 0, "each of the 13 screens behind the menu has its kind and its title in each of the 10 views of the connection");
-	check(wrong_ring == 0, "on each of those screens the ring is the one texts.h gives for the view, with level 0 and nothing old");
+	check(wrong_ring == 0, "on each of those screens the ring is the one texts.h gives for the view, with level 0 and nothing old - but off instead of the progress on the two screens with an arc of their own");
+	check(taken == 2 && progress == 11, "of the 13 screens in the view of a scan the progress screen and the clear dialog have no ring, the other 11 the progress of the scan");
 	check(wrong_dots == 0, "none of those screens has dots or values");
 
 	for(int i = 0; i < COUNT(no_screens); i++)
@@ -2769,6 +3193,11 @@ static void test_screens_and_views(void)
 		build();
 		snprintf(what, sizeof(what), "the screen %d, which is none of nav.h, under the update question: the overlay lies over the empty notice", no_screens[i]);
 		check(head_is(SCENE_NOTICE, "", "") && over_is(SCENE_OVER_UPDATE, -1, "Update in Ordnung?", "Knopf drücken oder Bildschirm berühren", "sonst alte Version in 1:01") && ring_is(RING_RED, 0), what);
+		stage_on((nav_screen_t)no_screens[i], 1);
+		view_scan();
+		build();
+		snprintf(what, sizeof(what), "the screen %d, which is none of nav.h, during a scan: it has no arc of its own, the ring is the progress", no_screens[i]);
+		check(head_is(SCENE_NOTICE, "", "") && ring_is(RING_PROGRESS, 277), what);
 	}
 
 	// The value pages in the views that show values
@@ -3448,6 +3877,11 @@ static const char *const FAILED_TITLES[] = {
 	"Fehlerspeicher", "Fehlerspeicher", "Fehlerspeicher", "Fehlerspeicher", "Fehlerspeicher", "Fehlerspeicher", "Fehlerspeicher", "Fehlgeschlagen", "Stand unbekannt",
 };
 static const int FAILED_LINES[] = {0, 0, 0, 0, 0, 0, 0, 1, 1};
+// Where the fault memory stands; NULL: what the list holds
+static const char *const DTC_STANDS[] = {
+	"Noch nicht gelesen", "Lesen läuft …", "Lesen läuft …", NULL, "Löschen läuft …", "Löschen läuft …", "Gelöscht", "Letzter Auftrag fehlgeschlagen",
+	"Stand des Löschens unbekannt",
+};
 static const int BUSY_LINES[] = {0, 2, 2, 0, 2, 2, 0, 0, 0};
 
 static bool holds(when_t when)
@@ -3473,12 +3907,15 @@ static bool begins(const char *text, const char *with)
 	return strncmp(text, with, strlen(with)) == 0;
 }
 
-// What is wrong with the title, the note and the number of lines of the scene, NULL if nothing
+// What is wrong with the title, the note and the lines of the scene, NULL if nothing
 static const char *model_texts(scene_kind_t kind, conn_view_t view)
 {
+	static char summed[64];
 	unsigned phase = (unsigned)flow.phase < 9 ? (unsigned)flow.phase : 0;
 	const char *title = "";
 	const char *note = "";
+	// The first line where the tables give its text, NULL where only the number of lines is compared
+	const char *first = NULL;
 	int lines = 0;
 
 	switch(nav.screen)
@@ -3494,6 +3931,15 @@ static const char *model_texts(scene_kind_t kind, conn_view_t view)
 		case NAV_DTC:
 			title = "Fehlerspeicher";
 			note = text_block(input.read_block);
+			lines = 1;
+			first = DTC_STANDS[phase];
+			if(first == NULL && input.summary == NULL) first = "Liste gelesen";
+			if(first == NULL)
+			{
+				snprintf(summed, sizeof(summed), "%lu Fehler in %d Steuergerät%s", (unsigned long)input.summary->codes, input.summary->ecus_with_codes,
+				         input.summary->ecus_with_codes == 1 ? "" : "en");
+				first = summed;
+			}
 			break;
 		case NAV_DTC_BUSY:
 			title = BUSY_TITLES[phase];
@@ -3525,7 +3971,13 @@ static const char *model_texts(scene_kind_t kind, conn_view_t view)
 			break;
 		case NAV_WEB:
 			title = "Web-Zugriff";
-			lines = input.ap_on ? 3 : 1;
+			// A line for the address, two for the own access point, and one that says so where there is neither
+			lines = (has_text(input.address) ? 1 : 0) + (input.ap_on ? 2 : 0);
+			if(lines == 0)
+			{
+				lines = 1;
+				first = "Kein WLAN";
+			}
 			break;
 		case NAV_INFO:
 			title = "Info";
@@ -3547,7 +3999,35 @@ static const char *model_texts(scene_kind_t kind, conn_view_t view)
 	if(note != NULL && strcmp(scene->note, note) != 0) return "the note is not the one of the screen";
 	if(note == NULL && !begins(scene->note, "Löschen möglich: ")) return "the note of a list that may be cleared does not tell the time left";
 	if(scene->line_count != lines) return "the number of lines is not the one of the screen";
+	if(first != NULL && strcmp(scene->lines[0], first) != 0) return "the first line is not the one of the screen";
+	if(nav.screen == NAV_WEB && has_text(input.address) && (scene->lines[0][0] == '\0' || !begins(input.address, scene->lines[0]))) return "the first line of the web access is not the address";
+	if(nav.screen == NAV_WEB && input.ap_on && (!begins(scene->lines[lines - 2], "WLAN: ") || !begins(scene->lines[lines - 1], "Passwort: ")))
+	{
+		return "the last lines of the web access are not name and password of the own access point";
+	}
 	return NULL;
+}
+
+// What the values of the page shown say to the ring, from the age of each value and from the catalogue:
+// *level is the worst level of a value that is shown, *old whether a value is old or missed
+static void model_page(int *level, bool *old)
+{
+	const layout_page_t *page = &world.layout->pages[nav.page];
+	char text[SCENE_VALUE_SIZE];
+
+	for(int i = 0; i < page->item_count; i++)
+	{
+		const layout_item_t *item = &page->items[i];
+		const value_t *value = values_find(&values, item->key);
+		value_age_t age = values_age(value, input.now_ms);
+		bool there = age != VALUE_AGE_GONE && layout_item_text(item, value, text, sizeof(text));
+		// A value that is gone is only missed if the profile has it, or may have it: `unloaded` is the
+		// catalogue before the profile arrived
+		bool missed = !there && (age != VALUE_AGE_GONE || world.catalog == &unloaded || catalog_find(world.catalog, item->key) >= 0);
+
+		if(there && layout_item_level(item, value) > *level) *level = layout_item_level(item, value);
+		if(missed || (there && age == VALUE_AGE_OLD)) *old = true;
+	}
 }
 
 // What is wrong with what lies over the scene, NULL if nothing
@@ -3594,7 +4074,9 @@ static const char *model(void)
 	scene_kind_t kind = known ? kinds[on] : SCENE_NOTICE;
 	scene_over_t over = world.uploading ? SCENE_OVER_UPLOAD : world.asking != ACCESS_ASK_NONE ? SCENE_OVER_ASK : world.update_pending ? SCENE_OVER_UPDATE : SCENE_OVER_NONE;
 	const char *wrong;
-	int dots = 0, dot = -1;
+	int dots = 0, dot = -1, level = 0;
+	bool old = false;
+	ring_t ring;
 
 	if(on == NAV_PAGES && (!values_view || nav.page < 0 || nav.page >= world.layout->page_count)) kind = SCENE_NOTICE;
 	if(scene->kind != kind) return "the kind is not the one of the screen";
@@ -3613,12 +4095,16 @@ static const char *model(void)
 		}
 	}
 	if(scene->dots != dots || scene->dot != dot) return "the dots are not those of the layout";
-	if(on != NAV_PAGES)
-	{
-		ring_t ring = ring_state(view, conn_state(&conn), 0, false);
 
-		if(scene->ring.kind != ring.kind || scene->ring.permille != ring.permille) return "the ring is not that of the connection";
+	// The ring: on a value page by its values; a progress and the dialog with the hold have their own arc
+	if(kind == SCENE_VALUES) model_page(&level, &old);
+	ring = ring_state(view, conn_state(&conn), level, old);
+	if(ring.kind == RING_PROGRESS && (kind == SCENE_PROGRESS || (kind == SCENE_CHOICE && on != NAV_CONFIRM)))
+	{
+		ring.kind = RING_NONE;
+		ring.permille = 0;
 	}
+	if(scene->ring.kind != ring.kind || scene->ring.permille != ring.permille) return "the ring is not that of the connection and of the values on the page";
 
 	if(kind == SCENE_LIST)
 	{
@@ -3667,6 +4153,9 @@ static void test_made_up(void)
 	static const char *const reasons[] = {"", "busy", "not_ready", "engine_running", "http_500", "restarted", "a reason of the longest size 31"};
 	static const layout_t *const layouts[] = {&layout, &hidden_layout, &scratch};
 	static int screens[16], views[10], overs[4], kinds[6];
+	// What the arc of a screen and the lines of fault memory and web access depend on
+	static int stands[9];
+	int own_arcs = 0, summed = 0, unsummed = 0, hotspots = 0, no_networks = 0;
 	int differences = 0, dumps = 0, scenes = 0;
 	bool reached = true;
 
@@ -3810,6 +4299,16 @@ static void test_made_up(void)
 			screens[(unsigned)nav.screen <= NAV_CONFIRM ? (int)nav.screen : 14]++;
 			overs[scene->over]++;
 			kinds[scene->kind]++;
+
+			if((nav.screen == NAV_DTC_BUSY || nav.screen == NAV_DTC_CONFIRM) && conn_view(&conn, input.now_ms) == CONN_VIEW_SCAN) own_arcs++;
+			if(nav.screen == NAV_DTC)
+			{
+				stands[(unsigned)flow.phase < 9 ? (unsigned)flow.phase : 0]++;
+				if(flow.phase == DTC_FLOW_LIST && input.summary != NULL) summed++;
+				if(flow.phase == DTC_FLOW_LIST && input.summary == NULL) unsummed++;
+			}
+			if(nav.screen == NAV_WEB && !has_text(input.address) && input.ap_on) hotspots++;
+			if(nav.screen == NAV_WEB && !has_text(input.address) && !input.ap_on) no_networks++;
 		}
 	}
 	for(int i = 0; i < 15; i++) reached = reached && screens[i] >= 500;
@@ -3824,9 +4323,145 @@ static void test_made_up(void)
 		for(int i = 0; i < COUNT(kinds); i++) printf("  kind %d: %d scenes\n", i, kinds[i]);
 	}
 	check(scenes == 32000 && reached, "32000 made-up inputs reach every screen and what is none, every view of the connection, every overlay and every kind of scene, each at least 500 times");
+	reached = own_arcs >= 50 && summed >= 20 && unsummed >= 20 && hotspots >= 50 && no_networks >= 50;
+	for(int i = 0; i < COUNT(stands); i++) reached = reached && stands[i] >= 50;
+	if(!reached)
+	{
+		printf("  progress screen or clear dialog during a scan: %d\n", own_arcs);
+		for(int i = 0; i < COUNT(stands); i++) printf("  fault memory in phase %d: %d scenes\n", i, stands[i]);
+		printf("  fault memory with a list and a summary: %d, without: %d\n", summed, unsummed);
+		printf("  web access without an address, with the own access point: %d, without: %d\n", hotspots, no_networks);
+	}
+	check(reached, "the made-up inputs reach the two screens with an arc of their own during a scan, the web access without an address with and without the own access point "
+	      "and the fault memory in every phase, each at least 50 times, a list with and without a summary at least 20 times");
 	check(differences == 0, "the scenes of the made-up inputs have the kind, the title, the note, the lines, the overlay, the dots, the ring, the window, the focus, the choices, the answers and the level the rules give "
 	      "when they are followed a second way");
 	check(dumps == 0, "each of those scenes can be written as a text of 34 to 2734 bytes, the smallest and the largest dump there is");
+}
+
+// The values of the made-up value pages: as they usually are, and beyond a limit of fixtures/scene_layout.json
+// or not to be printed
+static const struct
+{
+	const char *key;
+	const char *usual;
+	const char *strange;
+} VALUES[] = {
+	{"ENGINE_RPM", "812", "4600"}, {"COOLANT_TMP", "88.4", "110"}, {"BOOST_PRESSURE", "1013", "1e15"}, {"ACCEL_PEDAL", "12.5", "\"on\""},
+	{"DPF_REGEN_STATUS", "1", "7"}, {"@BATT_V", "14.1", "11.5"}, {"FUEL_L", "43", "4"}, {"GLOW_PLUG", "\"off\"", "\"on\""}, {"OIL_LEVEL", "61.25", "1e300"},
+	{"LAMBDA", "1.337", "-1e12"}, {"ENGINE_OIL_TEMP", "94", "1e999"}, {"EGT_PRE_TURBO", "412", "900"}, {"EGT_PRE_DPF", "288.6", "1e12"},
+	{"DPF_SOOT_MASS", "11.3", "55"}, {"TRANS_TEMP", "70", "1e13"}, {"X", "2", "1e300"},
+};
+
+// Value pages alone: every value for itself fresh, old, gone or never seen, at the limits of each age, within
+// its limits, beyond them or not to be printed; the pages of the fixture or a page of one to six values with
+// limits of its own; the profile loaded or not; mostly live, where the ring tells of the values
+static void test_made_up_pages(void)
+{
+	static const uint32_t seeds[] = {5, 906, 20261004, 0xABCDEF};
+	static const uint64_t ages[] = {0, 1, 2999, 3000, 3001, 9999, 10000, 10001, 60000};
+	static int rings[5];
+	int differences = 0, scenes = 0, dashes = 0, lacking = 0, back = 0;
+	bool reached;
+
+	for(int s = 0; s < COUNT(seeds); s++)
+	{
+		random_state = seeds[s];
+		for(int n = 0; n < 4000; n++)
+		{
+			const char *wrong;
+			bool shown = false, dash = false, unavailable = false;
+
+			stage();
+			values_init(&values);
+			for(int i = 0; i < COUNT(VALUES); i++)
+			{
+				char json[64];
+
+				// Never seen
+				if(pick(5) == 0) continue;
+
+				snprintf(json, sizeof(json), "{\"%s\":%s}", VALUES[i].key, pick(4) == 0 ? VALUES[i].strange : VALUES[i].usual);
+				seen(json, pick(2) == 0 ? ages[pick(COUNT(ages))] : (uint64_t)pick(13000));
+			}
+
+			if(pick(2) == 0) nav.page = pick(8);
+			else
+			{
+				layout_item_t *item = probe();
+				int count = 1 + pick(LAYOUT_ITEMS_MAX);
+
+				for(int i = 0; i < count; i++)
+				{
+					// One value more than the table has: TURBO_SPEED never arrives, and the profile does not have it
+					int which = pick(COUNT(VALUES) + 1);
+
+					if(i > 0) item = probe_more("");
+					SET(item->key, which < COUNT(VALUES) ? VALUES[which].key : "TURBO_SPEED");
+					item->widget = (layout_widget_t)pick(4);
+					// Every value of the table that can be printed lies beyond these
+					if(pick(6) == 0) limit(&item->warn_hi, 0);
+					if(pick(12) == 0) limit(&item->crit_hi, 0);
+				}
+			}
+			world.catalog = pick(4) == 0 ? &unloaded : &catalog;
+			switch(pick(8))
+			{
+				case 0:
+					view_no_api();
+					break;
+				case 1:
+					view_scan();
+					break;
+				default:
+					break;
+			}
+			input.safe_mode = pick(8) == 0;
+			input.heat = pick(8) == 0 ? GUARD_HEAT_DIM : GUARD_HEAT_NORMAL;
+			// Mostly the time the values were seen by; a later one; one before them, the clock of another task
+			if(pick(8) == 0) input.now_ms = NOW + (uint64_t)pick(12000);
+			if(pick(16) == 0)
+			{
+				input.now_ms = NOW - (uint64_t)pick(70000);
+				back++;
+			}
+
+			build();
+			scenes++;
+			wrong = scene->kind == SCENE_VALUES ? model() : "a value page is no value page";
+			if(wrong != NULL)
+			{
+				if(differences < 10) printf("  seed %lu, page %d: %s\n", (unsigned long)seeds[s], n, wrong);
+				differences++;
+			}
+
+			for(int i = 0; i < scene->item_count; i++)
+			{
+				if(strcmp(scene->items[i].text, SCENE_DASH) == 0) dash = true;
+				else if(strcmp(scene->items[i].text, SCENE_UNAVAILABLE) == 0) unavailable = true;
+				else shown = true;
+			}
+			if(conn_view(&conn, input.now_ms) != CONN_VIEW_LIVE) rings[scene->ring.kind == RING_GREY ? RING_GREY : RING_PROGRESS]++;
+			else
+			{
+				rings[scene->ring.kind]++;
+				if(dash && !shown) dashes++;
+				if(unavailable && scene->ring.kind == RING_NONE) lacking++;
+			}
+		}
+	}
+
+	reached = rings[RING_NONE] >= 500 && rings[RING_YELLOW] >= 500 && rings[RING_RED] >= 500 && rings[RING_GREY] >= 500 && rings[RING_PROGRESS] >= 500 && dashes >= 200 && lacking >= 200 &&
+	          back >= 500;
+	if(!reached)
+	{
+		printf("  rings off, yellow, grey, red, progress: %d, %d, %d, %d, %d\n", rings[RING_NONE], rings[RING_YELLOW], rings[RING_GREY], rings[RING_RED], rings[RING_PROGRESS]);
+		printf("  live pages of nothing but dashes: %d; with a value the profile lacks and the ring off: %d; at a time before the values: %d\n", dashes, lacking, back);
+	}
+	check(scenes == 16000 && reached, "16000 made-up value pages reach the ring off, yellow and red in the view LIVE, grey without the API and the progress during a scan, the clock stepping back, "
+	      "each at least 500 times, live pages of nothing but dashes and live pages with a value the profile lacks under a ring that is off at least 200 times");
+	check(differences == 0, "each of the made-up value pages has the ring that the age of each of its values, the catalogue and the limits give when they are followed a second way, "
+	      "and title, note and dots as the tables of the screens say");
 }
 
 /* In child processes ----------------------------------------------------------------------------------- */
@@ -3911,5 +4546,6 @@ int main(void)
 	in_child(group_overlays, "overlays, screens in every view and long texts", 60);
 	in_child(group_dump, "dump", 60);
 	in_child(test_made_up, "made-up inputs", 120);
+	in_child(test_made_up_pages, "made-up value pages", 120);
 	return test_end();
 }

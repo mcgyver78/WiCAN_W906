@@ -6,6 +6,5 @@ row: > action | Freigabe | an – noch 10:00 | enabled
 row: - action | Zurück |  | enabled
 first: 0
 total: 2
-line: Kein WLAN
 line: WLAN: WiCAN-Display
 line: Passwort: geheim1234

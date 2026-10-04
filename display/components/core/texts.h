@@ -78,6 +78,7 @@ const char *text_block(dtc_flow_block_t block);
 //   bad_request              "WiCAN versteht die Anfrage nicht"
 //   internal                 "WiCAN: interner Fehler – erneut lesen"
 //   no_answer                "Keine Antwort vom WiCAN"
+//   no_result                "Ergebnis nicht abrufbar – erneut lesen"
 //   restarted                "WiCAN neu gestartet – Ergebnis verloren"
 //   superseded               "Von einem anderen Scan überholt"
 const char *text_reason(const char *reason);
@@ -91,7 +92,7 @@ const char *text_heat_word(guard_heat_t heat);
 typedef enum
 {
 	RING_NONE,      // live, all well: nothing to see
-	RING_YELLOW,    // connecting, the adapter starts, or the values on the page are old
+	RING_YELLOW,    // connecting, the adapter starts, or values on the page are old or missing
 	RING_GREY,      // ignition off, AutoPID off, firmware without API
 	RING_RED,       // adapter not found, no answer, foreign adapter, or a value on the page beyond a limit
 	RING_PROGRESS,  // a fault memory scan runs: an arc that grows, see permille
@@ -105,7 +106,7 @@ typedef struct
 } ring_t;
 
 // view: conn_view(); state: conn_state(), may be NULL; level: the worst layout_item_level() of the page
-// shown (0, 1 or 2); old: at least one value of the page shown is VALUE_AGE_OLD.
+// shown (0, 1 or 2); old: at least one value of the page shown is old or missing (scene.h says which count).
 //   NO_WIFI, NO_ANSWER, FOREIGN -> RED;  CONNECTING, STARTING -> YELLOW
 //   NO_API, AUTOPID_OFF, ECU_OFFLINE -> GREY
 //   SCAN -> PROGRESS with dtc.step * 1000 / dtc.total of the state (at most 1000; 0 without a state)

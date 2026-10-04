@@ -49,6 +49,24 @@ static void follow(poll_t *poll)
 	poll->has_cleared = cleared;
 }
 
+// A clear the adapter accepted, or of which nobody knows what became of it, has erased what the list names,
+// or may have: that list is the one before the last clear from now on. A clear that was refused, did not
+// arrive or was never sent has erased nothing, and the list before the real last clear stays.
+// before: the phase of the flow before the call that may have ended the POST of a clear.
+static void keep_old(poll_t *poll, dtc_flow_phase_t before)
+{
+	const dtc_flow_t *flow = &poll->flow;
+
+	// A number of its own tells that the adapter accepted the clear, also when the state that showed it showed
+	// its error at once. Without one the clear still waits for its answer, or it has ended without an effect.
+	if(before != DTC_FLOW_CLEAR_SENT || (flow->seq == 0 && flow->phase != DTC_FLOW_UNKNOWN)) return;
+
+	poll->old = poll->list;
+	strcpy(poll->old_text, poll->list_text);
+	poll->has_old = true;
+	poll->events |= POLL_EVENT_OLD | POLL_EVENT_LISTS;
+}
+
 // An adapter that cannot be reached ends the fault memory request of the display, once per outage
 static void watch(poll_t *poll, uint64_t now_ms)
 {
@@ -90,6 +108,8 @@ void poll_stored(poll_t *poll, const char *catalog_json, size_t catalog_length, 
 
 void poll_wifi(poll_t *poll, bool up, uint64_t now_ms)
 {
+	dtc_flow_phase_t before = poll->flow.phase;
+
 	if(up == poll->wifi) return;
 
 	poll->wifi = up;
@@ -104,6 +124,7 @@ void poll_wifi(poll_t *poll, bool up, uint64_t now_ms)
 		guard_catalog_connected(&poll->catalog_guard);
 	}
 	watch(poll, now_ms);
+	keep_old(poll, before);
 	follow(poll);
 }
 
@@ -127,14 +148,6 @@ bool poll_prepare(poll_t *poll, uint64_t now_ms, poll_request_t *request)
 	else strcpy(request->path, PATHS[kind]);
 	if(kind == POLL_NONE) return false;
 
-	if(kind == POLL_DTC_CLEAR)
-	{
-		// What is about to be erased in the vehicle is kept here, whatever becomes of the request
-		poll->old = poll->list;
-		strcpy(poll->old_text, poll->list_text);
-		poll->has_old = true;
-		poll->events |= POLL_EVENT_OLD | POLL_EVENT_LISTS;
-	}
 	if(kind == POLL_RESULT)
 	{
 		// The state may be another one by the time the answer is there
@@ -150,6 +163,8 @@ bool poll_prepare(poll_t *poll, uint64_t now_ms, poll_request_t *request)
 static void forget(poll_t *poll)
 {
 	values_clear(&poll->values);
+	// A profile of another vehicle must not leave entries behind: what was delivered once would stay for ever
+	catalog_init(&poll->catalog);
 	poll->catalog_complete = false;
 	guard_catalog_connected(&poll->catalog_guard);
 	poll->events |= POLL_EVENT_FORGET | POLL_EVENT_LISTS;
@@ -234,8 +249,8 @@ static void got_result(poll_t *poll, int status, const char *body, size_t length
 		// Asking again would bring the same: the rounds have to go on
 		conn_got_result(&poll->conn, CONN_GOT_NOT_FOUND, now_ms);
 	}
-	// conn does not ask for this result again. A flow left waiting for it would wait for ever.
-	if(own && waits(&poll->flow)) dtc_flow_lost(&poll->flow);
+	// conn does not ask for this result again. A flow left waiting for it would wait until its time is over.
+	if(own && waits(&poll->flow)) dtc_flow_no_result(&poll->flow);
 }
 
 static void got_catalog(poll_t *poll, int status, const char *body, size_t length, uint64_t now_ms, json_token_t *work, int work_count)
@@ -291,6 +306,8 @@ static void got_posted(poll_t *poll, int status, const char *body, size_t length
 void poll_apply(poll_t *poll, const poll_request_t *request, int status, const char *body, size_t length,
                 const char *seq_header, uint64_t now_ms, json_token_t *work, int work_count)
 {
+	dtc_flow_phase_t before = poll->flow.phase;
+
 	// An answer to anything but the request under way would be read as something it is not
 	if(!poll->asking || request == NULL || request->kind != poll->asked) return;
 
@@ -311,6 +328,7 @@ void poll_apply(poll_t *poll, const poll_request_t *request, int status, const c
 	else got_posted(poll, status, body, length, now_ms, work, work_count);
 
 	watch(poll, now_ms);
+	keep_old(poll, before);
 	follow(poll);
 	if(guard_catalog_due(&poll->catalog_guard, catalog_checksum(&poll->catalog), poll->catalog_complete, now_ms))
 	{

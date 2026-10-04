@@ -1,5 +1,5 @@
 kind: progress
-ring: progress 944
+ring: none
 title: Fehlerspeicher lesen
 note:
 line: SRS

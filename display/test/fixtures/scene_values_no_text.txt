@@ -1,5 +1,5 @@
 kind: values
-ring: none
+ring: yellow
 title: Motor
 note:
 item: Drehzahl | – |  | dim | arc | -1

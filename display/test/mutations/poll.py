@@ -1,11 +1,20 @@
 """Mutations of display/components/core/poll.c, see ../redproof.py."""
 
 F = "components/core/poll.c"
+FLOW = "components/core/dtc_flow.c"
+FLOW_H = "components/core/dtc_flow.h"
 T = "test_poll"
 
 FOLLOW_LIST = "\tbool list = poll->has_list && (phase == DTC_FLOW_LIST || phase == DTC_FLOW_CLEAR_SENT || phase == DTC_FLOW_CLEARING);"
 FOLLOW_CLEARED = "\tbool cleared = poll->has_cleared && phase == DTC_FLOW_CLEARED;"
 FOLLOW_EVENT = "\tif(list != poll->has_list || cleared != poll->has_cleared) poll->events |= POLL_EVENT_LISTS;\n"
+KEEP_IF = "\tif(before != DTC_FLOW_CLEAR_SENT || (flow->seq == 0 && flow->phase != DTC_FLOW_UNKNOWN)) return;\n"
+KEEP_OLD = "\tpoll->old = poll->list;\n"
+KEEP_TEXT = "\tstrcpy(poll->old_text, poll->list_text);\n"
+KEEP_EVENT = "\tpoll->events |= POLL_EVENT_OLD | POLL_EVENT_LISTS;\n"
+KEEP_FLAG = "\tpoll->has_old = true;\n" + KEEP_EVENT
+OLD_WHEN_SENT = ("\tif(kind == POLL_DTC_CLEAR)\n\t{\n\t\tpoll->old = poll->list;\n\t\tstrcpy(poll->old_text, poll->list_text);\n"
+                 "\t\tpoll->has_old = true;\n\t\tpoll->events |= POLL_EVENT_OLD | POLL_EVENT_LISTS;\n\t}\n")
 WATCH_OUT = "\tbool out = view == CONN_VIEW_NO_WIFI || view == CONN_VIEW_NO_ANSWER;"
 WATCH_LOSE = "\tif(out && !poll->lost) dtc_flow_lost(&poll->flow);\n"
 WATCH_NOTE = "\tpoll->lost = out;\n"
@@ -21,7 +30,7 @@ WIFI_SAME = "\tif(up == poll->wifi) return;\n"
 WIFI_END = "\tpoll->wifi = up;\n\tpoll->asking = false;\n"
 WIFI_CONN = "\tconn_wifi(&poll->conn, up, now_ms);\n"
 WIFI_JOINED = "\t\tvalues_clear(&poll->values);\n\t\tpoll->catalog_complete = false;\n\t\tguard_catalog_connected(&poll->catalog_guard);\n"
-WIFI_AFTER = "\twatch(poll, now_ms);\n\tfollow(poll);\n}\n"
+WIFI_AFTER = "\twatch(poll, now_ms);\n\tkeep_old(poll, before);\n\tfollow(poll);\n}\n"
 
 P_FREE = "\tif(poll->wifi && !poll->asking)"
 P_TAKE = "\t\tdtc_flow_send_t send = dtc_flow_take(&poll->flow, &seq, now_ms);\n"
@@ -32,17 +41,13 @@ P_POST = "\trequest->post = kind == POLL_DTC_READ || kind == POLL_DTC_CLEAR;"
 P_CLEAR_PATH = "\tif(kind == POLL_DTC_CLEAR) snprintf(request->path, sizeof(request->path), \"/api/dtc?action=clear&seq=%\" PRIu32, seq);"
 P_PATH = "\telse strcpy(request->path, PATHS[kind]);"
 P_NONE = "\tif(kind == POLL_NONE) return false;\n"
-P_OLD_IF = "\tif(kind == POLL_DTC_CLEAR)\n\t{\n\t\t// What is about"
-P_OLD = "\t\tpoll->old = poll->list;\n"
-P_OLD_TEXT = "\t\tstrcpy(poll->old_text, poll->list_text);\n"
-P_OLD_FLAG = "\t\tpoll->has_old = true;\n\t\tpoll->events |= POLL_EVENT_OLD | POLL_EVENT_LISTS;\n"
-P_OLD_EVENT = "\t\tpoll->events |= POLL_EVENT_OLD | POLL_EVENT_LISTS;\n"
 P_RESULT_SEQ = "\t\tpoll->asked_result_seq = poll->conn.state.dtc.result_seq;\n"
 P_RESULT_AGE = "\t\tpoll->asked_age_s = poll->conn.state.dtc.age_s;\n"
 P_ASKING = "\tpoll->asking = true;\n"
 P_ASKED = "\tpoll->asked = kind;\n"
 
 FORGET_VALUES = "{\n\tvalues_clear(&poll->values);\n"
+FORGET_CATALOG = "would stay for ever\n\tcatalog_init(&poll->catalog);\n"
 FORGET_COMPLETE = "\tpoll->catalog_complete = false;\n\tguard_catalog_connected(&poll->catalog_guard);\n\tpoll->events"
 FORGET_EVENT = "\tpoll->events |= POLL_EVENT_FORGET | POLL_EVENT_LISTS;\n"
 FORGET_LOST = "\tdtc_flow_lost(&poll->flow);\n\tif(poll->flow.phase == DTC_FLOW_LIST"
@@ -74,7 +79,7 @@ R_LIST = "\t\t\t\tpoll->has_list = true;\n"
 R_CLEARED = "\t\t\t\tpoll->has_cleared = true;\n"
 R_EVENT = "\t\t\tpoll->events |= POLL_EVENT_LISTS;\n"
 R_GONE = "\t\tconn_got_result(&poll->conn, CONN_GOT_NOT_FOUND, now_ms);\n"
-R_LOST = "\tif(own && waits(&poll->flow)) dtc_flow_lost(&poll->flow);\n"
+R_LOST = "\tif(own && waits(&poll->flow)) dtc_flow_no_result(&poll->flow);\n"
 
 C_200 = "\tif(status == 200)\n\t{\n\t\t// A body that cannot be used"
 C_APPLY = "\t\tif(catalog_apply_config(&poll->catalog, body, length, work, work_count)) poll->catalog_complete = true;\n\t\tgot = CONN_GOT_OK;\n"
@@ -99,7 +104,7 @@ A_BODY = "\tif(body == NULL)\n\t{\n\t\tbody = \"\";\n\t\tlength = 0;\n\t}\n"
 A_KINDS = ("\telse if(poll->asked == POLL_CATALOG) got_catalog(poll, status, body, length, now_ms, work, work_count);\n"
            "\telse if(poll->asked == POLL_VALUES) got_values(poll, status, body, length, now_ms, work, work_count);\n")
 A_POSTED = "\telse got_posted(poll, status, body, length, now_ms, work, work_count);"
-A_AFTER = "\twatch(poll, now_ms);\n\tfollow(poll);\n\tif(guard_catalog_due"
+A_AFTER = "\twatch(poll, now_ms);\n\tkeep_old(poll, before);\n\tfollow(poll);\n\tif(guard_catalog_due"
 A_GUARD = ("\tif(guard_catalog_due(&poll->catalog_guard, catalog_checksum(&poll->catalog), poll->catalog_complete, now_ms))\n"
            "\t{\n\t\tpoll->events |= POLL_EVENT_CATALOG;\n\t}\n")
 A_COUNT = "\tif(status >= 200 && status <= 499) poll->http_ok++;\n\telse poll->http_failed++;\n"
@@ -151,6 +156,33 @@ MUTATIONS = [
     ("poll_follow_list_not_noted", T, F, "\tpoll->has_list = list;\n", ""),
     ("poll_follow_cleared_not_noted", T, F, "\tpoll->has_cleared = cleared;\n", ""),
 
+    # the list before the last clear
+    ("poll_old_made_when_clear_goes_out", T, F, P_ASKING, OLD_WHEN_SENT + P_ASKING),
+    ("poll_old_never_made", T, F, KEEP_IF, KEEP_IF.replace("(flow->seq == 0 && flow->phase != DTC_FLOW_UNKNOWN)", "flow->seq == 0 || flow->phase != DTC_FLOW_UNKNOWN")),
+    ("poll_old_made_however_the_clear_ends", T, F, KEEP_IF, "\tif(before != DTC_FLOW_CLEAR_SENT || flow->phase == DTC_FLOW_CLEAR_SENT) return;\n"),
+    ("poll_old_made_when_clear_is_refused", T, F, KEEP_IF, KEEP_IF.replace("flow->phase != DTC_FLOW_UNKNOWN", "flow->phase != DTC_FLOW_UNKNOWN && flow->phase != DTC_FLOW_FAILED")),
+    ("poll_old_made_when_clear_is_back_at_list", T, F, KEEP_IF, KEEP_IF.replace("flow->phase != DTC_FLOW_UNKNOWN", "flow->phase != DTC_FLOW_UNKNOWN && flow->phase != DTC_FLOW_LIST")),
+    ("poll_old_made_when_unsent_clear_is_dropped", T, F, KEEP_IF, KEEP_IF.replace("flow->phase != DTC_FLOW_UNKNOWN", "flow->phase != DTC_FLOW_UNKNOWN && flow->phase != DTC_FLOW_IDLE")),
+    ("poll_old_not_made_when_unknown", T, F, KEEP_IF, KEEP_IF.replace("(flow->seq == 0 && flow->phase != DTC_FLOW_UNKNOWN)", "flow->seq == 0")),
+    ("poll_old_only_made_when_unknown", T, F, KEEP_IF, KEEP_IF.replace("(flow->seq == 0 && flow->phase != DTC_FLOW_UNKNOWN)", "flow->phase != DTC_FLOW_UNKNOWN")),
+    ("poll_old_only_made_when_accepted", T, F, KEEP_IF, KEEP_IF.replace("(flow->seq == 0 && flow->phase != DTC_FLOW_UNKNOWN)", "flow->phase != DTC_FLOW_CLEARING")),
+    ("poll_old_not_made_when_accepted_clear_failed_at_once", T, F, KEEP_IF,
+     KEEP_IF.replace("(flow->seq == 0 && flow->phase != DTC_FLOW_UNKNOWN)", "(flow->phase != DTC_FLOW_CLEARING && flow->phase != DTC_FLOW_UNKNOWN)")),
+    ("poll_old_only_made_with_number_above_the_list", T, F, KEEP_IF, KEEP_IF.replace("flow->seq == 0", "flow->seq <= flow->read_seq")),
+    ("poll_old_only_made_with_next_number", T, F, KEEP_IF, KEEP_IF.replace("flow->seq == 0", "flow->seq != flow->seq_before + 1")),
+    ("poll_old_not_made_when_found_by_second_state", T, F, KEEP_IF, KEEP_IF.replace("before != DTC_FLOW_CLEAR_SENT", "before != DTC_FLOW_CLEAR_SENT || flow->rounds_without_answer > 0")),
+    ("poll_old_made_for_every_accepted_request", T, F, KEEP_IF, "\t(void)before;\n\tif(flow->seq == 0 && flow->phase != DTC_FLOW_UNKNOWN) return;\n"),
+    ("poll_old_made_for_accepted_read", T, F, KEEP_IF, KEEP_IF.replace("before != DTC_FLOW_CLEAR_SENT", "(before != DTC_FLOW_CLEAR_SENT && before != DTC_FLOW_READ_SENT)")),
+    ("poll_old_made_again_while_clear_runs", T, F, KEEP_IF, KEEP_IF.replace("before != DTC_FLOW_CLEAR_SENT", "(before != DTC_FLOW_CLEAR_SENT && before != DTC_FLOW_CLEARING)")),
+    ("poll_old_struct_not_copied", T, F, KEEP_OLD, ""),
+    ("poll_old_struct_from_cleared", T, F, KEEP_OLD, "\tpoll->old = poll->cleared;\n"),
+    ("poll_old_text_not_copied", T, F, KEEP_TEXT, ""),
+    ("poll_old_not_flagged", T, F, KEEP_FLAG, KEEP_EVENT),
+    ("poll_old_without_event", T, F, KEEP_EVENT, ""),
+    ("poll_old_event_without_lists", T, F, KEEP_EVENT, "\tpoll->events |= POLL_EVENT_OLD;\n"),
+    ("poll_old_event_only_lists", T, F, KEEP_EVENT, "\tpoll->events |= POLL_EVENT_LISTS;\n"),
+    ("poll_old_event_replaces_others", T, F, KEEP_EVENT, "\tpoll->events = POLL_EVENT_OLD | POLL_EVENT_LISTS;\n"),
+
     # an adapter that cannot be reached
     ("poll_outage_without_wifi_ignored", T, F, WATCH_OUT, "\tbool out = view == CONN_VIEW_NO_ANSWER;"),
     ("poll_outage_without_answer_ignored", T, F, WATCH_OUT, "\tbool out = view == CONN_VIEW_NO_WIFI;"),
@@ -169,7 +201,7 @@ MUTATIONS = [
     ("poll_init_conn_unbound", T, F, "\tconn_init(&poll->conn, bound_id);\n", "\tconn_init(&poll->conn, NULL);\n\t(void)bound_id;\n"),
     ("poll_init_id_not_copied", T, F, "\tstrcpy(poll->bound_id, poll->conn.bound_id);\n", ""),
     ("poll_init_id_not_cut", T, F, "\tstrcpy(poll->bound_id, poll->conn.bound_id);\n", "\tif(bound_id != NULL) strcpy(poll->bound_id, bound_id);\n"),
-    ("poll_init_without_catalog", T, F, "\tcatalog_init(&poll->catalog);\n", ""),
+    ("poll_init_without_catalog", T, F, "\tvalues_init(&poll->values);\n\tcatalog_init(&poll->catalog);\n", "\tvalues_init(&poll->values);\n"),
 
     # what was stored
     ("poll_stored_catalog_ignored", T, F, STORED_CATALOG, STORED_CATALOG.replace("catalog_json != NULL &&", "catalog_json == NULL &&")),
@@ -211,9 +243,14 @@ MUTATIONS = [
     ("poll_wifi_guard_not_told", T, F, WIFI_JOINED, WIFI_JOINED.replace("\t\tguard_catalog_connected(&poll->catalog_guard);\n", "")),
     ("poll_wifi_forgets_when_lost", T, F, "\tif(up)\n\t{\n\t\t// The adapter may have restarted", "\tif(!up)\n\t{\n\t\t// The adapter may have restarted"),
     ("poll_wifi_forgets_always", T, F, "\tif(up)\n\t{\n\t\t// The adapter may have restarted", "\t{\n\t\t// The adapter may have restarted"),
-    ("poll_wifi_flow_not_lost", T, F, WIFI_AFTER, "\tfollow(poll);\n}\n"),
-    ("poll_wifi_lists_do_not_follow", T, F, WIFI_AFTER, "\twatch(poll, now_ms);\n}\n"),
-    ("poll_wifi_follow_before_lost", T, F, WIFI_AFTER, "\tfollow(poll);\n\twatch(poll, now_ms);\n}\n"),
+    ("poll_wifi_flow_not_lost", T, F, WIFI_AFTER, "\tkeep_old(poll, before);\n\tfollow(poll);\n}\n"),
+    ("poll_wifi_lists_do_not_follow", T, F, WIFI_AFTER, "\twatch(poll, now_ms);\n\tkeep_old(poll, before);\n}\n"),
+    ("poll_wifi_follow_before_lost", T, F, WIFI_AFTER, "\tfollow(poll);\n\twatch(poll, now_ms);\n\tkeep_old(poll, before);\n}\n"),
+    ("poll_wifi_old_not_kept_when_lost", T, F, WIFI_AFTER, "\twatch(poll, now_ms);\n\tif(up) keep_old(poll, before);\n\tfollow(poll);\n}\n"),
+    ("poll_wifi_old_kept_before_lost", T, F, WIFI_AFTER, "\tkeep_old(poll, before);\n\twatch(poll, now_ms);\n\tfollow(poll);\n}\n"),
+    ("poll_wifi_catalog_started_anew", T, F, WIFI_JOINED, WIFI_JOINED.replace("\t\tpoll->catalog_complete = false;\n", "\t\tcatalog_init(&poll->catalog);\n\t\tpoll->catalog_complete = false;\n")),
+    ("poll_wifi_unsent_request_given_up", T, FLOW, "\tif(flow->to_send != DTC_FLOW_SEND_NOTHING) withdraw(flow, true);\n\telse if(under_way(flow))", "\tif(under_way(flow))"),
+    ("poll_wifi_unsent_clear_drops_list", T, FLOW, "\tif(flow->to_send != DTC_FLOW_SEND_NOTHING) withdraw(flow, true);\n", "\tif(flow->to_send != DTC_FLOW_SEND_NOTHING) withdraw(flow, false);\n"),
 
     # the next request
     ("poll_prepare_while_request_under_way", T, F, P_FREE, "\tif(poll->wifi)"),
@@ -246,17 +283,8 @@ MUTATIONS = [
     ("poll_prepare_clear_path_cut", T, F, P_CLEAR_PATH, P_CLEAR_PATH.replace("sizeof(request->path),", "sizeof(request->path) - 12,")),
     ("poll_prepare_path_of_nothing_kept", T, F, P_PATH, "\telse if(kind != POLL_NONE) strcpy(request->path, PATHS[kind]);"),
     ("poll_prepare_nothing_is_a_request", T, F, P_NONE, ""),
-    ("poll_prepare_old_list_for_every_post", T, F, P_OLD_IF, "\tif(request->post)\n\t{\n\t\t// What is about"),
-    ("poll_prepare_old_list_while_list_shown", T, F, P_OLD_IF, "\tif(poll->has_list)\n\t{\n\t\t// What is about"),
-    ("poll_prepare_old_list_never", T, F, P_OLD_IF, "\tif(kind == POLL_DTC_CLEAR && !poll->has_list)\n\t{\n\t\t// What is about"),
-    ("poll_prepare_old_struct_not_copied", T, F, P_OLD, ""),
-    ("poll_prepare_old_struct_from_cleared", T, F, P_OLD, "\t\tpoll->old = poll->cleared;\n"),
-    ("poll_prepare_old_text_not_copied", T, F, P_OLD_TEXT, ""),
-    ("poll_prepare_old_not_flagged", T, F, P_OLD_FLAG, P_OLD_EVENT),
-    ("poll_prepare_old_without_event", T, F, P_OLD_EVENT, ""),
-    ("poll_prepare_old_event_without_lists", T, F, P_OLD_EVENT, "\t\tpoll->events |= POLL_EVENT_OLD;\n"),
-    ("poll_prepare_old_event_only_lists", T, F, P_OLD_EVENT, "\t\tpoll->events |= POLL_EVENT_LISTS;\n"),
-    ("poll_prepare_old_event_replaces_others", T, F, P_OLD_EVENT, "\t\tpoll->events = POLL_EVENT_OLD | POLL_EVENT_LISTS;\n"),
+    ("poll_prepare_clear_raises_old_event", T, F, P_ASKING, "\tif(kind == POLL_DTC_CLEAR) poll->events |= POLL_EVENT_OLD;\n" + P_ASKING),
+    ("poll_prepare_clear_raises_lists_event", T, F, P_ASKING, "\tif(kind == POLL_DTC_CLEAR) poll->events |= POLL_EVENT_LISTS;\n" + P_ASKING),
     ("poll_prepare_result_number_not_noted", T, F, P_RESULT_SEQ, ""),
     ("poll_prepare_result_number_of_request", T, F, P_RESULT_SEQ, "\t\tpoll->asked_result_seq = poll->conn.state.dtc.seq;\n"),
     ("poll_prepare_result_age_not_noted", T, F, P_RESULT_AGE, ""),
@@ -266,6 +294,14 @@ MUTATIONS = [
 
     # the adapter restarted or was replaced
     ("poll_forget_values_kept", T, F, FORGET_VALUES, "{\n"),
+    ("poll_forget_catalog_kept", T, F, FORGET_CATALOG, "would stay for ever\n"),
+    ("poll_forget_catalog_only_not_delivered", T, F, FORGET_CATALOG,
+     "would stay for ever\n\tfor(int i = 0; i < poll->catalog.count; i++) poll->catalog.entries[i].delivered = false;\n"),
+    ("poll_forget_catalog_without_battery", T, F, FORGET_CATALOG, "would stay for ever\n\tcatalog_init(&poll->catalog);\n\tpoll->catalog.count = 0;\n"),
+    ("poll_forget_catalog_only_if_complete", T, F, FORGET_CATALOG, "would stay for ever\n\tif(poll->catalog_complete) catalog_init(&poll->catalog);\n"),
+    ("poll_forget_guard_forgets_what_is_stored", T, F, FORGET_COMPLETE, "\tpoll->catalog_complete = false;\n\tguard_catalog_init(&poll->catalog_guard, false, 0);\n\tpoll->events"),
+    ("poll_forget_catalog_only_of_profile", T, F, FORGET_CATALOG,
+     "would stay for ever\n\tfor(int i = 0; i < poll->catalog.count; i++) poll->catalog.entries[i].in_profile = false;\n"),
     ("poll_forget_dropped_count_forgotten", T, F, FORGET_VALUES, "{\n\tvalues_init(&poll->values);\n"),
     ("poll_forget_event_replaces_others", T, F, FORGET_EVENT, "\tpoll->events = POLL_EVENT_FORGET | POLL_EVENT_LISTS;\n"),
     ("poll_forget_unknown_dismissed", T, F, FORGET_DISMISS, FORGET_DISMISS.replace("DTC_FLOW_CLEARED)", "DTC_FLOW_CLEARED || poll->flow.phase == DTC_FLOW_UNKNOWN)")),
@@ -305,6 +341,7 @@ MUTATIONS = [
     ("poll_state_4xx_is_no_api", T, F, S_GOT, S_GOT.replace("status == 404 ?", "status >= 400 && status < 500 ?")),
     ("poll_state_no_answer_is_no_api", T, F, S_GOT, S_GOT.replace("status == 404 ?", "status == 404 || status == 0 ?")),
     ("poll_state_200_unreadable_is_no_api", T, F, S_GOT, S_GOT.replace("status == 404 ?", "status == 404 || status == 200 ?")),
+    ("poll_state_empty_body_is_no_api", T, F, S_GOT, S_GOT.replace("status == 404 ?", "status == 404 || length == 0 ?")),
     ("poll_state_bind_not_taken", T, F, S_BIND, ""),
     ("poll_state_bind_without_event", T, F, S_BIND, "\tconn_take_bind(&poll->conn, poll->bound_id, sizeof(poll->bound_id));\n"),
     ("poll_state_bind_event_always", T, F, S_BIND, "\tconn_take_bind(&poll->conn, poll->bound_id, sizeof(poll->bound_id));\n\tpoll->events |= POLL_EVENT_BOUND;\n"),
@@ -379,7 +416,12 @@ MUTATIONS = [
     ("poll_result_gone_conn_not_told", T, F, R_GONE, ""),
     ("poll_result_gone_fails_round", T, F, R_GONE, R_GONE.replace("CONN_GOT_NOT_FOUND", "CONN_GOT_FAILED")),
     ("poll_result_gone_flow_waits_for_ever", T, F, R_LOST, "\t(void)own;\n"),
-    ("poll_result_gone_flow_lost_whatever_it_waits_for", T, F, R_LOST, "\tif(own || waits(&poll->flow)) dtc_flow_lost(&poll->flow);\n"),
+    ("poll_result_gone_flow_ended_whatever_it_waits_for", T, F, R_LOST, "\tif(own || waits(&poll->flow)) dtc_flow_no_result(&poll->flow);\n"),
+    ("poll_result_gone_is_a_lost_adapter", T, F, R_LOST, R_LOST.replace("dtc_flow_no_result(", "dtc_flow_lost(")),
+    ("poll_result_gone_only_ends_read", T, F, R_LOST, R_LOST.replace("own && waits(&poll->flow)", "own && poll->flow.phase == DTC_FLOW_READING")),
+    ("poll_result_gone_only_ends_clear", T, F, R_LOST, R_LOST.replace("own && waits(&poll->flow)", "own && poll->flow.phase == DTC_FLOW_CLEARING")),
+    ("poll_result_gone_reason_is_no_answer", T, FLOW, "\tif(accepted(flow)) give_up(flow, \"no_result\");", "\tif(accepted(flow)) give_up(flow, \"no_answer\");"),
+    ("poll_result_empty_body_is_no_answer", T, F, R_NONE, R_NONE.replace("status == 0", "status == 0 || length == 0")),
     ("poll_result_gone_flow_dismissed", T, F, R_LOST, R_LOST + "\tif(own) dtc_flow_dismiss(&poll->flow);\n"),
 
     # the answer to GET /load_car_config
@@ -398,6 +440,9 @@ MUTATIONS = [
     ("poll_catalog_length_ignored", T, F, C_APPLY, C_APPLY.replace("body, length, work", "body, length + strlen(body + length), work")),
     ("poll_catalog_tokens_behind_room", T, F, C_APPLY, C_APPLY.replace("work, work_count))", "work, work_count + 1))")),
     ("poll_catalog_taken_fails_round", T, F, C_APPLY, C_APPLY.replace("got = CONN_GOT_OK;", "got = CONN_GOT_FAILED;")),
+    ("poll_catalog_empty_body_fails_round", T, F, C_APPLY, C_APPLY.replace("got = CONN_GOT_OK;", "got = length == 0 ? CONN_GOT_FAILED : CONN_GOT_OK;")),
+    ("poll_catalog_empty_body_starts_anew", T, F, C_APPLY, "\t\tif(length == 0) catalog_init(&poll->catalog);\n" + C_APPLY),
+    ("poll_catalog_empty_body_asked_again", T, F, C_APPLY, C_APPLY.replace("got = CONN_GOT_OK;", "got = length == 0 ? CONN_GOT_NOT_FOUND : CONN_GOT_OK;")),
     ("poll_catalog_404_fails_round", T, F, C_ABSENT, "\telse if(status != 0 && state != NULL && state->autopid == WICAN_AUTOPID_OFF)"),
     ("poll_catalog_500_fails_round_while_off", T, F, C_ABSENT, C_ABSENT.replace("status != 0 && state != NULL", "status < 0 && state != NULL")),
     ("poll_catalog_every_4xx_is_absent", T, F, C_ABSENT, C_ABSENT.replace("status == 404 ||", "(status >= 400 && status < 500) ||")),
@@ -428,6 +473,7 @@ MUTATIONS = [
     ("poll_values_repeated_fails_round", T, F, V_GOT, V_GOT.replace("result == VALUES_INVALID ? CONN_GOT_FAILED : CONN_GOT_OK", "result == VALUES_RENEWED ? CONN_GOT_OK : CONN_GOT_FAILED")),
     ("poll_values_invalid_is_an_answer", T, F, V_GOT, V_GOT.replace("result == VALUES_INVALID ? CONN_GOT_FAILED : CONN_GOT_OK", "CONN_GOT_OK")),
     ("poll_values_always_fail_round", T, F, V_GOT, V_GOT.replace("result == VALUES_INVALID ? CONN_GOT_FAILED : CONN_GOT_OK", "CONN_GOT_FAILED")),
+    ("poll_values_empty_body_is_an_answer", T, F, V_GOT, V_GOT.replace("result == VALUES_INVALID ?", "result == VALUES_INVALID && length > 0 ?")),
     ("poll_values_conn_not_told", T, F, V_GOT + "\n", ""),
     ("poll_values_conn_told_at_time_0", T, F, V_GOT, V_GOT.replace("CONN_GOT_OK, now_ms);", "CONN_GOT_OK, 0);")),
 
@@ -452,6 +498,7 @@ MUTATIONS = [
     ("poll_post_200_is_accepted", T, F, D_POSTED, D_POSTED.replace("status, (uint32_t)seq", "status == 200 ? 202 : status, (uint32_t)seq")),
     ("poll_post_every_2xx_is_accepted", T, F, D_POSTED, D_POSTED.replace("status, (uint32_t)seq", "status >= 200 && status < 300 ? 202 : status, (uint32_t)seq")),
     ("poll_post_no_answer_is_a_refusal", T, F, D_POSTED, D_POSTED.replace("status, (uint32_t)seq", "status == 0 ? 500 : status, (uint32_t)seq")),
+    ("poll_post_empty_body_is_no_answer", T, F, D_POSTED, D_POSTED.replace("status, (uint32_t)seq", "length == 0 ? 0 : status, (uint32_t)seq")),
     ("poll_post_number_not_passed", T, F, D_POSTED, D_POSTED.replace("(uint32_t)seq", "0")),
     ("poll_post_number_16_bit", T, F, D_POSTED, D_POSTED.replace("(uint32_t)seq", "(uint16_t)seq")),
     ("poll_post_reason_not_passed", T, F, D_POSTED, D_POSTED.replace("reason, now_ms", "NULL, now_ms")),
@@ -467,16 +514,22 @@ MUTATIONS = [
     ("poll_apply_minus_one_is_a_status", T, F, A_NEGATIVE, "\tif(status < -1) status = 0;\n"),
     ("poll_apply_only_minus_one_is_none", T, F, A_NEGATIVE, "\tif(status == -1) status = 0;\n"),
     ("poll_apply_null_body_read", T, F, A_BODY, ""),
+    ("poll_apply_empty_body_is_no_answer", T, F, A_BODY, A_BODY + "\tif(length == 0) status = 0;\n"),
+    ("poll_apply_empty_200_is_no_answer", T, F, A_BODY, A_BODY + "\tif(length == 0 && status == 200) status = 0;\n"),
+    ("poll_apply_empty_body_not_counted_as_answer", T, F, A_COUNT, A_COUNT.replace("status >= 200 && status <= 499", "status >= 200 && status <= 499 && (length > 0 || status != 200)")),
     ("poll_apply_values_and_catalog_swapped", T, F, A_KINDS,
      A_KINDS.replace("POLL_CATALOG) got_catalog", "POLL_VALUES) got_catalog").replace("POLL_VALUES) got_values", "POLL_CATALOG) got_values")),
     ("poll_apply_answer_to_clear_dropped", T, F, A_POSTED, "\telse if(poll->asked == POLL_DTC_READ) got_posted(poll, status, body, length, now_ms, work, work_count);"),
     ("poll_apply_answer_to_read_dropped", T, F, A_POSTED, "\telse if(poll->asked == POLL_DTC_CLEAR) got_posted(poll, status, body, length, now_ms, work, work_count);"),
-    ("poll_apply_outage_not_watched", T, F, A_AFTER, "\tfollow(poll);\n\tif(guard_catalog_due"),
-    ("poll_apply_outage_watched_only_after_state", T, F, A_AFTER, "\tif(poll->asked == POLL_STATE) watch(poll, now_ms);\n\tfollow(poll);\n\tif(guard_catalog_due"),
-    ("poll_apply_lists_follow_only_after_state_or_result", T, F, A_AFTER, "\twatch(poll, now_ms);\n\tif(poll->asked <= POLL_RESULT) follow(poll);\n\tif(guard_catalog_due"),
-    ("poll_apply_outage_watched_at_time_0", T, F, A_AFTER, "\twatch(poll, 0);\n\tfollow(poll);\n\tif(guard_catalog_due"),
-    ("poll_apply_lists_do_not_follow", T, F, A_AFTER, "\twatch(poll, now_ms);\n\tif(guard_catalog_due"),
-    ("poll_apply_follow_before_outage", T, F, A_AFTER, "\tfollow(poll);\n\twatch(poll, now_ms);\n\tif(guard_catalog_due"),
+    ("poll_apply_outage_not_watched", T, F, A_AFTER, A_AFTER.replace("\twatch(poll, now_ms);\n", "")),
+    ("poll_apply_outage_watched_only_after_state", T, F, A_AFTER, A_AFTER.replace("\twatch(poll, now_ms);", "\tif(poll->asked == POLL_STATE) watch(poll, now_ms);")),
+    ("poll_apply_lists_follow_only_after_state_or_result", T, F, A_AFTER, A_AFTER.replace("\tfollow(poll);", "\tif(poll->asked <= POLL_RESULT) follow(poll);")),
+    ("poll_apply_outage_watched_at_time_0", T, F, A_AFTER, A_AFTER.replace("watch(poll, now_ms)", "watch(poll, 0)")),
+    ("poll_apply_lists_do_not_follow", T, F, A_AFTER, A_AFTER.replace("\tfollow(poll);\n", "")),
+    ("poll_apply_follow_before_outage", T, F, A_AFTER, "\tfollow(poll);\n\twatch(poll, now_ms);\n\tkeep_old(poll, before);\n\tif(guard_catalog_due"),
+    ("poll_apply_old_kept_only_after_post", T, F, A_AFTER, A_AFTER.replace("\tkeep_old(poll, before);", "\tif(poll->asked == POLL_DTC_CLEAR) keep_old(poll, before);")),
+    ("poll_apply_old_kept_only_after_state", T, F, A_AFTER, A_AFTER.replace("\tkeep_old(poll, before);", "\tif(poll->asked == POLL_STATE) keep_old(poll, before);")),
+    ("poll_apply_old_kept_before_outage", T, F, A_AFTER, "\tkeep_old(poll, before);\n\twatch(poll, now_ms);\n\tfollow(poll);\n\tif(guard_catalog_due"),
     ("poll_apply_catalog_never_due", T, F, A_GUARD, ""),
     ("poll_apply_catalog_due_only_after_state", T, F, A_GUARD, A_GUARD.replace("\tif(guard_catalog_due(", "\tif(poll->asked == POLL_STATE && guard_catalog_due(")),
     ("poll_apply_catalog_due_only_after_values", T, F, A_GUARD, A_GUARD.replace("\tif(guard_catalog_due(", "\tif(poll->asked == POLL_VALUES && guard_catalog_due(")),
@@ -497,6 +550,12 @@ MUTATIONS = [
     ("poll_apply_counters_swapped", T, F, A_COUNT, A_COUNT.replace("poll->http_ok++", "poll->http_failed++").replace("else poll->http_failed++", "else poll->http_ok++")),
     ("poll_apply_ok_not_counted", T, F, A_COUNT, A_COUNT.replace(" poll->http_ok++;", " (void)poll->http_ok;")),
     ("poll_apply_failed_not_counted", T, F, A_COUNT, A_COUNT.replace("\telse poll->http_failed++;\n", "")),
+
+    # the rules of dtc_flow.h that changed, seen through the conversations
+    ("poll_engine_speed_only_while_fresh", T, FLOW, "values_age(value, now_ms) != VALUE_AGE_GONE", "values_age(value, now_ms) == VALUE_AGE_FRESH"),
+    ("poll_wait_never_ends", T, FLOW, "\tif(accepted(flow) && passed(now_ms, flow->accepted_ms) > DTC_FLOW_WAIT_MS) give_up(flow, \"no_answer\");\n", ""),
+    ("poll_wait_one_ms_shorter", T, FLOW_H, "#define DTC_FLOW_WAIT_MS        (180u * 1000u)", "#define DTC_FLOW_WAIT_MS        (180u * 1000u - 1u)"),
+    ("poll_wait_one_ms_longer", T, FLOW_H, "#define DTC_FLOW_WAIT_MS        (180u * 1000u)", "#define DTC_FLOW_WAIT_MS        (180u * 1000u + 1u)"),
 
     # the events
     ("poll_events_not_cleared", T, F, "\tpoll->events = 0;\n", ""),

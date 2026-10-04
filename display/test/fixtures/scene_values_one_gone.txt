@@ -1,0 +1,6 @@
+kind: values
+ring: yellow
+title: Eins
+note:
+item: Kühlwasser | – |  | dim | arc | -1
+dots: 2/6

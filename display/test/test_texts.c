@@ -87,6 +87,7 @@ static const struct
 	{"bad_request", "WiCAN versteht die Anfrage nicht"},
 	{"internal", "WiCAN: interner Fehler – erneut lesen"},
 	{"no_answer", "Keine Antwort vom WiCAN"},
+	{"no_result", "Ergebnis nicht abrufbar – erneut lesen"},
 	{"restarted", "WiCAN neu gestartet – Ergebnis verloren"},
 	{"superseded", "Von einem anderen Scan überholt"},
 };
@@ -105,7 +106,7 @@ static const char *const REASONS_OF_FIRMWARE[] = {
 	"ecu_offline", "engine_state_unknown", "engine_running", "not_supported", "out_of_memory", "internal",
 };
 // display/components/core/dtc_flow.h, dtc_flow_t.reason:
-static const char *const REASONS_OF_FLOW[] = {"no_answer", "restarted", "superseded"};
+static const char *const REASONS_OF_FLOW[] = {"no_answer", "no_result", "restarted", "superseded"};
 
 /* Helpers ---------------------------------------------------------------------------------------------- */
 
@@ -341,6 +342,10 @@ static void test_reason(void)
 	}
 	check(same(text_reason("engine_state_unknown"), "Drehzahl nicht lesbar \xE2\x80\x93 nichts gel\xC3\xB6scht"),
 	      "the bytes of the text for engine_state_unknown: the dash is U+2013, o-umlaut is two bytes");
+	check(same(text_reason("no_result"), "Ergebnis nicht abrufbar \xE2\x80\x93 erneut lesen") && strlen(text_reason("no_result")) == 40,
+	      "the bytes of the text for no_result: 40 of them, the dash is U+2013");
+	check(strcmp(text_reason("no_result"), text_reason("no_answer")) != 0, "a result that cannot be had is not said to be no answer");
+	check(COUNT(REASONS) == 19, "the test knows every reason of the header: 19 words");
 
 	check(all_have_texts(REASONS_OF_STATE, COUNT(REASONS_OF_STATE)), "every reason API.md names for the dtc object of the state has a text");
 	check(all_have_texts(REASONS_OF_ANSWERS, COUNT(REASONS_OF_ANSWERS)), "every reason API.md names for the answers to the dtc requests has a text");

@@ -1,11 +1,11 @@
 kind: list
-ring: none
+ring: progress 277
 title: Fehlerspeicher
-note:
-row: > action | Lesen |  | enabled
+note: Scan läuft bereits
+row: > action | Lesen |  | disabled
 row: - action | Liste ansehen |  | disabled
 row: - action | Zuletzt gelöscht |  | disabled
 row: - action | Zurück |  | enabled
 first: 0
 total: 4
-line: Noch nicht gelesen
+line: Lesen läuft …

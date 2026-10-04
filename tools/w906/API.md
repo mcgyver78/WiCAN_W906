@@ -32,7 +32,7 @@ The fields come in exactly this order.
 | `autopid` | `off` (the AutoPID task does not exist: the protocol is not AutoPID, no PID is configured or the start failed), `starting` (task not in its loop yet), `run`. Without a vehicle profile but with other PIDs it is `run`, and `dtc.supported` is `false` |
 | `pids` | number of values of the vehicle profile |
 | `ecu` | `online` or `offline` (ignition off or control unit not answering) |
-| `pass` | counter, incremented after every polling pass in which at least one request was answered. Values of `/autopid_data` are fresh only if this counter moved |
+| `pass` | counter, incremented after every round of the polling loop in which at least one request was answered. A round asks only the values that are due, so the counter moves several times a second and does not count whole passes over all values (measured 2026-10-04 on a W906 with 35 values: about 14 steps per second, each single value is renewed about every 2.6 s). Values of `/autopid_data` are fresh only if this counter moved; it does not tell which of them were renewed |
 | `rx_age_ms` | milliseconds since the last answered request, `-1` if none since boot, at most 2^31-1. The adapter counts it in 32 bits: 2^32 ms (49.7 days) after the last answer it starts again at 0, `ecu` is `offline` by then |
 | `mqtt` | `off`, `connected`, `disconnected` |
 | `batt_v` | battery voltage with one decimal, `-1` if not measured |

@@ -47,7 +47,14 @@ COPIED = [
     "tools/w906/fixtures",
     "vehicle_profiles/mercedes/sprinter_w906_om651.json",
 ]
-IGNORED = shutil.ignore_patterns("__pycache__", "*.log", "*.dSYM")
+
+
+def IGNORED(directory, names):
+    """Not copied: what a build leaves behind. Somebody else may build or delete a test program at this
+    very moment, and a file that vanishes during the copy would stop it."""
+    return [name for name in names
+            if name == "__pycache__" or name.endswith((".log", ".dSYM"))
+            or (name.startswith("test_") and "." not in name)]
 
 
 def load_mutations():
@@ -87,9 +94,6 @@ def copy_sources(target):
         else:
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(source, destination)
-    for binary in (target / "display" / "test").glob("test_*"):
-        if binary.is_file() and binary.suffix == "":
-            binary.unlink()
 
 
 def run_test(tree, test):
@@ -227,9 +231,10 @@ def main():
         if mutation[2] not in known:
             print("%s/%s names the test %s, which does not exist" % (mutation[0], mutation[1], mutation[2]))
             return 1
-    # Every test has to be guarded by at least one mutation
+    # Every test has to be guarded by at least one mutation. A run for one module or one mutation does not
+    # ask this of the others: several modules are written at the same time.
     unguarded = sorted(known - set(mutation[2] for mutation in mutations))
-    if unguarded:
+    if unguarded and not (arguments.module or arguments.only):
         print("tests without any mutation: %s" % ", ".join(unguarded))
         return 1
 

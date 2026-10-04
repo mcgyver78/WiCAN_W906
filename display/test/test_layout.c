@@ -1973,7 +1973,12 @@ static void model_layout(void)
 	emit("}");
 	emit_space();
 
-	snprintf(canon, sizeof(canon), "{\"format\":\"wican-display-layout\",\"v\":1%s%s,\"pages\":[%s]}", canon_name_text, canon_hint_text, canon_pages_text);
+	// gcc refuses a snprintf() that might cut unless the caller looks at what it returns
+	if(snprintf(canon, sizeof(canon), "{\"format\":\"wican-display-layout\",\"v\":1%s%s,\"pages\":[%s]}", canon_name_text, canon_hint_text, canon_pages_text) >= (int)sizeof(canon))
+	{
+		printf("FAIL the generated layout text does not fit its room in the test\n");
+		exit(1);
+	}
 }
 
 static bool same_limit(const layout_limit_t *a, const layout_limit_t *b)
@@ -3053,7 +3058,7 @@ static void test_from_catalog(void)
 		for(n = 0; n < total; n++)
 		{
 			const layout_page_t *page = &layout->pages[n / 4];
-			char key[8], title[16];
+			char key[16], title[16];	// room for any int: gcc refuses a snprintf() that might cut
 
 			snprintf(key, sizeof(key), "V%03d", n);
 			snprintf(title, sizeof(title), "Werte %d", n / 4 + 1);

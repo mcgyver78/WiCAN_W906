@@ -1,0 +1,8 @@
+kind: list
+ring: none
+title: Gelöscht
+note:
+row: > head | Gelöscht 1 von 1 | verbleibend 0 | enabled
+row: - action | Fertig |  | enabled
+first: 0
+total: 2

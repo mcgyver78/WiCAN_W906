@@ -1,0 +1,5 @@
+kind: notice
+ring: none
+title: Fehlgeschlagen
+note: Knopf drücken
+line: WiCAN neu gestartet – Ergebnis verloren

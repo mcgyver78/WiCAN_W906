@@ -1,0 +1,9 @@
+kind: values
+ring: none
+title: Motor
+note: Zu heiß – Anzeige gedimmt
+item: Drehzahl | 0 | 1/min | normal | arc | 0
+item: Kühlwasser | 22 | °C | normal | number | -1
+item: Motoröl | 23 | °C | normal | number | -1
+item: Fahrpedal | 0 | % | normal | bar | 0
+dots: 1/7

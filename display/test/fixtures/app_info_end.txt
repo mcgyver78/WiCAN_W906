@@ -1,0 +1,11 @@
+kind: list
+ring: none
+title: Info
+note:
+row: - line | PSRAM: 7340032 frei, min. 7100416 |  | enabled
+row: - line | HTTP: 21 ok, 0 Fehler |  | enabled
+row: - line | Neuverbindungen: 2 |  | enabled
+row: - line | Temperatur: – |  | enabled
+row: > line | Letzter Neustart: poweron |  | enabled
+first: 8
+total: 13

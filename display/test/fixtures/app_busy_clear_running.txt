@@ -1,0 +1,8 @@
+kind: progress
+ring: none
+title: Fehlerspeicher löschen
+note:
+line: CDID3
+line: ca. 35 s – Live-Werte pausieren
+big: 1/3
+permille: 333

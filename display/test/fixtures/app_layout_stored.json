@@ -1,0 +1,6 @@
+{"format":"wican-display-layout","v":1,"name":"Meine Ansichten","pages":[
+ {"title":"Fahrt","items":[
+  {"key":"ENGINE_RPM","label":"Drehzahl","unit":"1/min"},
+  {"key":"@BATT_V","label":"Bordnetz","dec":1}]},
+ {"title":"Tank","items":[
+  {"key":"FUEL_L","label":"Tank","widget":"bar","min":0,"max":75}]}]}

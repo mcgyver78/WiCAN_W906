@@ -1,0 +1,11 @@
+kind: values
+ring: none
+title: Ladeluft
+note:
+item: Ladedruck | 1009 | hPa | normal | number | -1
+item: Ladedruck Niederdruck | 1009 | hPa | normal | number | -1
+item: Ladeluft vor Kühler | 22 | °C | normal | number | -1
+item: Ladeluft nach Kühler | 21 | °C | normal | number | -1
+item: Ansaugluft | 21 | °C | normal | number | -1
+item: Wastegate | 0 | % | normal | number | -1
+dots: 2/7

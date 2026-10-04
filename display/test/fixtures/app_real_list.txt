@@ -1,0 +1,11 @@
+kind: list
+ring: none
+title: Fehlerspeicher
+note: Löschen möglich: 10:00
+row: > head | 1 Fehler | 18 Steuergeräte · 35 s | enabled
+row: - line | SAM | 662 · 1 Fehler | enabled
+row: - sub | 9076 | Status 20 | enabled
+row: - line | 17 Steuergeräte ohne Fehler |  | enabled
+row: - action | Erneut lesen |  | enabled
+first: 0
+total: 7

@@ -1,0 +1,11 @@
+kind: list
+ring: none
+title: Fehlerspeicher
+note: Knopf klemmt – Löschen gesperrt
+row: - sub | 9301 | Status 60 | enabled
+row: - line | Rückhaltesystem | keine Antwort | enabled
+row: - action | Erneut lesen |  | enabled
+row: > action | Fehler löschen |  | disabled
+row: - action | Zurück |  | enabled
+first: 5
+total: 10

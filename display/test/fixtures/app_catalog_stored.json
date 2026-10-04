@@ -1,0 +1,1 @@
+{"@BATT_V":{"unit":"V","class":"","profile":false,"delivered":false},"ENGINE_RPM":{"unit":"RPM","class":"frequency","profile":true,"delivered":false},"COOLANT_TMP":{"unit":"°C","class":"temperature","profile":true,"delivered":false},"FUEL_L":{"unit":"L","class":"none","profile":true,"delivered":false}}

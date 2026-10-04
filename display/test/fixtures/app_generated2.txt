@@ -1,0 +1,7 @@
+kind: values
+ring: none
+title: Werte 2
+note:
+item: Intake Temp | 19,0 | °C | normal | number | -1
+item: Batt V | 12,4 | V | normal | number | -1
+dots: 2/2

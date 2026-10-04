@@ -1,0 +1,1 @@
+{"SPEED":{"class":"speed","unit":"km/h"},"RPM":{"class":"frequency","unit":"rpm"},"COOLANT":{"class":"temperature","unit":"°C"},"FUEL":{"class":"none","unit":"%"},"INTAKE_TEMP":{"class":"temperature","unit":"°C"}}

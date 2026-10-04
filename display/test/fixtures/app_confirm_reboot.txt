@@ -1,0 +1,6 @@
+kind: choice
+ring: none
+title: Neu starten?
+note:
+option: > Abbrechen
+option: - Ausführen

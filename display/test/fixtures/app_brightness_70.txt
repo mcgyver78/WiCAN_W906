@@ -1,0 +1,6 @@
+kind: level
+ring: none
+title: Helligkeit
+note: Drehen zum Ändern, Drücken zum Speichern
+big: 70 %
+permille: 700

@@ -1,0 +1,6 @@
+kind: choice
+ring: none
+title: Vorherige Version starten?
+note:
+option: - Abbrechen
+option: > Ausführen

@@ -1,0 +1,9 @@
+kind: values
+ring: progress 222
+title: Motor
+note: Live-Werte angehalten (Fehlerspeicher-Scan)
+item: Drehzahl | – |  | dim | arc | -1
+item: Kühlwasser | – |  | dim | number | -1
+item: Motoröl | – |  | dim | number | -1
+item: Fahrpedal | – |  | dim | bar | -1
+dots: 1/7

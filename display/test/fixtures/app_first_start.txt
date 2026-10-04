@@ -1,0 +1,6 @@
+kind: notice
+ring: red
+title:
+note:
+dots: 1/7
+line: WiCAN nicht gefunden – schläft, stromlos oder außer Reichweite

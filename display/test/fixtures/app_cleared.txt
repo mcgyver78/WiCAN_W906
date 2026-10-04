@@ -1,0 +1,11 @@
+kind: list
+ring: none
+title: Gelöscht
+note:
+row: > head | Gelöscht 2 von 3 | verbleibend 1 | enabled
+row: - line | SAM | Löschen nicht bestätigt | enabled
+row: - line | Motorelektronik | 7E0 · 1 Fehler | enabled
+row: - sub | P242F-FA | aktiv | enabled
+row: - action | Fertig |  | enabled
+first: 0
+total: 5

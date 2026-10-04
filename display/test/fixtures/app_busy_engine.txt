@@ -1,0 +1,8 @@
+kind: progress
+ring: none
+title: Fehlerspeicher lesen
+note:
+line: Prüfe Motor …
+line: ca. 35 s – Live-Werte pausieren
+big: 0/3
+permille: 0

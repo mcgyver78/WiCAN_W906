@@ -1,0 +1,9 @@
+kind: values
+ring: progress 666
+title: Motor
+note: Live-Werte angehalten (Fehlerspeicher-Scan)
+item: Drehzahl | 0 | 1/min | dim | arc | 0
+item: Kühlwasser | 22 | °C | dim | number | -1
+item: Motoröl | 23 | °C | dim | number | -1
+item: Fahrpedal | 0 | % | dim | bar | 0
+dots: 1/7

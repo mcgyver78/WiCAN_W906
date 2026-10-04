@@ -1,0 +1,14 @@
+kind: list
+ring: red
+title: Web-Zugriff
+note:
+row: > action | Freigabe | an – noch 10:00 | enabled
+row: - action | Zurück |  | enabled
+first: 0
+total: 2
+line: WLAN: WiCAN-Display
+line: Passwort: geheim1234
+over: ask
+over_line: WLAN speichern?
+over_line: Werkstatt
+over_line: Drücken = ja · lang = nein (60 s)

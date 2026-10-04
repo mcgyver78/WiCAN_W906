@@ -1,0 +1,11 @@
+kind: list
+ring: none
+title: Info
+note:
+row: - line | WiCAN-Firmware: 4.21 |  | enabled
+row: - line | Version: 0.1.0 (ota_0) |  | enabled
+row: > line | Ansichten: W906 OM651 Standard (eingebaut) |  | enabled
+row: - line | Speicher: 182340 frei, min. 151200 |  | enabled
+row: - line | PSRAM: 7340032 frei, min. 7100416 |  | enabled
+first: 4
+total: 13

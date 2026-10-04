@@ -1,0 +1,11 @@
+kind: list
+ring: none
+title: Info
+note:
+row: > line | WLAN: Werkstatt (-61 dBm) |  | enabled
+row: - line | Adresse: 192.168.1.77 |  | enabled
+row: - line | WiCAN: 192.168.1.50 |  | enabled
+row: - line | WiCAN-ID: a1b2c3d4e5f6 |  | enabled
+row: - line | WiCAN-Firmware: 4.21 |  | enabled
+first: 0
+total: 13

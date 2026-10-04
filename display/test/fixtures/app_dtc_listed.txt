@@ -1,0 +1,11 @@
+kind: list
+ring: none
+title: Fehlerspeicher
+note:
+row: - action | Lesen |  | enabled
+row: > action | Liste ansehen |  | enabled
+row: - action | Zuletzt gelöscht |  | disabled
+row: - action | Zurück |  | enabled
+first: 0
+total: 4
+line: 3 Fehler in 2 Steuergeräten

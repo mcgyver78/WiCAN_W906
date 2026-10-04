@@ -1,0 +1,6 @@
+kind: level
+ring: none
+title: Helligkeit (Nacht)
+note: Drehen zum Ändern, Drücken zum Speichern
+big: 30 %
+permille: 300

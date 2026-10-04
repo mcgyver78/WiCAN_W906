@@ -1,0 +1,10 @@
+{"format":"wican-display-layout","v":1,"pages":[
+  {"items":[
+    {"key":"FINE","widget":"number"},
+    {"key":"GAUGE","widget":"gauge","min":0,"max":10}]},
+  {"items":[
+    {"key":"ARC_NO_MAX","widget":"arc","min":0},
+    {"key":"BAR_NO_MIN","widget":"bar","max":100},
+    {"key":"ARC_NEITHER","widget":"arc"},
+    {"key":"STATE_NO_MAP","widget":"state"},
+    {"key":"STATE_EMPTY_MAP","widget":"state","map":{}}]}]}

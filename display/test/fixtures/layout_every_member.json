@@ -1,0 +1,22 @@
+{
+  "format": "wican-display-layout",
+  "v": 1,
+  "name": "Jeder Schl\u00fcssel einmal",
+  "profile_hint": "Pr\u00FCfstand",
+  "author": "the format does not know this member",
+  "pages": [
+    {
+      "title": "Größen",
+      "hidden": false,
+      "colour": "#ff0000",
+      "items": [
+        {"key": "A", "label": "Ladedruck", "unit": "bar", "dec": 2, "widget": "bar", "scale": 0.001,
+         "min": -1, "max": 2.5, "warn_lo": -0.5, "warn_hi": 1.8, "crit_lo": -0.75, "crit_hi": 22e-1,
+         "map": {"0": "null"}, "later": {"key": "B", "nested": [1, 2, {"dec": 9}]}},
+        {"key": "@BATT_V", "label": "", "unit": "", "dec": 3, "widget": "number", "scale": -1E3},
+        {"key": "SWITCH", "widget": "state", "map": {"on": "läuft", "off": "steht", "*": "?"}}
+      ]
+    },
+    {"items": [{"key": "😀\ud83d\ude00"}], "title": "", "hidden": true}
+  ]
+}

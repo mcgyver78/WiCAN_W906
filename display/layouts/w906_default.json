@@ -1,0 +1,43 @@
+{"format":"wican-display-layout","v":1,"name":"W906 OM651 Standard","profile_hint":"W906","pages":[
+  {"title":"Motor","items":[
+    {"key":"ENGINE_RPM","label":"Drehzahl","unit":"1/min","dec":0,"widget":"arc","min":0,"max":5000},
+    {"key":"COOLANT_TMP","label":"Kühlwasser","unit":"°C","dec":0},
+    {"key":"ENGINE_OIL_TEMP","label":"Motoröl","unit":"°C","dec":0},
+    {"key":"ACCEL_PEDAL","label":"Fahrpedal","unit":"%","dec":0,"widget":"bar","min":0,"max":100}]},
+  {"title":"Ladeluft","items":[
+    {"key":"BOOST_PRESSURE","label":"Ladedruck","unit":"hPa","dec":0},
+    {"key":"BOOST_PRESSURE_LP","label":"Ladedruck Niederdruck","unit":"hPa","dec":0},
+    {"key":"CHARGE_AIR_TEMP_PRE_IC","label":"Ladeluft vor Kühler","unit":"°C","dec":0},
+    {"key":"CHARGE_AIR_TEMP_POST_IC","label":"Ladeluft nach Kühler","unit":"°C","dec":0},
+    {"key":"INTAKE_AIR_TMP","label":"Ansaugluft","unit":"°C","dec":0},
+    {"key":"WASTEGATE","label":"Wastegate","unit":"%","dec":0}]},
+  {"title":"Abgas","items":[
+    {"key":"EGT_PRE_TURBO","label":"Abgas vor Turbo","unit":"°C","dec":0},
+    {"key":"EGT_POST_EGR_COOLER","label":"Abgas nach AGR-Kühler","unit":"°C","dec":0},
+    {"key":"EGT_PRE_CAT","label":"Abgas vor Kat","unit":"°C","dec":0},
+    {"key":"EGT_PRE_DPF","label":"Abgas vor DPF","unit":"°C","dec":0},
+    {"key":"EGT_PRE_SCR","label":"Abgas vor SCR","unit":"°C","dec":0},
+    {"key":"EXHAUST_BACK_PRESSURE","label":"Abgasgegendruck","unit":"hPa","dec":0}]},
+  {"title":"DPF","items":[
+    {"key":"DPF_SOOT_MASS","label":"Ruß gemessen","unit":"g","dec":1},
+    {"key":"DPF_SOOT_SIM","label":"Ruß berechnet","unit":"g","dec":1},
+    {"key":"DPF_ASH","label":"Asche","unit":"g","dec":1},
+    {"key":"DPF_DIFF_PRESSURE","label":"Differenzdruck","unit":"hPa","dec":0},
+    {"key":"DPF_KM_SINCE_REGEN","label":"km seit Regeneration","unit":"km","dec":0},
+    {"key":"DPF_REGEN_STATUS","label":"Regeneration","widget":"state","map":{"1":"inaktiv","*":"aktiv"}}]},
+  {"title":"Kraftstoff","items":[
+    {"key":"RAIL_PRESSURE","label":"Raildruck","unit":"bar","dec":0},
+    {"key":"INJECTION_QUANTITY","label":"Einspritzmenge","unit":"mg","dec":1},
+    {"key":"FUEL_TEMP","label":"Kraftstofftemperatur","unit":"°C","dec":0},
+    {"key":"FUEL_L","label":"Tankinhalt","unit":"L","dec":0},
+    {"key":"LAMBDA","label":"Lambda","dec":2},
+    {"key":"AIR_MASS_PER_STROKE","label":"Luftmasse je Hub","unit":"mg","dec":0}]},
+  {"title":"AGR/Luft","items":[
+    {"key":"EGR_RATE","label":"AGR-Rate","unit":"%","dec":0},
+    {"key":"EGR_VALVE","label":"AGR-Ventil","unit":"%","dec":0},
+    {"key":"THROTTLE","label":"Drosselklappe","unit":"%","dec":0},
+    {"key":"INTAKE_AIR_PRESSURE","label":"Ansaugdruck","unit":"hPa","dec":0},
+    {"key":"BARO_PRESSURE","label":"Luftdruck","unit":"hPa","dec":0}]},
+  {"title":"Sonstiges","items":[
+    {"key":"OIL_LEVEL","label":"Ölstand","unit":"mm","dec":1},
+    {"key":"ECU_DISTANCE","label":"Wegstrecke Motor-SG","unit":"km","dec":0}]}]}

@@ -1,0 +1,9 @@
+{"format":"wican-display-layout","v":1,"name":"W906 OM651 Standard","profile_hint":"W906","pages":[
+  {"title":"Motor","items":[
+    {"key":"ENGINE_RPM","label":"Drehzahl","unit":"1/min","dec":0,"widget":"arc","min":0,"max":5000},
+    {"key":"COOLANT_TMP","label":"Kühlwasser","unit":"°C"},
+    {"key":"RAIL_PRESSURE","label":"Raildruck","unit":"bar","scale":0.001,"dec":0,"warn_hi":1900},
+    {"key":"DPF_REGEN_STATUS","label":"Regeneration","widget":"state","map":{"1":"inaktiv","*":"aktiv"}}]},
+  {"title":"DPF","hidden":true,"items":[
+    {"key":"DPF_SOOT_MASS","label":"Ruß gemessen","unit":"g","dec":1,"warn_hi":30,"crit_hi":45},
+    {"key":"DPF_KM_SINCE_REGEN","label":"km seit Regeneration","unit":"km"}]}]}

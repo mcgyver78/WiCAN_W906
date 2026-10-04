@@ -1,0 +1,1 @@
+{"ok":true,"name":"Eigene Ansicht","pages":3,"items":8,"warnings":2,"warning_path":"pages[1].items[0].widget","warning":"arc or bar without min and max, shown as number","unknown":["OIL_PRESSURE","TURBO_SPEED","GEAR"]}

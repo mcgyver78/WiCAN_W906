@@ -34,11 +34,24 @@ jobs:
         # -k: show what is wrong with every test, not only with the first
         run: make -k
         working-directory: display/test
-      - name: Red proof (every removed rule makes a test fail)
-        run: python redproof.py
-        working-directory: display/test
       - name: Red proof counter-check (a change without effect is reported)
         run: python redproof.py --selftest
+        working-directory: display/test
+
+  # Every removed rule has to make a test fail. Thousands of builds: four parts side by side.
+  red-proof:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Red proof, part ${{ matrix.part }} of 4
+        run: python redproof.py --shard ${{ matrix.part }}/4
         working-directory: display/test
 
   firmware:

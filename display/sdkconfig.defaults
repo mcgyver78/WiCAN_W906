@@ -13,3 +13,23 @@ CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
+
+# RGB panel (components/board): the frame buffer lies in the PSRAM, and an interrupt copies it a few lines
+# at a time into two bounce buffers in the internal RAM, which the DMA sends. board.c refuses to compile
+# without the first and the last of the three.
+#
+# Data cache line of 64 bytes: Espressif's FAQ on the RGB screen of the ESP32-S3 calls it necessary for
+# the bounce buffer mode, the picture may drift without it (esp-faq, software-framework/peripherals/lcd)
+CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
+# Data cache of 64 KB instead of 32 KB: set by the maker's ESPHome lessons. Costs 32 KB of heap in the internal RAM; the same FAQ says 32 KB do as well. Not decided
+# before it is tried on the board
+CONFIG_ESP32S3_DATA_CACHE_64KB=y
+# If the DMA cannot keep up with the panel (flash being written, PSRAM busy) the picture stays shifted
+# from then on. With this the driver restarts the DMA in every vertical blanking, so it recovers by itself
+# (ESP-IDF v5.5.2, api-reference/peripherals/lcd/rgb_lcd). ESPHome gets the same by calling
+# esp_lcd_rgb_panel_restart() in its loop
+CONFIG_LCD_RGB_RESTART_IN_VSYNC=y
+
+# The interrupt of the RGB panel copies every line with the CPU, and LVGL draws with it: full speed, as the
+# maker's builds have it
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y

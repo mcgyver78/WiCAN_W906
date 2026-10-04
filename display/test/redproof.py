@@ -20,6 +20,8 @@ Rules for mutations: they must not change a type and must not rely on a compiler
   python3 redproof.py --module fmt     the mutations of one file in mutations/
   python3 redproof.py --only NAME      one mutation
   python3 redproof.py --list
+  python3 redproof.py --shard 0/4      every fourth mutation, starting with the first: the CI runs the
+                                       four parts side by side
   python3 redproof.py --selftest       counter-check of this script: it runs itself with a change
                                        without effect and with a mutation that does not apply and
                                        expects exit status 1, and with a real mutation and expects 0
@@ -211,6 +213,7 @@ def main():
     parser.add_argument("--only", metavar="NAME", help="run a single mutation")
     parser.add_argument("--module", metavar="MODULE", help="run the mutations of mutations/MODULE.py")
     parser.add_argument("--list", action="store_true", help="list the mutations")
+    parser.add_argument("--shard", metavar="I/N", help="run only part I of N parts of the selection")
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 2, help="mutations run in parallel")
     parser.add_argument("--selftest", action="store_true", help="counter-check of this script")
     parser.add_argument("--selftest-mutation", choices=["noop", "missing"], help=argparse.SUPPRESS)
@@ -254,6 +257,16 @@ def main():
         if not selected:
             print("no mutations for module %s" % arguments.module)
             return 1
+
+    if arguments.shard:
+        try:
+            part, parts = (int(number) for number in arguments.shard.split("/"))
+        except ValueError:
+            part, parts = -1, 0
+        if not 0 <= part < parts:
+            print("--shard takes I/N with 0 <= I < N, not %s" % arguments.shard)
+            return 1
+        selected = selected[part::parts]
 
     for test in sorted(set(mutation[2] for mutation in selected)):
         state, detail = evaluate(None, test)

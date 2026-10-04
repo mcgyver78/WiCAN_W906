@@ -1,0 +1,16 @@
+# Managed components of the board, each at exactly the version whose source was read while board.c was
+# written: nothing of it could be compiled before the first build in the CI. "==" matters: the registry
+# also has revisions (2.0.2~2, 1.0.1~1) and newer versions that a range would pick.
+# ESP-IDF itself is fixed by the workflow (.github/workflows/display.yml: v5.5.2).
+dependencies:
+  # ST7701S over 3-wire SPI and RGB. The sources of 2.0.2, 2.0.2~1 and 2.0.2~2 are the same files
+  espressif/esp_lcd_st7701: "==2.0.2"
+  # The bit-banged 3-wire SPI the ST7701 driver sends its commands through
+  espressif/esp_lcd_panel_io_additions: "==1.0.1"
+  # Only pulled in by the two above, not called by board.c, and fixed here so that the build does not change
+  # by itself. esp_lcd_panel_io_additions asks for esp_io_expander "^1": that would be 1.2.1, which by its
+  # default setting wraps gpio_set_level() and five more functions of the GPIO driver for the whole firmware
+  # when it is linked. 1.0.1 is the version esp_lcd_panel_io_additions 1.0.1 was released against
+  espressif/esp_io_expander: "==1.0.1"
+  # Both drivers ask for "0.*"; 0.5.3 is the newest of those
+  espressif/cmake_utilities: "==0.5.3"

@@ -2163,6 +2163,13 @@ static httpd_handle_t config_server_init(void)
 //            sizeof(server_data->base_path));
 
     config.lru_purge_enable = true;
+    // A client that vanishes without closing (display switched off, WiFi lost) would keep its
+    // session and its socket for good: the purge above only acts when all sessions are taken.
+    // With keep-alive a dead peer is dropped after 10 s + 3 * 5 s.
+    config.keep_alive_enable = true;
+    config.keep_alive_idle = 10;
+    config.keep_alive_interval = 5;
+    config.keep_alive_count = 3;
 
     if(xServerEventGroup == NULL)
     {

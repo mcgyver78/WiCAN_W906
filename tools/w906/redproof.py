@@ -73,6 +73,11 @@ ELAPSED = "\treturn now_ms >= then_ms ? now_ms - then_ms : 0;"
 CONTROL = "\t\tif(c < 0x20) continue;"
 FINISHED = "\tbool finished = s->phase == DTC_STATE_DONE || s->phase == DTC_STATE_ERROR;"
 EXPIRE = '\t\tfinish(s, DTC_STATE_ERROR, "expired", now_ms);\n'
+SCAN_HOLD = "#define DTC_SCAN_HOLD_MS        (120u * 1000u)"
+RESULT_HOLD = "#define DTC_RESULT_HOLD_MS      (10u * 1000u)"
+HOLD_SCAN = "\tif(dtc_state_busy(s)) return elapsed_ms(now_ms, s->queued_ms) <= DTC_SCAN_HOLD_MS;"
+HOLD_IDLE = "\tif(s->phase == DTC_STATE_IDLE) return false;"
+HOLD_RESULT = "\treturn elapsed_ms(now_ms, s->finished_ms) <= DTC_RESULT_HOLD_MS;"
 
 
 def also(phase):
@@ -220,6 +225,41 @@ MUTATIONS = [
     ("json_field_left_out", "dtc_state", STATE_C,
      "\tput_raw(&out, \",\\\"count\\\":\");\n\tput_number(&out, s->result_count);\n", ""),
     ("reject_text_changed", "dtc_state", STATE_C, 'return "stale_seq";', 'return "stale";'),
+
+    # Staying awake for a scan and for its result
+    ("hold_not_for_a_scan", "dtc_state", STATE_C, HOLD_SCAN, HOLD_SCAN.replace("if(", "if(0 && ")),
+    ("hold_not_while_queued", "dtc_state", STATE_C, HOLD_SCAN,
+     HOLD_SCAN.replace("dtc_state_busy(s)", "s->phase == DTC_STATE_RUNNING")),
+    ("hold_not_while_running", "dtc_state", STATE_C, HOLD_SCAN,
+     HOLD_SCAN.replace("dtc_state_busy(s)", "s->phase == DTC_STATE_QUEUED")),
+    ("hold_for_a_scan_without_limit", "dtc_state", STATE_C, HOLD_SCAN, "\tif(dtc_state_busy(s)) return true;"),
+    ("hold_for_a_scan_boundary", "dtc_state", STATE_C, HOLD_SCAN, HOLD_SCAN.replace("<=", "<")),
+    ("hold_for_a_scan_limit_changed", "dtc_state", STATE_H, SCAN_HOLD, SCAN_HOLD.replace("120u", "121u")),
+    ("hold_for_a_scan_from_the_end_before", "dtc_state", STATE_C, HOLD_SCAN,
+     HOLD_SCAN.replace("s->queued_ms", "s->finished_ms")),
+    ("hold_for_a_scan_time_in_32_bit", "dtc_state", STATE_C, HOLD_SCAN,
+     HOLD_SCAN.replace("elapsed_ms(now_ms, s->queued_ms)", "(uint32_t)elapsed_ms(now_ms, s->queued_ms)")),
+    ("hold_for_a_scan_as_long_as_for_a_result", "dtc_state", STATE_C, HOLD_SCAN,
+     HOLD_SCAN.replace("DTC_SCAN_HOLD_MS", "DTC_RESULT_HOLD_MS")),
+    ("hold_while_idle", "dtc_state", STATE_C, HOLD_IDLE + "\n\n", ""),
+    ("hold_while_idle_after_10_s_only", "dtc_state", STATE_C, HOLD_IDLE,
+     "\tif(s->phase == DTC_STATE_IDLE) return now_ms > DTC_RESULT_HOLD_MS && now_ms <= 2u * DTC_RESULT_HOLD_MS;"),
+    ("hold_not_for_a_result", "dtc_state", STATE_C, HOLD_RESULT, "\treturn false;"),
+    ("hold_not_after_an_error", "dtc_state", STATE_C, HOLD_IDLE,
+     "\tif(s->phase != DTC_STATE_DONE) return false;"),
+    ("hold_not_after_done", "dtc_state", STATE_C, HOLD_IDLE,
+     "\tif(s->phase != DTC_STATE_ERROR) return false;"),
+    ("hold_for_a_result_without_limit", "dtc_state", STATE_C, HOLD_RESULT, "\treturn true;"),
+    ("hold_for_a_result_boundary", "dtc_state", STATE_C, HOLD_RESULT, HOLD_RESULT.replace("<=", "<")),
+    ("hold_for_a_result_limit_changed", "dtc_state", STATE_H, RESULT_HOLD, RESULT_HOLD.replace("10u", "11u")),
+    ("hold_for_a_result_from_the_acceptance", "dtc_state", STATE_C, HOLD_RESULT,
+     HOLD_RESULT.replace("s->finished_ms", "s->queued_ms")),
+    ("hold_for_a_result_time_in_32_bit", "dtc_state", STATE_C, HOLD_RESULT,
+     HOLD_RESULT.replace("elapsed_ms(now_ms, s->finished_ms)", "(uint32_t)elapsed_ms(now_ms, s->finished_ms)")),
+    ("hold_for_a_result_as_long_as_for_a_scan", "dtc_state", STATE_C, HOLD_RESULT,
+     HOLD_RESULT.replace("DTC_RESULT_HOLD_MS", "DTC_SCAN_HOLD_MS")),
+    ("hold_expired_from_the_acceptance", "dtc_state", STATE_C, EXPIRE,
+     '\t\tfinish(s, DTC_STATE_ERROR, "expired", s->queued_ms);\n'),
 ]
 
 # Found by two review rounds as changes the test of that time did not notice
@@ -480,7 +520,8 @@ ECU = '\tput_raw(&out, status->ecu_online ? "online" : "offline");'
 BODY_EMPTY = "\tjson_out_t out = {body, size, 0, false};\n\n\tif(size == 0) return -1;"
 STATE_EMPTY = "\tjson_out_t out = {buf, size, 0, false};\n\n\tif(size == 0) return -1;"
 OVERFLOW = "\t\tout->buf[0] = '\\0';\n\t\treturn -1;"
-DEFER = "\treturn scan_busy && overdue_ms <= DTC_API_SLEEP_DEFER_MS;"
+DEFER = "\treturn scan_holds && overdue_ms <= DTC_API_SLEEP_DEFER_MS;"
+READY = "\treturn task_ready && sleep_in_s != 0;"
 
 
 def unescaped(field):
@@ -749,17 +790,34 @@ API_MUTATIONS = [
 
     # Sleep
     ("api_sleep_never_waits", "dtc_api", API_C, DEFER, DEFER.replace("return ", "return 0 && ")),
-    ("api_sleep_waits_without_scan", "dtc_api", API_C, DEFER, DEFER.replace("scan_busy", "(scan_busy || true)")),
+    ("api_sleep_waits_without_scan", "dtc_api", API_C, DEFER, DEFER.replace("scan_holds", "(scan_holds || true)")),
     ("api_sleep_waits_for_ever", "dtc_api", API_C, DEFER,
-     "\treturn scan_busy && (overdue_ms <= DTC_API_SLEEP_DEFER_MS || true);"),
+     "\treturn scan_holds && (overdue_ms <= DTC_API_SLEEP_DEFER_MS || true);"),
     ("api_sleep_wait_boundary", "dtc_api", API_C, DEFER, DEFER.replace("<=", "<")),
     ("api_sleep_wait_in_seconds", "dtc_api", API_C, DEFER,
      DEFER.replace("overdue_ms <= DTC_API_SLEEP_DEFER_MS", "overdue_ms / 1000u <= DTC_API_SLEEP_DEFER_MS / 1000u")),
     ("api_sleep_wait_in_32_bit", "dtc_api", API_C, DEFER, DEFER.replace("overdue_ms", "(uint32_t)overdue_ms")),
     ("api_sleep_waits_late_without_scan", "dtc_api", API_C, DEFER,
-     "\treturn scan_busy == (overdue_ms <= DTC_API_SLEEP_DEFER_MS);"),
+     "\treturn scan_holds == (overdue_ms <= DTC_API_SLEEP_DEFER_MS);"),
     ("api_sleep_wait_limit_changed", "dtc_api", API_H,
-     "#define DTC_API_SLEEP_DEFER_MS  (60u * 1000u)", "#define DTC_API_SLEEP_DEFER_MS  (61u * 1000u)"),
+     "#define DTC_API_SLEEP_DEFER_MS  (150u * 1000u)", "#define DTC_API_SLEEP_DEFER_MS  (151u * 1000u)"),
+    ("api_sleep_wait_limit_60_s", "dtc_api", API_H,
+     "#define DTC_API_SLEEP_DEFER_MS  (150u * 1000u)", "#define DTC_API_SLEEP_DEFER_MS  (60u * 1000u)"),
+    # The limit of the scan state above the one from the moment sleep was due: only the comparison of the two notices
+    ("api_sleep_wait_shorter_than_a_scan_is_held", "dtc_api", STATE_H, SCAN_HOLD, SCAN_HOLD.replace("120u", "131u")),
+    ("api_sleep_wait_shorter_than_a_result_is_held", "dtc_api", STATE_H, RESULT_HOLD, RESULT_HOLD.replace("10u", "21u")),
+
+    # Whether a request may be started at all
+    ("api_ready_without_the_task", "dtc_api", API_C, READY, READY.replace("task_ready", "(task_ready || true)")),
+    ("api_ready_while_due_to_sleep", "dtc_api", API_C, READY, READY.replace("sleep_in_s != 0", "(sleep_in_s != 0 || true)")),
+    ("api_ready_task_or_countdown", "dtc_api", API_C, READY, READY.replace("&&", "||")),
+    ("api_ready_only_without_countdown", "dtc_api", API_C, READY, READY.replace("!= 0", "< 0")),
+    ("api_ready_only_with_countdown", "dtc_api", API_C, READY, READY.replace("!= 0", "> 0")),
+    ("api_ready_not_in_the_last_seconds", "dtc_api", API_C, READY, READY.replace("sleep_in_s != 0", "(sleep_in_s < 0 || sleep_in_s > 1)")),
+    ("api_ready_at_0_not_at_minus_1", "dtc_api", API_C, READY, READY.replace("!= 0", "!= -1")),
+    ("api_ready_countdown_in_8_bit", "dtc_api", API_C, READY, READY.replace("sleep_in_s != 0", "(sleep_in_s & 0xFF) != 0")),
+    ("api_ready_countdown_in_16_bit", "dtc_api", API_C, READY, READY.replace("sleep_in_s != 0", "(sleep_in_s & 0xFFFF) != 0")),
+    ("api_ready_most_negative_countdown", "dtc_api", API_C, READY, READY.replace("sleep_in_s != 0", "((uint32_t)sleep_in_s << 1) != 0")),
 
     # The contract and the fixtures are really compared: a changed example has to be noticed
     ("api_md_state_example_changed", "dtc_api", API_MD, '"batt_v":12.4,"sleep_in_s":-1', '"batt_v":12.40,"sleep_in_s":-1'),
@@ -838,7 +896,7 @@ API_FOUND_BY_REVIEW = [
      "\t\tif(found_length != 0 && found_length != 3 && found_length != 6) return false;\n\t\tquery += parameter_length;\n"),
     ("api_success_status_not_set", "dtc_api", API_C, "\trequest.status = 0;\n", ""),
     ("api_clear_not_reported", "dtc_api", API_C, "\t\trequest.clear = true;\n", ""),
-    ("api_sleep_waits_60001_ms", "dtc_api", API_C, DEFER,
+    ("api_sleep_waits_150001_ms", "dtc_api", API_C, DEFER,
      DEFER.replace("DTC_API_SLEEP_DEFER_MS", "DTC_API_SLEEP_DEFER_MS + 1u")),
 
     # Header and host depend on each other

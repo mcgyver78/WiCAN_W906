@@ -42,8 +42,15 @@ dtc_api_request_t dtc_api_parse_request(const char *header, const char *host, co
 // Refuses the name of a foreign web page that was pointed at the address of the adapter (DNS rebinding).
 bool dtc_api_host_allowed(const char *host);
 
-// Second part: HTTP status for the answer of the scan state. ready is false while the AutoPID task is not
-// in its loop; result is then ignored.
+// Whether a request may be started at all, asked before the rules of the scan state; over MQTT too.
+// task_ready: the AutoPID task can take the request (HTTP: it is in its loop, MQTT: it exists).
+// sleep_in_s: the countdown GET /api/state reports, negative while the adapter is not counting down.
+// At 0 the adapter is due to sleep and only stays awake for a scan accepted earlier; one accepted now
+// could be cut off half way.
+bool dtc_api_ready(bool task_ready, int32_t sleep_in_s);
+
+// Second part: HTTP status for the answer of the scan state. ready is the answer of dtc_api_ready();
+// if it is false, result is ignored.
 int dtc_api_status(bool ready, dtc_accept_t result);
 
 // Body of every answer to POST /api/dtc: {"accepted":true,"seq":43} for status 202, else
@@ -55,7 +62,8 @@ int dtc_api_body(int status, const char *reason, uint32_t seq, char *body, size_
 typedef struct
 {
 	const char *id;         // device id
-	const char *fw;         // firmware version, e.g. "4.21"
+	const char *fw;         // version text of the application image, at most 31 bytes; in builds of this
+	                        // repository the same text as git (no version.txt, so ESP-IDF takes git describe)
 	const char *git;        // git describe of the build
 	uint32_t boot;          // random number of this boot, 1..2^31-1
 	uint32_t up_s;
@@ -76,10 +84,12 @@ typedef struct
 // (buf is then an empty string, with size 0 nothing is written).
 int dtc_api_state_json(const dtc_api_status_t *status, const char *dtc_json, char *buf, size_t size);
 
-// The adapter is about to go to sleep, which switches CAN and WiFi off. Returns true if that has to wait
-// because a scan is queued or running. overdue_ms: how long the adapter should already be asleep.
-// The wait ends after DTC_API_SLEEP_DEFER_MS in any case, a stuck state must not keep the adapter awake.
-#define DTC_API_SLEEP_DEFER_MS  (60u * 1000u)
-bool dtc_api_defer_sleep(bool scan_busy, uint64_t overdue_ms);
+// The adapter is about to go to sleep, which switches CAN and WiFi off. Returns true if that has to wait.
+// scan_holds: the answer of dtc_state_hold_awake(). overdue_ms: how long the adapter should already be
+// asleep. The wait ends after DTC_API_SLEEP_DEFER_MS in any case, whatever the state says. The limit is
+// longer than a scan accepted before sleep was due and the time its result is held, so it cuts neither;
+// it is there for scans that follow each other, which dtc_api_ready() does not let in.
+#define DTC_API_SLEEP_DEFER_MS  (150u * 1000u)
+bool dtc_api_defer_sleep(bool scan_holds, uint64_t overdue_ms);
 
 #endif

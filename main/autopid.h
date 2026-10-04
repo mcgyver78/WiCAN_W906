@@ -140,6 +140,8 @@ void autopid_request_dtc(bool clear);
 // Fault memory scan for the HTTP API (tools/w906/API.md); autopid_request_dtc() above is the MQTT command
 dtc_accept_t autopid_dtc_request(bool clear, dtc_src_t src, uint32_t seq, uint32_t *seq_out);
 bool autopid_dtc_busy(void);
+// Whether sleep has to wait for a scan or for its result to be fetched (dtc_state_hold_awake())
+bool autopid_dtc_hold_awake(void);
 int autopid_dtc_state_json(char *buf, size_t size);
 int autopid_dtc_result_dup(char **copy, uint32_t *seq);
 const char *autopid_loop_state(void);

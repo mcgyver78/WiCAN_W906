@@ -405,9 +405,10 @@ static void adc_task(void *pvParameters)
 					{
 						int64_t overdue_us = esp_timer_get_time() - sleep_detect_time - (int64_t)sleep_time;
 
-						// Sleep switches CAN and WiFi off. A fault memory scan in progress is not cut off
-						// half way (some control units cleared, others not); the wait is limited.
-						if(!dtc_api_defer_sleep(autopid_dtc_busy(), (uint64_t)(overdue_us / 1000)))
+						// Sleep switches CAN and WiFi off, and the wake-up is a restart that drops the result.
+						// A fault memory scan in progress is not cut off half way (some control units cleared,
+						// others not), and its result can still be published and fetched; both waits are limited.
+						if(!dtc_api_defer_sleep(autopid_dtc_hold_awake(), (uint64_t)(overdue_us / 1000)))
 						{
 							sleep_state = SLEEP_STATE;
 						}

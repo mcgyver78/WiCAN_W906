@@ -238,6 +238,8 @@ class Contract(unittest.TestCase):
             cls.address = (host, int(port or 80))
         # One connection for all tests, as API.md asks of a client. One per test leaves 1800 local ports
         # waiting for 30 s with every run of this file; a few runs in a row then use up the ports of a Mac.
+        # After a 404 or 405 the adapter ends the connection, so each of them costs one: this file opens about
+        # 840 connections per run (counted 2026-10-04), 190 before the mock ended connections like the firmware.
         cls.connection = http.client.HTTPConnection(cls.address[0], cls.address[1], timeout=10)
 
     @classmethod
@@ -294,15 +296,16 @@ class Contract(unittest.TestCase):
             time.sleep(seconds / self.SPEED)
 
     def reopen_if_closed(self, connection):
-        """A connection the other side has ended is not used again. An assumption, not measured: the
-        HTTP server of the firmware ends it after an answer of its own like 404 or 405, without saying
-        so. Nothing is repeated, the next request simply goes over a new connection."""
+        """A connection the other side has ended is not used again. API.md: the adapter may close a
+        connection at any time, without saying so. Nothing is repeated, the next request simply goes
+        over a new connection."""
         # Readable although nothing was asked
         if connection.sock is not None and select.select([connection.sock], [], [], 0)[0]:
             connection.close()
 
-    def request(self, method, target, headers=(), host=True, body=b""):
-        """host: True for the address the request goes to, None for no Host header, else its text."""
+    def request(self, method, target, headers=(), host=True, body=b"", keep=False):
+        """host: True for the address the request goes to, None for no Host header, else its text.
+        keep: the connection is left as it is after the answer, for connection_has_ended()."""
         if self.ADAPTER is not None:
             refusal = not_permitted(method, target, self.ALLOW_DTC, self.ALLOW_CLEAR)
             if refusal is not None:
@@ -320,12 +323,34 @@ class Contract(unittest.TestCase):
                 connection.putheader("Content-Length", "%d" % len(body))
             connection.endheaders(body or None)
             response = connection.getresponse()
-            return Answer(response.status, response.getheaders(), response.read())
+            answer = Answer(response.status, response.getheaders(), response.read())
         except (http.client.HTTPException, OSError) as error:
             # Not an error of this test: the adapter did not answer the request with HTTP.
             # The next request gets a new connection.
             connection.close()
             self.fail("%s %s: %r" % (method, target, error))
+        # API.md: after an answer of its HTTP server itself the adapter ends the connection. Its end
+        # arrives a moment after the answer; a request sent into it would be lost, so this side ends
+        # the connection as well.
+        if answer.status in (404, 405) and not keep:
+            connection.close()
+        return answer
+
+    def connection_has_ended(self):
+        """True if the adapter has ended the connection of the last request, which was sent with
+        keep=True. Asked without waiting: GET /api/state, a request that is always allowed, is sent over
+        the same connection. An adapter that kept the connection answers it."""
+        connection = self.connection
+        try:
+            connection.putrequest("GET", "/api/state", skip_accept_encoding=True)
+            connection.endheaders()
+            connection.getresponse().read()
+        except ConnectionError:
+            # The end had arrived before the request was sent, or the request ran into it
+            return True
+        finally:
+            connection.close()
+        return False
 
     def get(self, target, headers=()):
         return self.request("GET", target, headers)
@@ -679,6 +704,21 @@ class Contract(unittest.TestCase):
         self.mock.set(ignition=False)
         self.wait(30 * 24 * 3600)
         self.assertEqual(self.state()["rx_age_ms"], 2 ** 31 - 1)
+
+    def test_rx_age_ms_starts_again_at_0_after_2_32_ms(self):
+        # "The adapter counts it in 32 bits: 2^32 ms (49.7 days) after the last answer it starts again at 0"
+        self.given("codes")
+        self.wait(10)
+        self.mock.set(ignition=False)
+        age = self.state()["rx_age_ms"]
+        self.assertLess(age, 2000)
+        self.wait(2 ** 32 // 1000 - 1)
+        self.assertEqual(self.state()["rx_age_ms"], 2 ** 31 - 1)
+        # 2^32 ms after the first look
+        self.wait(1.296)
+        self.assertEqual(self.state()["rx_age_ms"], age)
+        self.wait(5)
+        self.assertEqual((self.state()["rx_age_ms"], self.state()["ecu"]), (age + 5000, "offline"))
 
     def test_mqtt_is_off_connected_or_disconnected(self):
         self.given()
@@ -1060,6 +1100,24 @@ class Contract(unittest.TestCase):
                 self.given("codes", seq_seed=43)
                 self.assertEqual(self.post("/api/dtc?action=read&seq=%s" % seq).brief(), accepted(43))
 
+    def test_query_longer_than_63_bytes_is_a_bad_request(self):
+        # "the query may be at most 63 bytes long. A longer query is answered like a missing one"
+        self.given(needs="read")
+        longest = "action=read&pad=" + "x" * 47
+        self.assertEqual(len(longest), 63)
+        self.assertEqual(self.post("/api/dtc?%sx" % longest).brief(), BAD_REQUEST)
+        self.assertEqual(self.post("/api/dtc?%s" % ("x" * 300)).brief(), BAD_REQUEST)
+        self.assertEqual(self.post("/api/dtc?%sx" % longest, headers=()).brief(), FORBIDDEN, "forbidden is decided first")
+        self.assertEqual(self.dtc()["state"] in ("queued", "running"), False, "a refused request started a scan")
+        self.assertEqual(self.post("/api/dtc?%s" % longest).status, 202)
+
+    def test_query_of_a_clear_longer_than_63_bytes_is_a_bad_request(self):
+        # The limit is the same for every action: a clear with its number does not reach the rules either
+        self.given(needs="clear")
+        query = "action=clear&seq=5&pad=" + "x" * 41
+        self.assertEqual(len(query), 64)
+        self.assertEqual(self.post("/api/dtc?%s" % query).brief(), BAD_REQUEST)
+
     def test_refusals_before_the_rules_carry_the_number_0(self):
         # The table: forbidden and bad_request with "seq":0, also while the state has a number
         self.given(needs="read")
@@ -1100,6 +1158,43 @@ class Contract(unittest.TestCase):
         self.given("autopid_off")
         self.assertEqual(self.post("/api/dtc?action=read").brief(), NOT_READY)
         self.assertEqual(self.dtc()["state"], "idle")
+
+    def test_not_ready_once_the_adapter_is_due_to_sleep(self):
+        # "503 ... autopid is not run, or sleep_in_s is 0", and "Sleep": the result can still be fetched
+        self.given("codes", sleep_after_s=180)
+        read, _ = self.read_done()
+        self.mock.set(ignition=False)
+        self.wait(180)
+        self.assertEqual(self.state()["sleep_in_s"], 0)
+        self.assertEqual(self.post("/api/dtc?action=read").brief(), NOT_READY)
+        self.assertEqual(self.post("/api/dtc?action=clear&seq=%d" % read).brief(), NOT_READY)
+        self.wait(60)
+        self.assertEqual(self.post("/api/dtc?action=read").brief(), NOT_READY)
+        self.assertEqual(self.dtc()["seq"], read, "a request was accepted while sleep_in_s was 0")
+        answer = self.get("/api/dtc/result")
+        self.assertEqual((answer.status, answer.header("X-DTC-Seq")), (200, "%d" % read))
+        # A new countdown: while it shows 1 a request is accepted
+        self.mock.set(ignition=True)
+        self.mock.set(ignition=False)
+        self.wait(178)
+        self.assertEqual(self.state()["sleep_in_s"], 1)
+        self.assertEqual(self.post("/api/dtc?action=read").status, 202)
+
+    def test_not_ready_while_due_to_sleep_has_its_place_in_the_order(self):
+        # "The checks are made in this order: forbidden, bad_request, not_ready, then the rules of the scan
+        # state", for the second cause of not_ready as well. "Sleep": the adapter stays awake for a scan
+        # accepted just before, so sleep_in_s is 0 while a scan is running, and the answer is not busy.
+        self.given("ignition_off", sleep_after_s=180)
+        self.wait(178)
+        seq = self.read()
+        self.wait(1)
+        self.assertEqual((self.state()["sleep_in_s"], self.dtc()["state"]), (0, "running"))
+        self.assertEqual(self.post("/api/dtc?action=read").brief(), NOT_READY, "not_ready is decided before busy")
+        self.assertEqual(self.post("/api/dtc?action=read", headers=()).brief(), FORBIDDEN)
+        self.assertEqual(self.post("/api/dtc?action=read", host="page.example").brief(), FORBIDDEN)
+        self.assertEqual(self.post("/api/dtc?action=nothing").brief(), BAD_REQUEST)
+        self.assertEqual(self.post("/api/dtc?action=clear").brief(), BAD_REQUEST)
+        self.assertEqual(self.dtc()["seq"], seq)
 
     def test_request_during_a_queued_request_is_busy(self):
         # "409 busy: a scan is queued or running; 42 is its number"
@@ -1447,11 +1542,27 @@ class Contract(unittest.TestCase):
         if self.exact():
             self.assertEqual(list(values), list(config))
 
+    def test_upstream_paths_answer_differently_while_autopid_is_off(self):
+        # "While autopid is off these two do not answer like that"
+        self.given("autopid_off")
+        self.wait(30)
+        answer = self.get("/autopid_data")
+        self.assertEqual((answer.status, answer.text), (200, '{"error":"No data available"}'))
+        answer = self.get("/load_car_config")
+        self.assertEqual((answer.status, answer.header("Content-Type")), (500, "text/html"))
+        # The 500 comes from a handler, the connection is kept after it
+        sock = self.connection.sock
+        self.assertIsNotNone(sock)
+        self.get("/api/state")
+        self.assertIs(self.connection.sock, sock, "the connection was ended after the 500")
+
     def test_load_car_config_works_with_the_ignition_off(self):
         # "also with the ignition off"
         self.given("ignition_off")
         self.wait(30)
-        self.assertEqual(len(self.get("/load_car_config").json()), 35)
+        answer = self.get("/load_car_config")
+        self.assertEqual(answer.status, 200)
+        self.assertEqual(len(answer.json()), 35)
 
     def test_one_connection_serves_many_requests(self):
         # "A client should use one connection"
@@ -1459,7 +1570,7 @@ class Contract(unittest.TestCase):
         self.get("/api/state")
         socket = self.connection.sock
         self.assertIsNotNone(socket, "the connection was closed after the first request")
-        # The requests a client uses. After an answer like 404 the firmware may close the connection.
+        # The requests a client uses. After an answer like 404 the firmware closes the connection.
         for target in ("/api/state", "/api/dtc/result", "/autopid_data", "/load_car_config", "/api/state"):
             self.get(target)
             self.assertIs(self.connection.sock, socket, "the connection was closed after %s" % target)
@@ -1469,16 +1580,36 @@ class Contract(unittest.TestCase):
         self.assertEqual(self.get("/api/nothing").status, 404)
 
     def test_everything_else_is_404(self):
+        # "404 for a path it does not know", with every method. The mock does not know the paths of the
+        # web interface.
         self.given("codes")
         for method, target in (("GET", "/"), ("GET", "/api"), ("GET", "/api/"), ("GET", "/api/state/"),
                                ("GET", "/api/dtc/result/"), ("GET", "/api/dtc/results"), ("GET", "/API/STATE"),
                                ("GET", "/check_status"), ("GET", "/load_config"), ("GET", "/scan_available_pids"),
-                               ("POST", "/api/state"), ("POST", "/api/dtc/result"), ("POST", "/autopid_data"),
-                               ("PUT", "/api/dtc?action=read"), ("DELETE", "/api/dtc/result"),
-                               ("PATCH", "/api/dtc?action=read"), ("HEAD", "/api/state"), ("HEAD", "/"),
+                               ("POST", "/api/nothing"), ("POST", "/api/dtc/"), ("PUT", "/api/dtcs?action=read"),
+                               ("DELETE", "/api/dtc/results"), ("HEAD", "/"), ("OPTIONS", "/api")):
+            with self.subTest(method=method, target=target):
+                answer = self.request(method, target, DTC_HEADER)
+                self.assertEqual((answer.status, answer.header("Content-Type")), (404, "text/html"))
+                if method != "HEAD":
+                    self.assertEqual(answer.text, "Nothing matches the given URI")
+        self.assertEqual(self.dtc(), IDLE)
+
+    def test_known_path_with_another_method_is_405(self):
+        # "405 with the text Specified method is invalid for this resource for a known path with another
+        # method (also HEAD ...)"
+        self.given("codes")
+        for method, target in (("POST", "/api/state"), ("POST", "/api/dtc/result"), ("POST", "/autopid_data"),
+                               ("POST", "/load_car_config"), ("PUT", "/api/dtc?action=read"),
+                               ("DELETE", "/api/dtc/result"), ("PATCH", "/api/dtc?action=read"),
+                               ("HEAD", "/api/state"), ("HEAD", "/api/dtc?action=read"),
                                ("OPTIONS", "/api/state"), ("OPTIONS", "/api/dtc?action=read")):
             with self.subTest(method=method, target=target):
-                self.assertEqual(self.request(method, target, DTC_HEADER).status, 404)
+                answer = self.request(method, target, DTC_HEADER)
+                self.assertEqual((answer.status, answer.header("Content-Type")), (405, "text/html"))
+                # http.client does not read the body of an answer to HEAD
+                if method != "HEAD":
+                    self.assertEqual(answer.text, "Specified method is invalid for this resource")
         self.assertEqual(self.dtc(), IDLE)
 
     def test_get_does_not_start_a_scan(self):
@@ -1486,8 +1617,35 @@ class Contract(unittest.TestCase):
         self.given(needs="read")
         before = self.dtc()
         answer = self.get("/api/dtc?action=read", headers=DTC_HEADER)
-        self.assertIn(answer.status, (404, 405))
+        self.assertEqual(answer.status, 405)
         self.assertEqual(self.kept(self.dtc()), self.kept(before))
+
+    def test_connection_is_ended_after_404(self):
+        # "After an answer of the HTTP server itself it always closes the connection, without saying so
+        # in a header"
+        self.given()
+        answer = self.request("GET", "/api/nothing", keep=True)
+        self.assertEqual((answer.status, answer.header("Connection")), (404, None))
+        self.assertTrue(self.connection_has_ended(), "a second request over the connection was answered after the 404")
+
+    def test_connection_is_ended_after_405(self):
+        self.given(needs="read")
+        for method, target in (("POST", "/api/state"), ("PUT", "/api/dtc?action=read"), ("DELETE", "/api/dtc/result"),
+                               ("PATCH", "/api/state"), ("OPTIONS", "/api/state")):
+            with self.subTest(method=method):
+                answer = self.request(method, target, keep=True)
+                self.assertEqual((answer.status, answer.header("Connection")), (405, None))
+                self.assertTrue(self.connection_has_ended(),
+                                "a second request over the connection was answered after the 405")
+
+    def test_connection_is_kept_after_an_answer_of_the_api(self):
+        # Only the answers of the HTTP server itself end the connection, not the refusals of the API
+        self.given(needs="read")
+        self.assertEqual(self.post("/api/dtc?action=nothing").status, 400)
+        sock = self.connection.sock
+        self.assertIsNotNone(sock, "the connection was ended after the 400")
+        self.get("/api/state")
+        self.assertIs(self.connection.sock, sock, "the connection was ended after the 400")
 
 
 # ------------------------------------------------------------------------------------------------
@@ -1566,12 +1724,15 @@ FAULT_FAILS = {
         "test_answers_to_post_are_not_cached",
         "test_forbidden_is_decided_before_bad_request",
         "test_forbidden_is_decided_before_not_ready",
+        "test_not_ready_while_due_to_sleep_has_its_place_in_the_order",
         "test_post_with_another_header_value_is_forbidden",
         "test_post_without_the_header_is_forbidden",
+        "test_query_longer_than_63_bytes_is_a_bad_request",
         "test_refusals_before_the_rules_carry_the_number_0",
     ),
     "host_not_checked": (
         "test_forbidden_is_decided_before_bad_request",
+        "test_not_ready_while_due_to_sleep_has_its_place_in_the_order",
         "test_post_with_a_foreign_host_is_forbidden",
         "test_refusals_before_the_rules_carry_the_number_0",
     ),
@@ -1596,18 +1757,28 @@ FAULT_FAILS = {
 BAD_REQUEST_CHECK = """        if action not in ("read", "clear") or (action == "clear" and seq is None):
             return self._json(400, body_json("bad_request", 0))
 """
-NOT_READY_CHECK = """        if self.autopid != "run":
+NOT_READY_CHECK = """        # dtc_api_ready() in main/dtc_api.c: the task is in its loop and the adapter is not due to sleep
+        if self.autopid != "run" or self._sleep_in_s(now) == 0:
             return self._json(503, body_json("not_ready", 0))
 """
+NOT_READY_IF = 'self.autopid != "run" or self._sleep_in_s(now) == 0'
 TOO_OLD_CHECK = """        if not read_finished or elapsed(now_ms, self._ended_ms) > CLEAR_MAX_AGE_MS:
             return "read_required"
 """
 STALE_CHECK = """        if seq != self.seq and "clear_ignores_seq" not in self.faults:
             return "stale_seq"
 """
-NOT_FOUND = 'return 404, [("Content-Type", "text/html")], b"Nothing matches the given URI"'
+SERVER_ANSWER = 'return status, [("Content-Type", "text/html")], text'
+NOT_FOUND = 'NOT_FOUND = (404, b"Nothing matches the given URI")'
+NOT_ALLOWED = 'NOT_ALLOWED = (405, b"Specified method is invalid for this resource")'
+OTHER_METHOD = "return self._server_answer(NOT_ALLOWED if path in KNOWN_PATHS else NOT_FOUND)"
+ENDS_CONNECTION = "ENDS_CONNECTION = (404, 405)"
+ORDER_OF_CHECKS = "        # API.md: forbidden, bad_request, not_ready, then the rules of the scan state\n"
+LONG_QUERY = '        if len(query) > QUERY_MAX_BYTES:\n            query = ""\n'
+MQTT_REFUSED = 'if self.autopid == "off" or self._sleep_in_s(now) == 0:'
+WRITE = '        self.wfile.write("\\r\\n".join(head).encode("iso-8859-1") + body)\n'
 JSON_HEADERS = '        headers = [("Content-Type", "application/json"), ("Cache-Control", "no-store")]'
-NO_RESULT = 'return 204, [("Cache-Control", "no-store")], b""'
+NO_RESULT = 'return 204, [("Content-Type", "text/html"), ("Cache-Control", "no-store")], b""'
 STATE_ANSWER = "return self._json(200, state_json(values, dtc, self.faults))"
 FORBIDDEN_HEADER = """            return self._json(403, body_json("forbidden", 0))
         if "host_not_checked"""
@@ -1622,7 +1793,9 @@ FAULT_ARGUMENT = 'parser.add_argument("--fault", action="append", default=[], ch
 NEW_ADAPTER = "adapter = Adapter(arguments.scenario, arguments.fault, clock=RealClock(arguments.speed))"
 POLL = 'self._poll_from = now if self.autopid == "run" and self._scan is None else None'
 UNCHANGED_POLLING = "            if (self.ignition, self.autopid) == before:"
-SLEEP = "return max(0, self.sleep_after_s - (now - self._off_since) // 1000)"
+SLEEP = "return max(0, (self.sleep_after_s * 1000 - (now - self._off_since) - 1) // 1000)"
+SLEEP_REFUSED = '        if self._sleep_in_s(now) == 0:\n            return self._json(503, body_json("not_ready", 0))\n'
+RX_AGE = "(now - last_answer) % 2 ** 32"
 ERROR_END = "        self._rules.error(reason, self._since_boot(now))"
 RESTART = "        self._result = None\n        self._scan = None\n        self._events = []\n"
 DROP_BODY = '        if re.fullmatch(r"[0-9]{1,9}", length) is not None:'
@@ -1648,11 +1821,12 @@ CHANGES = [
     ("answers_cached", JSON_HEADERS, '        headers = [("Content-Type", "application/json")]',
      ("test_state_and_result_are_not_cached", "test_stored_result_is_not_cached",
       "test_answers_to_post_are_not_cached", "test_not_ready_is_not_cached")),
-    ("empty_result_cached", NO_RESULT, 'return 204, [], b""', ("test_state_and_result_are_not_cached",)),
+    ("empty_result_cached", NO_RESULT, 'return 204, [("Content-Type", "text/html")], b""',
+     ("test_state_and_result_are_not_cached",)),
     ("cors_for_everyone", JSON_HEADERS, JSON_HEADERS[:-1] + ', ("Access-Control-Allow-Origin", "*")]',
      ("test_no_cors_headers_are_sent",)),
-    ("preflight_answered", NOT_FOUND,
-     NOT_FOUND.replace('"text/html")]', '"text/html"), ("Access-Control-Allow-Headers", "x-wican-dtc")]'),
+    ("preflight_answered", SERVER_ANSWER,
+     SERVER_ANSWER.replace('"text/html")]', '"text/html"), ("Access-Control-Allow-Headers", "x-wican-dtc")]'),
      ("test_preflight_for_the_header_is_not_answered",)),
     ("numbers_not_limited", 'return "%d" % min(value, NUMBER_MAX)', 'return "%d" % value',
      ("test_numbers_are_integers_below_2_31", "Fixtures.test_states_of_the_firmware_tests")),
@@ -1710,8 +1884,12 @@ CHANGES = [
     ("values_move_with_the_time", MOVE, "value += MOVING[name] * (now // 400 % 5 - 2)",
      ("test_values_change_only_when_pass_moved",)),
     ("values_stand_still", MOVE, "value += 0", ("test_values_change_only_when_pass_moved",)),
-    ("rx_age_stays_0", '"rx_age_ms": -1 if last_answer is None else now - last_answer,',
+    ("rx_age_stays_0", '"rx_age_ms": -1 if last_answer is None else %s,' % RX_AGE,
      '"rx_age_ms": -1 if last_answer is None else 0,', ("test_rx_age_ms_counts_from_the_last_answer",)),
+    # As the mock was before it kept the time of the last answer in 32 bits like the firmware
+    ("rx_age_counts_on_after_2_32_ms", RX_AGE, "now - last_answer", ("test_rx_age_ms_starts_again_at_0_after_2_32_ms",)),
+    ("rx_age_starts_again_after_2_31_ms", RX_AGE, RX_AGE.replace("32", "31"),
+     ("test_rx_age_ms_is_at_most_2_31_minus_1", "test_rx_age_ms_starts_again_at_0_after_2_32_ms")),
     ("none_is_minus_2", 'return "-1" if value < 0 else number(value)', 'return "-2" if value < 0 else number(value)',
      ("test_rx_age_ms_is_minus_1_or_a_time", "test_sleep_in_s_is_minus_1_or_a_number_of_seconds",
       "test_sleep_in_s_is_minus_1_while_not_counting_down")),
@@ -1723,8 +1901,7 @@ CHANGES = [
      ("test_batt_v_is_the_battery_voltage",)),
     ("volts_not_measured_are_0", 'return "-1" if millivolts < 0 else', 'return "0.0" if millivolts < 0 else',
      ("test_batt_v_is_minus_1_if_not_measured",)),
-    ("sleep_does_not_count", "return max(0, self.sleep_after_s - (now - self._off_since) // 1000)",
-     "return self.sleep_after_s", ("test_sleep_in_s_counts_down",)),
+    ("sleep_does_not_count", SLEEP, "return self.sleep_after_s", ("test_sleep_in_s_counts_down",)),
     ("heap_min_above_heap", '"heap_min": 48000,', '"heap_min": 68000,', ("test_heap_min_is_not_above_heap",)),
 
     # dtc
@@ -1794,9 +1971,38 @@ CHANGES = [
     ("not_ready_before_bad_request", BAD_REQUEST_CHECK + "\n" + NOT_READY_CHECK, NOT_READY_CHECK + "\n" + BAD_REQUEST_CHECK,
      ("test_bad_request_is_decided_before_not_ready",)),
     ("post_while_not_ready", NOT_READY_CHECK + "\n        reason, number",
-     NOT_READY_CHECK.replace('self.autopid != "run"', "False") + "\n        reason, number",
+     NOT_READY_CHECK.replace(NOT_READY_IF, "False") + "\n        reason, number",
      ("test_not_ready_while_autopid_is_starting", "test_not_ready_while_autopid_is_off",
-      "test_not_ready_is_decided_before_the_rules_of_the_scan", "test_not_ready_is_not_cached")),
+      "test_not_ready_is_decided_before_the_rules_of_the_scan", "test_not_ready_is_not_cached",
+      "test_not_ready_once_the_adapter_is_due_to_sleep")),
+    # As the mock was before the firmware refused requests while it is due to sleep
+    ("request_accepted_while_due_to_sleep", NOT_READY_IF, 'self.autopid != "run"',
+     ("test_not_ready_once_the_adapter_is_due_to_sleep",)),
+    ("not_ready_at_a_countdown_of_1", NOT_READY_IF, NOT_READY_IF.replace("== 0", "in (0, 1)"),
+     ("test_not_ready_once_the_adapter_is_due_to_sleep",)),
+    ("not_ready_without_a_countdown", NOT_READY_IF, NOT_READY_IF.replace("== 0", "<= 0"),
+     ("test_not_ready_once_the_adapter_is_due_to_sleep",)),
+    # The place of that refusal among the others, as main/dtc_http.c has it: after forbidden and
+    # bad_request, before busy. The adapter stays awake for a scan, so it is asked while one runs.
+    ("not_ready_to_sleep_before_forbidden", ORDER_OF_CHECKS, ORDER_OF_CHECKS + SLEEP_REFUSED,
+     ("test_not_ready_while_due_to_sleep_has_its_place_in_the_order",)),
+    ("not_ready_to_sleep_before_bad_request", LONG_QUERY, SLEEP_REFUSED + LONG_QUERY,
+     ("test_not_ready_while_due_to_sleep_has_its_place_in_the_order",)),
+    ("busy_before_not_ready_to_sleep", NOT_READY_IF,
+     'self.autopid != "run" or (self._sleep_in_s(now) == 0 and not self._rules.busy())',
+     ("test_not_ready_while_due_to_sleep_has_its_place_in_the_order",)),
+    # As the mock was before it refused a query the firmware does not read
+    ("long_query_accepted", LONG_QUERY, "", ("test_query_longer_than_63_bytes_is_a_bad_request",)),
+    ("query_of_64_bytes_accepted", "QUERY_MAX_BYTES = 63", "QUERY_MAX_BYTES = 64",
+     ("test_query_longer_than_63_bytes_is_a_bad_request",)),
+    ("query_of_63_bytes_refused", "QUERY_MAX_BYTES = 63", "QUERY_MAX_BYTES = 62",
+     ("test_query_longer_than_63_bytes_is_a_bad_request",)),
+    ("long_query_refused_before_forbidden", ORDER_OF_CHECKS,
+     ORDER_OF_CHECKS + LONG_QUERY.replace('query = ""', 'return self._json(400, body_json("bad_request", 0))'),
+     ("test_query_longer_than_63_bytes_is_a_bad_request",)),
+    ("long_query_of_a_clear_accepted", LONG_QUERY,
+     LONG_QUERY.replace("QUERY_MAX_BYTES:", 'QUERY_MAX_BYTES and "clear" not in query:'),
+     ("test_query_of_a_clear_longer_than_63_bytes_is_a_bad_request",)),
     ("empty_list_is_cleared", '        if self.count == 0:\n            return "nothing_to_clear"',
      '        if False:\n            return "nothing_to_clear"',
      ("test_clear_of_a_read_without_trouble_codes_is_refused",)),
@@ -1854,22 +2060,55 @@ CHANGES = [
      ("test_autopid_data_is_a_flat_object", "Fixtures.test_values_with_the_ignition_on")),
     ("values_with_one_decimal", 'text = "%.2f" % value', 'text = "%.1f" % value',
      ("Fixtures.test_values_with_the_ignition_on",)),
-    ("values_without_ignition", 'if not valid or self.autopid == "off":', 'if self.autopid == "off":',
+    ("values_without_ignition", '        if not valid:\n            return "{}"\n', "",
      ("test_autopid_data_is_empty_while_no_value_is_valid", "test_autopid_data_loses_its_values_with_the_ignition",
       "Fixtures.test_values_with_the_ignition_off")),
+    # As the mock was before it answered the two upstream paths like the firmware while AutoPID is off
+    ("values_empty_without_autopid", "            return NO_DATA\n", '            return "{}"\n',
+     ("test_upstream_paths_answer_differently_while_autopid_is_off",
+      "Scenarios.test_adapter_without_autopid_has_no_profile")),
+    ("profile_empty_without_autopid", "            return self._server_answer(NO_CONFIG)\n",
+     '            return 200, [("Content-Type", "application/json")], b"{}"\n',
+     ("test_upstream_paths_answer_differently_while_autopid_is_off",
+      "Scenarios.test_adapter_without_autopid_has_no_profile")),
+    ("connection_ended_after_the_500", ENDS_CONNECTION, ENDS_CONNECTION.replace("(404, 405)", "(404, 405, 500)"),
+     ("test_upstream_paths_answer_differently_while_autopid_is_off",)),
     ("unit_before_class", '(("class", kind), ("unit", unit))', '(("unit", unit), ("class", kind))',
      ("test_load_car_config_has_class_and_unit_of_every_value", "Fixtures.test_car_config")),
-    ("no_profile_without_ignition", '        if self.autopid == "off":\n            return "{}"\n        config',
-     '        if self.autopid == "off" or not self.ignition:\n            return "{}"\n        config',
+    ("no_profile_without_ignition", '    def _car_config(self):\n        if self.autopid == "off":',
+     '    def _car_config(self):\n        if self.autopid == "off" or not self.ignition:',
      ("test_load_car_config_works_with_the_ignition_off",)),
     ("one_request_per_connection", 'protocol_version = "HTTP/1.1"', 'protocol_version = "HTTP/1.0"',
      ("test_one_connection_serves_many_requests",)),
     ("unknown_path_is_400", NOT_FOUND, NOT_FOUND.replace("404", "400"),
-     ("test_unknown_path_is_404", "test_everything_else_is_404", "test_firmware_without_the_api_answers_404")),
+     ("test_unknown_path_is_404", "test_everything_else_is_404", "test_firmware_without_the_api_answers_404",
+      "test_connection_is_ended_after_404")),
+    ("unknown_path_with_another_text", NOT_FOUND, NOT_FOUND.replace("Nothing matches", "Nobody knows"),
+     ("test_everything_else_is_404", "Scenarios.test_head_is_answered_like_any_other_method")),
     ("post_to_state", 'if method == "GET" and path == "/api/state":', 'if path == "/api/state":',
-     ("test_everything_else_is_404",)),
+     ("test_known_path_with_another_method_is_405", "test_connection_is_ended_after_405")),
     ("options_not_answered", "do_PATCH = do_OPTIONS = do_HEAD = _answer", "do_PATCH = do_HEAD = _answer",
-     ("test_everything_else_is_404",)),
+     ("test_everything_else_is_404", "test_known_path_with_another_method_is_405")),
+    # As the mock was before it answered like the HTTP server of the firmware: 404 for a known path with
+    # another method, the connection kept after it
+    ("known_path_with_another_method_is_404", OTHER_METHOD, "return self._server_answer(NOT_FOUND)",
+     ("test_known_path_with_another_method_is_405", "test_get_does_not_start_a_scan",
+      "test_connection_is_ended_after_405")),
+    ("unknown_path_with_another_method_is_405", OTHER_METHOD,
+     'return self._server_answer(NOT_FOUND if method == "GET" else NOT_ALLOWED)', ("test_everything_else_is_404",)),
+    ("other_method_with_another_text", NOT_ALLOWED, NOT_ALLOWED.replace("Specified method is invalid", "Not allowed"),
+     ("test_known_path_with_another_method_is_405", "Scenarios.test_head_is_answered_like_any_other_method")),
+    ("connection_kept_after_404_and_405", "        if status in ENDS_CONNECTION:\n            self.close_connection = True\n", "",
+     ("test_connection_is_ended_after_404", "test_connection_is_ended_after_405")),
+    ("connection_kept_after_404", ENDS_CONNECTION, ENDS_CONNECTION.replace("(404, 405)", "(405,)"),
+     ("test_connection_is_ended_after_404",)),
+    ("connection_kept_after_405", ENDS_CONNECTION, ENDS_CONNECTION.replace("(404, 405)", "(404,)"),
+     ("test_connection_is_ended_after_405",)),
+    ("connection_kept_after_405_of_put_and_others", "        if status in ENDS_CONNECTION:",
+     '        if status in ENDS_CONNECTION and self.command in ("GET", "POST", "HEAD"):',
+     ("test_connection_is_ended_after_405",)),
+    ("connection_ended_after_a_refusal", ENDS_CONNECTION, ENDS_CONNECTION.replace("(404, 405)", "(400, 404, 405)"),
+     ("test_connection_is_kept_after_an_answer_of_the_api",)),
 
     # All answers, again
     ("cors_on_refusals", FORBIDDEN_HEADER, FORBIDDEN_HEADER.replace('("forbidden", 0))', '("forbidden", 0), %s)' % CORS),
@@ -1884,8 +2123,8 @@ CHANGES = [
     # POST /api/dtc, again: the limits of main/dtc_api.c
     ("forbidden_with_the_number", FORBIDDEN_HEADER, FORBIDDEN_HEADER.replace('("forbidden", 0)', '("forbidden", self._rules.seq)'),
      ("test_refusals_before_the_rules_carry_the_number_0",)),
-    ("foreign_host_with_the_number", '            return self._json(403, body_json("forbidden", 0))\n\n        action',
-     '            return self._json(403, body_json("forbidden", self._rules.seq))\n\n        action',
+    ("foreign_host_with_the_number", '            return self._json(403, body_json("forbidden", 0))\n\n        # One',
+     '            return self._json(403, body_json("forbidden", self._rules.seq))\n\n        # One',
      ("test_refusals_before_the_rules_carry_the_number_0",)),
     ("bad_request_with_the_number", 'return self._json(400, body_json("bad_request", 0))',
      'return self._json(400, body_json("bad_request", self._rules.seq))', ("test_refusals_before_the_rules_carry_the_number_0",)),
@@ -1964,6 +2203,13 @@ CHANGES = [
      ("Scenarios.test_values_are_valid_after_the_first_complete_pass",)),
     ("sleep_counts_from_boot", "                self._valid = False\n                self._off_since = now",
      "                self._valid = False", ("Scenarios.test_sleep_countdown_starts_when_the_ignition_goes_off",)),
+    # As the mock was before it cut the countdown down to whole seconds like the firmware
+    ("sleep_rounded_up", SLEEP, "return max(0, self.sleep_after_s - (now - self._off_since) // 1000)",
+     ("test_not_ready_once_the_adapter_is_due_to_sleep", "test_not_ready_while_due_to_sleep_has_its_place_in_the_order",
+      "Scenarios.test_sleep_countdown_starts_when_the_ignition_goes_off",
+      "Scenarios.test_command_over_mqtt_is_refused_when_nothing_can_be_started")),
+    ("sleep_shows_the_full_time_at_first", SLEEP, SLEEP.replace(" - 1) // 1000", ") // 1000"),
+     ("Scenarios.test_sleep_countdown_starts_when_the_ignition_goes_off",)),
     ("sleep_goes_below_0", SLEEP, SLEEP.replace("max(0, ", "(") , ("Scenarios.test_sleep_countdown_starts_when_the_ignition_goes_off",)),
     ("sleep_with_the_ignition_on", "if self.sleep_after_s is None or self.ignition:", "if self.sleep_after_s is None:",
      ("Scenarios.test_sleep_countdown_starts_when_the_ignition_goes_off", "Scenarios.test_other_settings_leave_the_values_alone")),
@@ -2003,8 +2249,20 @@ CHANGES = [
      ("Scenarios.test_settings_read_at_power_on_cannot_be_set_later",)),
 
     # The HTTP server of the mock
-    ("head_with_a_body", '        if self.command == "HEAD":\n            body = b""\n', "",
-     ("Scenarios.test_head_is_answered_without_a_body",)),
+    # As the mock was before: HEAD answered without a body, the empty 204 without a type, commands over MQTT
+    # taken although nothing can be started
+    ("head_without_a_body", WRITE, WRITE.replace("+ body)", '+ (b"" if self.command == "HEAD" else body))'),
+     ("Scenarios.test_head_is_answered_like_any_other_method",)),
+    ("empty_result_without_a_type", NO_RESULT, 'return 204, [("Cache-Control", "no-store")], b""',
+     ("Scenarios.test_empty_result_names_the_type_of_the_firmware",)),
+    ("mqtt_command_while_due_to_sleep", MQTT_REFUSED, 'if self.autopid == "off":',
+     ("Scenarios.test_command_over_mqtt_is_refused_when_nothing_can_be_started",)),
+    ("mqtt_command_without_autopid", MQTT_REFUSED, "if self._sleep_in_s(now) == 0:",
+     ("Scenarios.test_command_over_mqtt_is_refused_when_nothing_can_be_started",)),
+    ("mqtt_command_refused_while_starting", MQTT_REFUSED, MQTT_REFUSED.replace('== "off"', '!= "run"'),
+     ("Scenarios.test_command_over_mqtt_is_refused_when_nothing_can_be_started",)),
+    ("mqtt_scenario_ignores_the_refusal", "        self._mqtt(False, now)\n", "        self._request(False, False, 0, now)\n",
+     ("Scenarios.test_command_over_mqtt_is_refused_when_nothing_can_be_started",)),
     ("server_header_sent", 'head = ["%s %d %s" % (self.protocol_version, status, REASONS[status])]',
      'head = ["%s %d %s" % (self.protocol_version, status, REASONS[status]), "Server: mock"]',
      ("Scenarios.test_answer_has_the_headers_of_the_firmware_and_no_others",)),
@@ -2632,7 +2890,8 @@ class Scenarios(unittest.TestCase):
         self.assertEqual((state["dtc"]["reason"], state["pass"]), ("expired", 20))
 
     def test_scan_is_running_without_a_number_of_control_units_while_it_prepares(self):
-        # As the firmware: step 0 and the number of control units are reported after the adapter is prepared
+        # Stricter than the firmware, which never shows a running scan without the number of control units:
+        # API.md allows a total of 0, and a client must not divide by it
         adapter = self.MOCK.Adapter("codes", seq_seed=7)
         self.read(adapter)
         adapter.clock.advance(0.299)
@@ -2649,9 +2908,15 @@ class Scenarios(unittest.TestCase):
         adapter.clock.advance(100)
         self.assertEqual(self.state(adapter)["sleep_in_s"], -1)
         adapter.set(ignition=False)
-        self.assertEqual(self.state(adapter)["sleep_in_s"], 180)
+        # The rest is cut down to whole seconds as in adc_task() of main/sleep_mode.c: never the full 180,
+        # and 0 for the whole last second
+        self.assertEqual(self.state(adapter)["sleep_in_s"], 179)
         adapter.clock.advance(10)
-        self.assertEqual(self.state(adapter)["sleep_in_s"], 170)
+        self.assertEqual(self.state(adapter)["sleep_in_s"], 169)
+        adapter.clock.advance(168.999)
+        self.assertEqual(self.state(adapter)["sleep_in_s"], 1)
+        adapter.clock.advance(0.001)
+        self.assertEqual(self.state(adapter)["sleep_in_s"], 0)
         # The mock does not go to sleep
         adapter.clock.advance(1000)
         self.assertEqual(self.state(adapter)["sleep_in_s"], 0)
@@ -2813,14 +3078,50 @@ class Scenarios(unittest.TestCase):
         finally:
             server.close()
 
-    def test_head_is_answered_without_a_body(self):
-        # Not seen through http.client: it drops what it has read ahead with the head of an answer
+    def test_head_is_answered_like_any_other_method(self):
+        # The HTTP server of the firmware has no handler for HEAD: 404 or 405, with the text as a body.
+        # Not seen through http.client: it drops what it has read ahead with the head of an answer.
         server = self.MOCK.Server(self.MOCK.Adapter("codes")).start()
         try:
             answer = self.raw(server, b"HEAD /api/nothing HTTP/1.1\r\nConnection: close\r\n\r\n")
-            self.assertEqual(answer, b"HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nContent-Length: 29\r\n\r\n")
+            self.assertEqual(answer, b"HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nContent-Length: 29\r\n\r\n"
+                                     b"Nothing matches the given URI")
+            answer = self.raw(server, b"HEAD /api/state HTTP/1.1\r\nConnection: close\r\n\r\n")
+            self.assertEqual(answer, b"HTTP/1.1 405 Method Not Allowed\r\nContent-Type: text/html\r\n"
+                                     b"Content-Length: 45\r\n\r\nSpecified method is invalid for this resource")
         finally:
             server.close()
+
+    def test_empty_result_names_the_type_of_the_firmware(self):
+        # result_handler() in main/dtc_http.c sets no type for the 204, the HTTP server then names its default
+        adapter = self.MOCK.Adapter("codes")
+        self.assertEqual(adapter.handle("GET", "/api/dtc/result", self.HEADERS),
+                         (204, [("Content-Type", "text/html"), ("Cache-Control", "no-store")], b""))
+
+    def test_command_over_mqtt_is_refused_when_nothing_can_be_started(self):
+        # autopid_request_dtc() in main/autopid.c: not without the AutoPID task, not once the adapter is due to sleep
+        adapter = self.MOCK.Adapter("autopid_off", seq_seed=7)
+        self.assertEqual((adapter.mqtt_command(), adapter.mqtt_command(clear=True)), (("not_ready", 0), ("not_ready", 0)))
+        self.assertEqual(self.state(adapter)["dtc"], dict(IDLE, supported=False))
+        # A task that has not reached its loop yet takes the command, as before
+        self.assertEqual(self.MOCK.Adapter("starting", seq_seed=7).mqtt_command(), (None, 7))
+
+        adapter = self.MOCK.Adapter("codes", seq_seed=7, sleep_after_s=180)
+        adapter.set(ignition=False)
+        adapter.clock.advance(178)
+        self.assertEqual(adapter.mqtt_command(), (None, 7))
+        adapter.clock.advance(1)
+        self.assertEqual(self.state(adapter)["sleep_in_s"], 0)
+        self.assertEqual((adapter.mqtt_command(), adapter.mqtt_command(clear=True)), (("not_ready", 0), ("not_ready", 0)))
+        self.assertEqual(self.state(adapter)["dtc"]["seq"], 7)
+
+        # The scenario in which somebody sends read_dtc again and again
+        adapter = self.MOCK.Adapter("mqtt_scan", seq_seed=7, sleep_after_s=30)
+        adapter.set(ignition=False)
+        adapter.clock.advance(10)
+        self.assertEqual(self.state(adapter)["dtc"]["seq"], 7)
+        adapter.clock.advance(120)
+        self.assertEqual(self.state(adapter)["dtc"]["seq"], 7, "a command was taken while sleep_in_s was 0")
 
     def test_request_with_an_odd_content_length_is_answered(self):
         # "\xb2" is a digit for str.isdigit() and none for int(). A body that is announced and sent is dropped.
@@ -2849,7 +3150,11 @@ class Scenarios(unittest.TestCase):
         adapter.clock.advance(100)
         state = self.state(adapter)
         self.assertEqual((state["pids"], state["ecu"], state["pass"], state["dtc"]["supported"]), (0, "offline", 0, False))
-        self.assertEqual((self.text(adapter, "/autopid_data"), self.text(adapter, "/load_car_config")), ("{}", "{}"))
+        # autopid_data_handler() and load_car_config_handler() in main/config_server.c
+        self.assertEqual(adapter.handle("GET", "/autopid_data", self.HEADERS),
+                         (200, [("Content-Type", "application/json")], b'{"error":"No data available"}'))
+        self.assertEqual(adapter.handle("GET", "/load_car_config", self.HEADERS),
+                         (500, [("Content-Type", "text/html")], b"Failed to generate JSON"))
 
     def test_control_units_do_not_answer_once_the_ignition_goes_off_during_a_scan(self):
         adapter = self.MOCK.Adapter("codes")
@@ -3151,7 +3456,7 @@ class AdapterMode(unittest.TestCase):
         "test_sleep_in_s_is_minus_1_or_a_number_of_seconds", "test_heap_min_is_not_above_heap",
         "test_dtc_is_consistent", "test_result_belongs_to_result_seq", "test_autopid_data_is_a_flat_object",
         "test_load_car_config_has_class_and_unit_of_every_value", "test_one_connection_serves_many_requests",
-        "test_unknown_path_is_404",
+        "test_unknown_path_is_404", "test_connection_is_ended_after_404",
     )
 
     def against_mock(self, case=Contract, names=None, allow_dtc=False, allow_clear=False):
@@ -3259,7 +3564,8 @@ class AdapterMode(unittest.TestCase):
         self.assertEqual(len(requests), 3)
 
     def test_connection_the_adapter_ended_is_opened_again(self):
-        # An adapter that ends the connection after every answer and does not say so
+        # API.md: "The adapter may close a connection at any time". An adapter that ends the connection
+        # after every answer and does not say so; after a 404 the test ends it itself, so the answers are 200.
         listener = socket.create_server(("127.0.0.1", 0))
         asked = []
 
@@ -3269,7 +3575,7 @@ class AdapterMode(unittest.TestCase):
                     connection, _ = listener.accept()
                     with connection:
                         asked.append(connection.recv(65536).split(b"\r\n")[0])
-                        connection.sendall(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                        connection.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
             except OSError:
                 # The listener was closed before the second connection came
                 pass
@@ -3277,10 +3583,10 @@ class AdapterMode(unittest.TestCase):
         class Twice(Contract):
             def test_two_requests(self):
                 self.given()
-                self.assertEqual(self.get("/api/nothing").status, 404)
+                self.assertEqual(self.get("/api/state").brief(), (200, "{}"))
                 # Until the end of the connection has arrived
                 self.assertTrue(select.select([self.connection.sock], [], [], 10)[0])
-                self.assertEqual(self.get("/api/nothing").status, 404)
+                self.assertEqual(self.get("/api/state").brief(), (200, "{}"))
 
         server = threading.Thread(target=serve, daemon=True)
         server.start()
@@ -3288,7 +3594,7 @@ class AdapterMode(unittest.TestCase):
             failed, errors, _ = run_tests(Twice, ["test_two_requests"], ADAPTER="127.0.0.1:%d" % listener.getsockname()[1])
             self.assertEqual((failed, errors), ([], []))
             server.join(10)
-            self.assertEqual(asked, [b"GET /api/nothing HTTP/1.1"] * 2)
+            self.assertEqual(asked, [b"GET /api/state HTTP/1.1"] * 2)
         finally:
             listener.close()
 

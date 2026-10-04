@@ -1979,30 +1979,76 @@ static void test_defer_sleep(void)
 {
 	int bit;
 
-	check(DTC_API_SLEEP_DEFER_MS == 60000u, "sleep waits for a scan for 60 s at most");
-	check(dtc_api_defer_sleep(true, 0), "sleep waits while a scan is busy");
+	check(DTC_API_SLEEP_DEFER_MS == 150000u, "sleep waits for a scan for 150 s at most");
+	// A scan accepted just before sleep was due holds for DTC_SCAN_HOLD_MS, its result for DTC_RESULT_HOLD_MS
+	check(DTC_API_SLEEP_DEFER_MS >= DTC_SCAN_HOLD_MS + DTC_RESULT_HOLD_MS + 10000u,
+	      "the 150 s do not cut a scan that was accepted before sleep was due, nor the 10 s for its result");
+	check(dtc_api_defer_sleep(true, 0), "sleep waits while a scan holds the adapter awake");
 	check(dtc_api_defer_sleep(true, 1), "sleep waits 1 ms after it was due");
-	check(dtc_api_defer_sleep(true, 59999), "sleep waits 59.999 s after it was due");
-	check(dtc_api_defer_sleep(true, 60000), "sleep waits exactly 60 s after it was due");
-	check(!dtc_api_defer_sleep(true, 60001), "sleep does not wait 60.001 s after it was due, although a scan is busy");
-	check(!dtc_api_defer_sleep(true, 120000), "sleep does not wait 120 s after it was due");
+	check(dtc_api_defer_sleep(true, 60001), "sleep waits 60.001 s after it was due");
+	check(dtc_api_defer_sleep(true, 149999), "sleep waits 149.999 s after it was due");
+	check(dtc_api_defer_sleep(true, 150000), "sleep waits exactly 150 s after it was due");
+	check(!dtc_api_defer_sleep(true, 150001), "sleep does not wait 150.001 s after it was due, although a scan holds");
+	check(!dtc_api_defer_sleep(true, 300000), "sleep does not wait 300 s after it was due");
 	check(!dtc_api_defer_sleep(true, 4294967296ull), "sleep does not wait 2^32 ms after it was due");
 	check(!dtc_api_defer_sleep(true, 4294967296ull + 5000), "sleep does not wait 2^32 ms + 5 s after it was due");
 	check(!dtc_api_defer_sleep(true, UINT64_MAX), "sleep does not wait at the end of the clock");
 	check(!dtc_api_defer_sleep(false, 0), "sleep does not wait without a scan");
 	check(!dtc_api_defer_sleep(false, 1), "sleep does not wait without a scan, 1 ms after it was due");
-	check(!dtc_api_defer_sleep(false, 60000), "sleep does not wait without a scan, 60 s after it was due");
-	check(!dtc_api_defer_sleep(false, 60001), "sleep does not wait without a scan, 60.001 s after it was due");
+	check(!dtc_api_defer_sleep(false, 150000), "sleep does not wait without a scan, 150 s after it was due");
+	check(!dtc_api_defer_sleep(false, 150001), "sleep does not wait without a scan, 150.001 s after it was due");
 
 	// A time that is shortened to its low bits is small again at a power of two
 	sweep_begin();
-	for(bit = 16; bit < 64; bit++)
+	for(bit = 18; bit < 64; bit++)
 	{
 		sweep_count(!dtc_api_defer_sleep(true, 1ull << bit));
-		sweep_count(!dtc_api_defer_sleep(true, (1ull << bit) + 60000u));
+		sweep_count(!dtc_api_defer_sleep(true, (1ull << bit) + 150000u));
 		sweep_count(!dtc_api_defer_sleep(false, 1ull << bit));
 	}
-	check(sweep_end(), "sleep does not wait 2^16 to 2^63 ms after it was due, with and without 60 s more");
+	check(sweep_end(), "sleep does not wait 2^18 to 2^63 ms after it was due, with and without 150 s more");
+}
+
+/* ------------------------------------------------------------------------------------------------ */
+/* Whether a request may be started at all                                                            */
+/* ------------------------------------------------------------------------------------------------ */
+
+static void test_ready(void)
+{
+	int32_t seconds;
+	int bit;
+
+	check(dtc_api_ready(true, -1), "ready: no countdown to sleep (-1), the normal case");
+	check(dtc_api_ready(true, 960), "ready: 16 min until sleep");
+	check(dtc_api_ready(true, 2), "ready: 2 s until sleep");
+	check(dtc_api_ready(true, 1), "ready: 1 s until sleep");
+	check(!dtc_api_ready(true, 0), "not ready: the adapter is due to sleep, a scan started now could be cut off");
+	check(dtc_api_ready(true, INT32_MAX), "ready: the longest countdown");
+	check(dtc_api_ready(true, -2), "ready: every negative countdown means it is not counting");
+	check(dtc_api_ready(true, INT32_MIN), "ready: the most negative countdown");
+	check(!dtc_api_ready(false, -1), "not ready: the AutoPID task cannot take the request");
+	check(!dtc_api_ready(false, 960), "not ready: no task, whatever the countdown says");
+	check(!dtc_api_ready(false, 0), "not ready: no task and due to sleep");
+	check(dtc_api_status(dtc_api_ready(true, 0), DTC_ACCEPTED) == 503 &&
+	      dtc_api_status(dtc_api_ready(false, -1), DTC_ACCEPTED) == 503 &&
+	      dtc_api_status(dtc_api_ready(true, -1), DTC_ACCEPTED) == 202,
+	      "ready: its answer is the one dtc_api_status() turns into 503 or lets pass");
+
+	sweep_begin();
+	for(seconds = -70000; seconds <= 70000; seconds++)
+	{
+		sweep_count(dtc_api_ready(true, seconds) == (seconds != 0));
+		sweep_count(!dtc_api_ready(false, seconds));
+	}
+	// A countdown that is shortened to its low bits is 0 again at a power of two
+	for(bit = 0; bit < 31; bit++)
+	{
+		sweep_count(dtc_api_ready(true, (int32_t)(1u << bit)));
+		sweep_count(dtc_api_ready(true, -(int32_t)(1u << bit)));
+		sweep_count(!dtc_api_ready(false, (int32_t)(1u << bit)));
+	}
+	check(sweep_end(), "ready sweep: every countdown from -70000 to 70000 s and every power of two: not ready at 0 only, "
+	      "never without the task");
 }
 
 int main(void)
@@ -2030,6 +2076,7 @@ int main(void)
 	test_length_sweeps();
 	test_large_buffers();
 	test_defer_sleep();
+	test_ready();
 
 	printf("%s\n", failures ? "FAILED" : "OK");
 	return failures ? 1 : 0;

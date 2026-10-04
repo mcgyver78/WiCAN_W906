@@ -58,6 +58,13 @@ typedef enum
 #define DTC_HTTP_EXPIRY_MS      (20u * 1000u)
 // Sequence numbers stay below 2^31 so that every JSON parser reads them exactly, 0 means "none"
 #define DTC_SEQ_MAX             0x7FFFFFFFu
+// The adapter stays awake for a scan this long after the request was accepted: the 20 s the request may
+// wait, and every request of the longest scan (a clear of 18 control units with entries, 5 requests each)
+// running into its timeout of 1 s
+#define DTC_SCAN_HOLD_MS        (120u * 1000u)
+// ... and this long after the scan ended: the MQTT message has to leave, and an HTTP client that asks once
+// a second has to see the end and fetch the result
+#define DTC_RESULT_HOLD_MS      (10u * 1000u)
 
 typedef struct
 {
@@ -99,6 +106,13 @@ void dtc_state_error(dtc_state_t *s, const char *reason, uint64_t now_ms);
 void dtc_state_done(dtc_state_t *s, uint16_t dtc_count, uint64_t now_ms);
 
 bool dtc_state_busy(const dtc_state_t *s);
+
+// The adapter is due to sleep. Sleep switches CAN and WiFi off and ends in a restart, which drops the
+// result. Returns true while it has to stay awake: a scan is queued or running and was accepted at most
+// DTC_SCAN_HOLD_MS ago, or the last request ended at most DTC_RESULT_HOLD_MS ago (done, error or expired).
+// Both waits are limited by the times of the state itself, a state that got stuck does not keep the
+// adapter awake.
+bool dtc_state_hold_awake(const dtc_state_t *s, uint64_t now_ms);
 
 // Text for a rejection ("busy", "read_required", "stale_seq", "nothing_to_clear"), NULL for DTC_ACCEPTED
 const char *dtc_accept_reason(dtc_accept_t result);

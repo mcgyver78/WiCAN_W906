@@ -138,7 +138,7 @@ static esp_err_t dtc_handler(httpd_req_t *req)
 		return send_answer(req, request.status, request.reason, 0);
 	}
 
-	ready = strcmp(autopid_loop_state(), "run") == 0;
+	ready = dtc_api_ready(strcmp(autopid_loop_state(), "run") == 0, sleep_mode_seconds_to_sleep());
 	if(!ready)
 	{
 		return send_answer(req, dtc_api_status(false, DTC_ACCEPTED), "not_ready", 0);

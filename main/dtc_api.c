@@ -196,6 +196,12 @@ dtc_api_request_t dtc_api_parse_request(const char *header, const char *host, co
 	return request;
 }
 
+bool dtc_api_ready(bool task_ready, int32_t sleep_in_s)
+{
+	// Not "> 0": without a countdown the value is -1, and that is the normal case
+	return task_ready && sleep_in_s != 0;
+}
+
 int dtc_api_status(bool ready, dtc_accept_t result)
 {
 	// API.md: not_ready is decided before the rules of the scan state
@@ -369,7 +375,7 @@ int dtc_api_state_json(const dtc_api_status_t *status, const char *dtc_json, cha
 
 /* Sleep ------------------------------------------------------------------------------------------- */
 
-bool dtc_api_defer_sleep(bool scan_busy, uint64_t overdue_ms)
+bool dtc_api_defer_sleep(bool scan_holds, uint64_t overdue_ms)
 {
-	return scan_busy && overdue_ms <= DTC_API_SLEEP_DEFER_MS;
+	return scan_holds && overdue_ms <= DTC_API_SLEEP_DEFER_MS;
 }

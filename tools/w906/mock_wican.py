@@ -3,8 +3,10 @@
 
 A client, for example a display, can be developed and tested against it. It answers
 GET /api/state, POST /api/dtc, GET /api/dtc/result, GET /autopid_data and GET /load_car_config
-as API.md describes them and everything else with 404. test_api_contract.py tests it against
-API.md and, through dtc_state_cli.c, against the rules of the firmware module main/dtc_state.c.
+as API.md describes them, these paths with another method with 405 and everything else with
+404, and it ends the connection after a 404 or 405 as the HTTP server of the firmware does.
+test_api_contract.py tests it against API.md and, through dtc_state_cli.c, against the rules of
+the firmware module main/dtc_state.c.
 
   python3 mock_wican.py                          http://127.0.0.1:8906, a scan takes 35 s
   python3 mock_wican.py --speed 10               the clock of the adapter runs 10 times faster
@@ -31,30 +33,36 @@ Invented, because no contract fixes it. A client must not rely on any of this:
   - all values, trouble codes and the durations of the steps of a scan (0.3 s until the request is
     picked up, 0.7 s engine check, 1.9 s per control unit, 1.3 s for one that does not answer,
     0.8 s more for a control unit that is cleared);
-  - for the first 40 ms of the engine check the scan is "running" with `ecu` 0 and `total` 0: the
-    firmware reports the number of control units only after it has prepared the adapter
-    (dtc_scan() in main/autopid.c). A client must not divide by `total` without looking at it;
+  - for the first 40 ms of the engine check the scan is "running" with `ecu` 0 and `total` 0. The
+    firmware never shows that: it sets "running", step 0 and the number of control units in one
+    breath (autopid_task() in main/autopid.c). The mock is stricter on purpose, API.md allows a
+    `total` of 0 and a client must not divide by it without looking;
   - ENGINE_RPM is the setting `rpm`, the other values only know "engine off" and "idling";
   - one request to the engine every 60 ms, a polling pass of 35 requests takes 2.1 s; the values
     are valid after the first complete pass; while a scan runs and with the ignition off neither
     `pass` nor the time of the last answer moves;
-  - with the ignition off `sleep_in_s` counts down from 180 and stays at 0, the mock does not
-    go to sleep;
+  - with the ignition off `sleep_in_s` counts down and stays at 0, the mock does not go to
+    sleep. As in the firmware the rest is cut down to whole seconds (179 at once with 180 s to
+    go, 0 in the last second already) and no request is accepted while it is 0;
   - GET /api/dtc/result answers 503 while `autopid` is "starting" as well as "off";
-  - with `autopid` "off" both upstream paths answer {};
-  - a known path with another method is answered with 404 (the HTTP server of the firmware
-    answers 405 there);
   - the profile without fault memory has the values of the W906 profile.
 
 Not modelled: MQTT (a scan "over MQTT" is started by a scenario or by Adapter.mqtt_command()),
-the wait of /load_car_config for the end of a polling pass, the sleep itself, the errors
-engine_state_unknown, out_of_memory, result_serialize_failed and internal, and control units that
-answer with a negative response, only "response pending" or incompletely.
-Read in the sources of the firmware and not modelled either, a client has to expect both:
+the wait of /load_car_config for the end of a polling pass, the sleep itself and the time the
+adapter stays awake for a scan, the errors engine_state_unknown, out_of_memory,
+result_serialize_failed and internal, and control units that answer with a negative response,
+only "response pending" or incompletely.
+Read in the sources of the firmware and not modelled either, a client has to expect all of it:
   - /autopid_data grows value by value during the first pass after the ignition (the firmware leaves
     out what it has not read yet), the mock answers {} and then all 35 values at once;
-  - the HTTP server of the firmware probably ends the connection after an answer of its own like
-    404 or 405, the mock keeps it.
+  - the firmware knows many more paths (the web interface), the mock answers 404 for them;
+  - the firmware ends a connection of a client that no longer answers and, when all are taken,
+    the one used least recently; the mock only ends it after a 404 or 405;
+  - the firmware writes Content-Type and Content-Length before the other headers, the mock
+    Content-Length last.
+Taken from ESP-IDF v5.5.2 (esp_http_server), read and not measured on the device: status and
+text of 404 and 405, the end of the connection after them, that HEAD is a method like any other
+and gets the text as a body, and the Content-Type text/html of the empty 204.
 """
 import argparse
 import collections
@@ -75,6 +83,18 @@ NUMBER_MAX = 2 ** 31 - 1
 # main/autopid.c: a larger result does not fit into an MQTT message, clearing needs the engine off
 RESULT_MAX_BYTES = 5 * 1024 - 1
 CLEAR_MAX_RPM = 50
+# main/dtc_http.c: the query is read into 64 bytes, a longer one is not read at all
+QUERY_MAX_BYTES = 63
+
+# The paths the mock has a handler for, and the answers of the HTTP server of the firmware itself:
+# httpd_find_uri_handler() and httpd_resp_send_err() in ESP-IDF, main/config_server.c for the last two
+KNOWN_PATHS = ("/api/state", "/api/dtc", "/api/dtc/result", "/autopid_data", "/load_car_config")
+NOT_FOUND = (404, b"Nothing matches the given URI")
+NOT_ALLOWED = (405, b"Specified method is invalid for this resource")
+NO_DATA = '{"error":"No data available"}'
+NO_CONFIG = (500, b"Failed to generate JSON")
+# After these the firmware ends the connection, without a header that says so
+ENDS_CONNECTION = (404, 405)
 
 # Invented durations in ms, see above
 PICKUP_MS = 300
@@ -156,7 +176,7 @@ MOVING = {"ENGINE_RPM": 6, "RAIL_PRESSURE": 3, "AIR_MASS_PER_STROKE": 1.25}
 # replace single ones.
 SETTINGS = {
     "id": "a1b2c3d4e5f6",
-    "fw": "4.21",
+    "fw": "4.21",               # the example of API.md; a build of this repository reports the text of `git` here
     "git": "w906-v1.4.0-9-g0123abc",
     "api": True,                # False: upstream firmware, no path below /api/
     "autopid": "run",           # "off", "starting", "run"
@@ -558,7 +578,16 @@ class Adapter:
     def mqtt_command(self, clear=False):
         """read_dtc or clear_dtc over MQTT. Returns (None, number) or (reason, number)."""
         with self._lock:
-            return self._request(clear, False, 0, self._catch_up())
+            return self._mqtt(clear, self._catch_up())
+
+    def _mqtt(self, clear, now):
+        # autopid_request_dtc() in main/autopid.c: without the AutoPID task and once the adapter is due
+        # to sleep nothing is started. A task that has not reached its loop yet takes the command.
+        # "off" stands for two cases here. The firmware answers not_ready only if AutoPID is the
+        # protocol and the task is missing; if AutoPID is not the protocol it publishes nothing.
+        if self.autopid == "off" or self._sleep_in_s(now) == 0:
+            return "not_ready", 0
+        return self._request(clear, False, 0, now)
 
     def _power_on(self, now, boot=None, seq_seed=None):
         number = boot
@@ -581,7 +610,7 @@ class Adapter:
             self._at(now + self.restart_every_s * 1000, self._power_on)
 
     def _mqtt_again(self, now):
-        self._request(False, False, 0, now)
+        self._mqtt(False, now)
         self._at(now + self.mqtt_every_s * 1000, self._mqtt_again)
 
     # Time -----------------------------------------------------------------------------------
@@ -718,7 +747,7 @@ class Adapter:
             path, _, query = target.partition("?")
 
             if path.startswith("/api/") and not self.api:
-                return self._not_found()
+                return self._server_answer(NOT_FOUND)
             if method == "GET" and path == "/api/state":
                 return self._state(now)
             if path == "/api/dtc" and (method == "POST" or (method == "GET" and "get_triggers" in self.faults)):
@@ -728,12 +757,15 @@ class Adapter:
             if method == "GET" and path == "/autopid_data":
                 return 200, [("Content-Type", "application/json")], self._values(now).encode("utf-8")
             if method == "GET" and path == "/load_car_config":
-                return 200, [("Content-Type", "application/json")], self._car_config().encode("utf-8")
-            return self._not_found()
+                return self._car_config()
+            # A path with a handler for another method. HEAD is a method like any other.
+            return self._server_answer(NOT_ALLOWED if path in KNOWN_PATHS else NOT_FOUND)
 
     @staticmethod
-    def _not_found():
-        return 404, [("Content-Type", "text/html")], b"Nothing matches the given URI"
+    def _server_answer(answer):
+        """An answer of the HTTP server itself, not of a handler."""
+        status, text = answer
+        return status, [("Content-Type", "text/html")], text
 
     @staticmethod
     def _json(status, text, more=()):
@@ -752,7 +784,9 @@ class Adapter:
             "pids": len(PARAMETERS) if self.autopid != "off" else 0,
             "ecu_online": self.ignition and self.autopid == "run",
             "pass": passes,
-            "rx_age_ms": -1 if last_answer is None else now - last_answer,
+            # autopid_rx_age_ms() in main/autopid.c keeps the time in 32 bits: 2^32 ms after the
+            # last answer the age starts at 0 again
+            "rx_age_ms": -1 if last_answer is None else (now - last_answer) % 2 ** 32,
             "mqtt": self.mqtt,
             "batt_mv": self._battery_mv(),
             "sleep_in_s": self._sleep_in_s(now),
@@ -772,7 +806,9 @@ class Adapter:
     def _sleep_in_s(self, now):
         if self.sleep_after_s is None or self.ignition:
             return -1
-        return max(0, self.sleep_after_s - (now - self._off_since) // 1000)
+        # adc_task() in main/sleep_mode.c cuts the rest down to whole seconds, and time has passed
+        # when it looks: 0 stands for the last second before sleep is due as well
+        return max(0, (self.sleep_after_s * 1000 - (now - self._off_since) - 1) // 1000)
 
     def _dtc(self, headers, query, now):
         # API.md: forbidden, bad_request, not_ready, then the rules of the scan state
@@ -781,12 +817,16 @@ class Adapter:
         if "host_not_checked" not in self.faults and not host_allowed(headers.get("host")):
             return self._json(403, body_json("forbidden", 0))
 
+        # One character is one byte here: http.server reads the request line as ISO-8859-1
+        if len(query) > QUERY_MAX_BYTES:
+            query = ""
         action = parameter(query, "action")
         seq = parse_seq(parameter(query, "seq"))
         if action not in ("read", "clear") or (action == "clear" and seq is None):
             return self._json(400, body_json("bad_request", 0))
 
-        if self.autopid != "run":
+        # dtc_api_ready() in main/dtc_api.c: the task is in its loop and the adapter is not due to sleep
+        if self.autopid != "run" or self._sleep_in_s(now) == 0:
             return self._json(503, body_json("not_ready", 0))
 
         reason, number = self._request(action == "clear", True, seq or 0, now)
@@ -797,12 +837,16 @@ class Adapter:
             return self._json(503, body_json("not_ready", 0))
         # No number, no result: the text and its number are stored and dropped together
         if self._rules.result_seq == 0:
-            return 204, [("Cache-Control", "no-store")], b""
+            # The firmware sets no type for the empty answer, its HTTP server then names its default
+            return 204, [("Content-Type", "text/html"), ("Cache-Control", "no-store")], b""
         return self._json(200, self._result, [("X-DTC-Seq", "%d" % self._rules.result_seq)])
 
     def _values(self, now):
         passes, _, valid = self._polled(now)
-        if not valid or self.autopid == "off":
+        if self.autopid == "off":
+            # autopid_data_handler() in main/config_server.c, with status 200
+            return NO_DATA
+        if not valid:
             return "{}"
         running = self._engine_runs()
         values = []
@@ -817,14 +861,17 @@ class Adapter:
 
     def _car_config(self):
         if self.autopid == "off":
-            return "{}"
+            # load_car_config_handler() in main/config_server.c. The connection is kept after it.
+            return self._server_answer(NO_CONFIG)
         config = collections.OrderedDict((name, collections.OrderedDict((("class", kind), ("unit", unit))))
                                          for name, kind, unit, _, _ in PARAMETERS)
-        return json.dumps(config, separators=(",", ":"), ensure_ascii=False)
+        text = json.dumps(config, separators=(",", ":"), ensure_ascii=False)
+        return 200, [("Content-Type", "application/json")], text.encode("utf-8")
 
 
 REASONS = {200: "OK", 202: "Accepted", 204: "No Content", 400: "Bad Request", 403: "Forbidden",
-           404: "Not Found", 409: "Conflict", 503: "Service Unavailable"}
+           404: "Not Found", 405: "Method Not Allowed", 409: "Conflict", 500: "Internal Server Error",
+           503: "Service Unavailable"}
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -849,9 +896,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         head = ["%s %d %s" % (self.protocol_version, status, REASONS[status])]
         head += ["%s: %s" % header for header in answer_headers]
         head += ["Content-Length: %d" % len(body), "", ""]
-        if self.command == "HEAD":
-            body = b""
+        # The body also for HEAD: the firmware has no handler for it and answers it like any other method
         self.wfile.write("\r\n".join(head).encode("iso-8859-1") + body)
+        if status in ENDS_CONNECTION:
+            self.close_connection = True
         if self.server.log is not None:
             self.server.log("%s %s -> %d %s" % (self.command, self.path, status,
                                                 body.decode("utf-8") if len(body) < 200 else "(%d bytes)" % len(body)))

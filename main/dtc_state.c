@@ -35,6 +35,18 @@ bool dtc_state_busy(const dtc_state_t *s)
 	return s->phase == DTC_STATE_QUEUED || s->phase == DTC_STATE_RUNNING;
 }
 
+bool dtc_state_hold_awake(const dtc_state_t *s, uint64_t now_ms)
+{
+	// Counted from the acceptance, not from the moment sleep fell due: a scan that was accepted is not
+	// cut off half way (some control units cleared, others not)
+	if(dtc_state_busy(s)) return elapsed_ms(now_ms, s->queued_ms) <= DTC_SCAN_HOLD_MS;
+
+	// Nothing was requested since boot, the time 0 in finished_ms is not the end of a scan
+	if(s->phase == DTC_STATE_IDLE) return false;
+
+	return elapsed_ms(now_ms, s->finished_ms) <= DTC_RESULT_HOLD_MS;
+}
+
 dtc_accept_t dtc_state_try_begin(dtc_state_t *s, bool clear, dtc_src_t src, uint32_t seq, uint64_t now_ms,
                                  uint32_t *seq_out)
 {

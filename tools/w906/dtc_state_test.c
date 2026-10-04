@@ -101,6 +101,11 @@ static void test_constants(void)
 	check(DTC_HTTP_EXPIRY_MS == 20000u, "an HTTP request expires after 20 s");
 	check(DTC_SEQ_MAX == 2147483647u, "sequence numbers end at 2^31-1");
 	check(DTC_ACCEPTED == 0, "DTC_ACCEPTED is 0, a caller may test the result like a boolean");
+	check(DTC_SCAN_HOLD_MS == 120000u, "the adapter stays awake for a scan for 120 s after its acceptance");
+	check(DTC_RESULT_HOLD_MS == 10000u, "the adapter stays awake for 10 s after the end of a scan");
+	// 20 s waiting, then the engine check and 5 requests to each of the 18 control units, 1 s each
+	check(DTC_SCAN_HOLD_MS >= DTC_HTTP_EXPIRY_MS + (1u + 18u * 5u) * 1000u,
+	      "the 120 s cover the longest wait of an HTTP request and a scan in which every request times out");
 }
 
 static void test_init(void)
@@ -544,6 +549,76 @@ static void test_times_above_32_bit(void)
 	      "57 days after boot: age of an expired request");
 }
 
+// The adapter is due to sleep: what keeps it awake, and for how long
+static void test_hold_awake(void)
+{
+	const uint64_t late = 5000000000ull;    // 57 days after boot
+	dtc_state_t s, t;
+	uint32_t seq;
+
+	dtc_state_init(&s, 7);
+	check(!dtc_state_hold_awake(&s, 0), "idle at boot: nothing keeps the adapter awake");
+	check(!dtc_state_hold_awake(&s, 5000), "idle 5 s after boot: no scan has ended at time 0");
+	check(!dtc_state_hold_awake(&s, 10000), "idle 10 s after boot: nothing keeps the adapter awake");
+	check(!dtc_state_hold_awake(&s, 15000), "idle 15 s after boot: nothing keeps the adapter awake");
+	check(!dtc_state_hold_awake(&s, 3600000), "idle an hour after boot: nothing keeps the adapter awake");
+
+	dtc_state_try_begin(&s, READ, DTC_SRC_HTTP, 0, 50000, NULL);
+	check(dtc_state_hold_awake(&s, 50000), "queued: the adapter stays awake");
+	check(dtc_state_hold_awake(&s, 50000 + 120000), "queued for exactly 120 s: the adapter stays awake");
+	check(!dtc_state_hold_awake(&s, 50000 + 120001), "queued for 120.001 s: a request that got stuck does not keep it awake");
+	check(dtc_state_hold_awake(&s, 49000), "queued, with a clock 1 s behind: the adapter stays awake");
+
+	dtc_state_pickup(&s, 69000);
+	dtc_state_progress(&s, 3, 18, "N10 SAM");
+	check(dtc_state_hold_awake(&s, 69000), "running: the adapter stays awake");
+	check(dtc_state_hold_awake(&s, 50000 + 120000), "running, accepted exactly 120 s ago: the adapter stays awake");
+	check(!dtc_state_hold_awake(&s, 50000 + 120001),
+	      "running, accepted 120.001 s ago: a scan that got stuck does not keep it awake, whenever it was picked up");
+	check(!dtc_state_hold_awake(&s, 50000 + 4294967296ull + 5000), "running, accepted 2^32 ms + 5 s ago: not awake");
+
+	t = s;
+	dtc_state_done(&t, 2, 104000);
+	check(dtc_state_hold_awake(&t, 104000), "done: the adapter stays awake for the result");
+	check(dtc_state_hold_awake(&t, 104000 + 10000), "done exactly 10 s ago: the adapter stays awake");
+	check(!dtc_state_hold_awake(&t, 104000 + 10001), "done 10.001 s ago: the adapter may sleep");
+	check(!dtc_state_hold_awake(&t, 104000 + 120000), "done 120 s ago: the time for a scan is not the time for its result");
+	check(!dtc_state_hold_awake(&t, 104000 + 4294967296ull + 5000), "done 2^32 ms + 5 s ago: the adapter may sleep");
+	check(dtc_state_hold_awake(&t, 103000), "done, with a clock 1 s behind: the adapter stays awake");
+
+	t = s;
+	dtc_state_error(&t, "ecu_offline", 70000);
+	check(dtc_state_hold_awake(&t, 70000 + 10000), "error exactly 10 s ago: the adapter stays awake, the reason can be fetched");
+	check(!dtc_state_hold_awake(&t, 70000 + 10001), "error 10.001 s ago: the adapter may sleep");
+
+	dtc_state_init(&s, 7);
+	dtc_state_try_begin(&s, READ, DTC_SRC_HTTP, 0, 1000, NULL);
+	dtc_state_pickup(&s, 30000);
+	check(s.phase == DTC_STATE_ERROR && dtc_state_hold_awake(&s, 30000 + 10000) && !dtc_state_hold_awake(&s, 30000 + 10001),
+	      "expired: the adapter stays awake for 10 s from the expiry, not from the acceptance");
+
+	// The two times do not borrow from each other
+	dtc_state_init(&s, 7);
+	seq = read_done(&s, DTC_SRC_HTTP, 2, 1000, 36000);
+	dtc_state_try_begin(&s, CLEAR, DTC_SRC_HTTP, seq, 500000, NULL);
+	check(dtc_state_hold_awake(&s, 500000 + 120000),
+	      "a request accepted long after the scan before it: 120 s from its own acceptance");
+	check(!dtc_state_hold_awake(&s, 500000 + 120001), "a request accepted long after the scan before it: not 120.001 s");
+	dtc_state_pickup(&s, 500100);
+	dtc_state_done(&s, 0, 700000);
+	check(dtc_state_hold_awake(&s, 700000 + 10000) && !dtc_state_hold_awake(&s, 700000 + 10001),
+	      "a scan that ended later than 120 s after its acceptance: 10 s from its end");
+
+	dtc_state_init(&s, 7);
+	dtc_state_try_begin(&s, CLEAR, DTC_SRC_MQTT, 0, late, NULL);
+	check(dtc_state_hold_awake(&s, late + 120000) && !dtc_state_hold_awake(&s, late + 120001),
+	      "57 days after boot: a queued request keeps the adapter awake for 120 s");
+	dtc_state_pickup(&s, late + 100);
+	dtc_state_done(&s, 0, late + 36000);
+	check(dtc_state_hold_awake(&s, late + 36000 + 10000) && !dtc_state_hold_awake(&s, late + 36000 + 10001),
+	      "57 days after boot: a result keeps the adapter awake for 10 s");
+}
+
 static void test_json_buffer_and_escaping(void)
 {
 	static char long_name[301];
@@ -710,6 +785,20 @@ static void model_done(model_t *m, unsigned codes, uint64_t now)
 	m->ended_at = now;
 	m->result_number = m->number;
 	m->result_codes = codes;
+}
+
+// Whether the adapter has to stay awake, from the header text: 120 s for a request from its acceptance,
+// 10 s from its end
+static bool model_awake(const model_t *m, uint64_t now)
+{
+	if(!m->any) return false;
+
+	switch(m->status)
+	{
+		case M_WAITING:
+		case M_STARTED: return model_since(now, m->accepted_at) < 120001;
+		default:        return model_since(now, m->ended_at) < 10001;
+	}
 }
 
 static void model_escape(char *out, size_t size, const char *text)
@@ -918,6 +1007,20 @@ static int walk(uint32_t walk_seed)
 		if(size > 0) same = same && memchr(got, '\0', size) != NULL && strcmp(got, expected) == 0;
 		for(i = size; i < sizeof(got); i++) same = same && got[i] == 0x5A;
 
+		// And the same answer about staying awake: now, and on both sides of the two limits of this state.
+		// No random number is drawn for it, the sequences stay the ones the other checks were proven with.
+		if(same)
+		{
+			const uint64_t at[] = {now, m.accepted_at + 120000, m.accepted_at + 120001, m.ended_at + 10000,
+			                       m.ended_at + 10001, now + 4294967296ull};
+
+			for(i = 0; i < sizeof(at) / sizeof(at[0]); i++)
+			{
+				same = same && dtc_state_hold_awake(&s, at[i]) == model_awake(&m, at[i]);
+			}
+			if(!same) what = "hold_awake after the call";
+		}
+
 		// Now and then into a buffer of 64 KiB and more: the complete text, whatever the size
 		if(same && walk_random(16) == 0)
 		{
@@ -990,6 +1093,7 @@ int main(void)
 	test_clear_is_bound_to_a_read();
 	test_expiry();
 	test_times_above_32_bit();
+	test_hold_awake();
 	test_json_buffer_and_escaping();
 	test_reasons();
 

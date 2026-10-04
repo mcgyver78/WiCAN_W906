@@ -54,6 +54,7 @@
 #include "lwip/err.h"
 #include <errno.h>
 #include "dtc_decode.h"
+#include "dtc_api.h"
 
 #define TAG "AUTOPID"
 
@@ -958,10 +959,12 @@ static volatile bool autopid_task_created = false;
 static volatile bool autopid_loop_ready = false;
 
 // For clients that poll /autopid_data: requests answered so far, passes with at least one
-// answer, time of the last answer
+// answer, time of the last answer. The time is a 32 bit value on purpose: the HTTP task reads
+// it while the AutoPID task writes it, and a 64 bit value is two loads and two stores on this
+// CPU. Whether there was an answer at all comes from the counter.
 static volatile uint32_t autopid_answer_count = 0;
 static volatile uint32_t autopid_pass_count = 0;
-static volatile int64_t autopid_last_answer_us = -1;
+static volatile uint32_t autopid_last_answer_ms = 0;
 
 static void dtc_publish_error(const char *action, const char *reason);
 static bool dtc_profile_supported(void);
@@ -975,9 +978,11 @@ dtc_accept_t autopid_dtc_request(bool clear, dtc_src_t src, uint32_t seq, uint32
 {
     dtc_accept_t result;
 
-    if (xautopid_event_group == NULL || dtc_mutex == NULL)
+    if (xautopid_event_group == NULL || dtc_mutex == NULL || !autopid_task_created)
     {
-        // AutoPID is not active. The HTTP API asks autopid_loop_state() first and answers not_ready.
+        // AutoPID is not active, or its task does not exist (no PID configured, start failed):
+        // nobody would pick the request up and the state would stay queued for good.
+        // Both callers ask dtc_api_ready() first and answer not_ready.
         if (seq_out != NULL) *seq_out = 0;
         return DTC_REJECT_BUSY;
     }
@@ -1002,17 +1007,28 @@ dtc_accept_t autopid_dtc_request(bool clear, dtc_src_t src, uint32_t seq, uint32
 // MQTT command read_dtc / clear_dtc
 void autopid_request_dtc(bool clear)
 {
+    const char *reason = "busy";
+
     if (xautopid_event_group == NULL)
     {
         return;
     }
 
-    // Commands during a scan are rejected instead of queued, a queued clear could run much later
-    if (autopid_dtc_request(clear, DTC_SRC_MQTT, 0, NULL) != DTC_ACCEPTED)
+    // Without the task nobody would run the scan, and once the adapter is due to sleep a scan
+    // could not finish. Asked before the state, as over HTTP: a command sent while sleep waits
+    // for a scan gets not_ready too. "busy" stays the answer that a final message follows.
+    if (!dtc_api_ready(autopid_task_created, sleep_mode_seconds_to_sleep()))
     {
-        ESP_LOGW(TAG, "DTC scan already running, %s rejected", clear ? "clear_dtc" : "read_dtc");
-        dtc_publish_error(clear ? "clear" : "read", "busy");
+        reason = "not_ready";
     }
+    // Commands during a scan are rejected instead of queued, a queued clear could run much later
+    else if (autopid_dtc_request(clear, DTC_SRC_MQTT, 0, NULL) == DTC_ACCEPTED)
+    {
+        return;
+    }
+
+    ESP_LOGW(TAG, "%s rejected: %s", clear ? "clear_dtc" : "read_dtc", reason);
+    dtc_publish_error(clear ? "clear" : "read", reason);
 }
 
 bool autopid_dtc_busy(void)
@@ -1026,6 +1042,19 @@ bool autopid_dtc_busy(void)
         xSemaphoreGive(dtc_mutex);
     }
     return busy;
+}
+
+bool autopid_dtc_hold_awake(void)
+{
+    bool hold = false;
+
+    if (dtc_mutex != NULL)
+    {
+        xSemaphoreTake(dtc_mutex, portMAX_DELAY);
+        hold = dtc_state_hold_awake(&dtc_state, dtc_now_ms());
+        xSemaphoreGive(dtc_mutex);
+    }
+    return hold;
 }
 
 int autopid_dtc_state_json(char *buf, size_t size)
@@ -1070,8 +1099,10 @@ int autopid_dtc_result_dup(char **copy, uint32_t *seq)
     return found;
 }
 
-// "off": AutoPID is not the protocol or no vehicle profile is loaded, "starting": the task has
-// not reached its loop yet, "run"
+// "off": the AutoPID task does not exist (AutoPID is not the protocol, no PID is configured or
+// the start failed), "starting": the task has not reached its loop yet, "run". Without a
+// vehicle profile but with other PIDs the task runs; the state is then "run" and the fault
+// memory is reported as not supported.
 const char *autopid_loop_state(void)
 {
     if (!autopid_task_created) return "off";
@@ -1091,13 +1122,14 @@ uint32_t autopid_pass_counter(void)
 // Milliseconds since the last answered request, -1 if none since boot
 int32_t autopid_rx_age_ms(void)
 {
-    int64_t last = autopid_last_answer_us;
-    int64_t age;
+    uint32_t last, age;
 
-    if (last < 0) return -1;
-    age = (esp_timer_get_time() - last) / 1000;
-    if (age < 0) age = 0;
-    return age > INT32_MAX ? INT32_MAX : (int32_t)age;
+    if (autopid_answer_count == 0) return -1;
+    // The stored time is read before the clock, so the difference is never negative. Unsigned:
+    // it is right across the wrap of the tick counter, as long as the age is below 2^32 ms.
+    last = autopid_last_answer_ms;
+    age = xTaskGetTickCount() * portTICK_PERIOD_MS - last;
+    return age > (uint32_t)INT32_MAX ? INT32_MAX : (int32_t)age;
 }
 
 char *autopid_data_read(void)
@@ -1119,9 +1151,14 @@ char *autopid_data_read(void)
     if (autopid_loop_ready && (xEventGroupGetBits(xautopid_event_group) & AUTOPID_POLLING_DISABLED_BIT)) {
         // Set the request bit to signal autopid task
         xEventGroupSetBits(xautopid_event_group, AUTOPID_REQUEST_BIT);
-        
+
+        // The wait ends while a fault memory scan is queued or running: the task runs the scan
+        // (about 35 s) before the pass, and the HTTP server is a single task that has to answer
+        // GET /api/state meanwhile. The stored values are returned; the pass follows the scan.
+        // The webhook task calls this too: a post that falls due during a scan carries the stored
+        // values, the next one the fresh ones.
         while ((xEventGroupGetBits(xautopid_event_group) & (AUTOPID_REQUEST_BIT | AUTOPID_POLLING_DISABLED_BIT)) ==
-               (AUTOPID_REQUEST_BIT | AUTOPID_POLLING_DISABLED_BIT)) {
+               (AUTOPID_REQUEST_BIT | AUTOPID_POLLING_DISABLED_BIT) && !autopid_dtc_busy()) {
             vTaskDelay(pdMS_TO_TICKS(100)); // Small delay to prevent busy waiting
         }
     }
@@ -2267,7 +2304,8 @@ static bool autopid_query_parameter(pid_data2_t *curr_pid, parameter_t *param, p
 
     param->failed = false;
     xEventGroupSetBits(xautopid_event_group, ECU_CONNECTED_BIT);
-    autopid_last_answer_us = esp_timer_get_time();
+    // The time before the counter: a reader that sees the first answer counted finds its time
+    autopid_last_answer_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
     autopid_answer_count++;
 
     if (curr_pid->pid_type == PID_CUSTOM || curr_pid->pid_type == PID_SPECIFIC)
@@ -2480,20 +2518,24 @@ static void autopid_task(void *pvParameters)
 
         if (xEventGroupGetBits(xautopid_event_group) & AUTOPID_DTC_REQUEST_BIT)
         {
-            bool run, clear;
+            bool queued, run, clear;
+            const char *expired = NULL;
 
             // The bit only wakes the task. It is cleared before the state is asked, so a request
             // accepted from here on sets it again; read or clear comes from the state.
             xEventGroupClearBits(xautopid_event_group, AUTOPID_DTC_REQUEST_BIT);
             xSemaphoreTake(dtc_mutex, portMAX_DELAY);
+            queued = dtc_state.phase == DTC_STATE_QUEUED;
             run = dtc_state_pickup(&dtc_state, dtc_now_ms());
             clear = dtc_state.clear;
             // Step 0 (engine check) in the same breath: a running scan never shows a total of 0,
             // and an HTTP client sees at once that its request is being worked on
             if (run) dtc_state_progress(&dtc_state, 0, DTC_ECU_COUNT, NULL);
+            // A queued request that does not run was an HTTP request that waited too long. The
+            // state holds the reason, a string literal.
+            else if (queued) expired = dtc_state.reason;
             xSemaphoreGive(dtc_mutex);
 
-            // An HTTP request that waited too long has expired and does not run
             if (run)
             {
                 elm327_lock();
@@ -2501,6 +2543,12 @@ static void autopid_task(void *pvParameters)
                 elm327_unlock();
                 // The scan changed header and filters, send the vehicle init again
                 previous_pid_type = PID_MAX;
+            }
+            else if (expired != NULL)
+            {
+                // An MQTT command may have been answered busy because of this request. busy is
+                // always followed by a final message on the topic, as it was before the HTTP API.
+                dtc_publish_error(clear ? "clear" : "read", expired);
             }
         }
 
@@ -3460,8 +3508,8 @@ void autopid_init(char* id)
         ESP_LOGE(TAG, "Failed to create dtc mutex");
         return;
     }
-    autopid_task_created = true;
-    xTaskCreate(autopid_task, "autopid_task", 5000, (void *)AF_INET, 5, NULL);
+    // Only a task that exists picks up a read_dtc / clear_dtc; without it none is accepted
+    autopid_task_created = xTaskCreate(autopid_task, "autopid_task", 5000, (void *)AF_INET, 5, NULL) == pdPASS;
     if(config_server_get_webhook_en())
     {
         xTaskCreate(autopid_webhook_task, "autopid_webhook_task", 6144, NULL, 4, NULL);

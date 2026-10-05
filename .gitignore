@@ -90,3 +90,6 @@ tools/w906/dtc_state_cli
 display/test/test_*
 !display/test/test_*.c
 display/test/*.log
+
+# macOS
+.DS_Store

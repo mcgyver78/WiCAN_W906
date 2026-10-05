@@ -7,6 +7,8 @@
  * (at your option) any later version.
  */
 
+#include <string.h>
+#include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -14,6 +16,7 @@
 #include "esp_check.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
+#include "esp_task_wdt.h"
 #include "esp_lcd_panel_ops.h"
 #include "lvgl.h"
 #include "platform.h"
@@ -50,8 +53,9 @@
  * - A round that came late is not made up for: readings in a burst would be no rhythm either, and two of
  *   them within a millisecond would be no debouncing (knob.h).
  * What this file cannot make sure, and nothing of it was measured:
- * - how long ui_show() takes. It runs in this task: it lays the scene out and measures its texts with the
- *   fonts of TinyTTF. A scene that is the one shown costs a comparison.
+ * - how long app_scene() and ui_show() take. Both run in this task. The scene is made in every round, under
+ *   the lock of the app (see screen_task() for why); ui_show() is called for a scene that differs from the
+ *   one before: it lays the scene out and measures its texts with the fonts of TinyTTF.
  *   CHECK: log the longest time between two readings while turning through all screens and while a fault
  *   memory list is shown; it has to stay far below 200 ms. If it does not, ui_show() has to move to a task
  *   of its own.
@@ -65,6 +69,9 @@
  *   the flash chip of the board.
  *   CHECK: keep the knob pressed in the clear dialog while a layout is saved from the browser. The ring may
  *   start again; it must not complete earlier than after three seconds of holding.
+ *
+ * Both tasks are watched by the task watchdog of ESP-IDF, as the idle tasks are: display/sdkconfig.defaults
+ * says what for, and has the CHECK that goes with it.
  */
 
 #define TAG "screen"
@@ -75,9 +82,20 @@
 #error "sdkconfig: CONFIG_LV_USE_BUILTIN_MALLOC and CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES are needed"
 #endif
 
+// Without the panic the watchdog only prints: a drawing task that spins would freeze the picture for good,
+// and with it everything the main task does, which has the lower priority on the same core
+#if !CONFIG_ESP_TASK_WDT_INIT || !CONFIG_ESP_TASK_WDT_PANIC
+#error "sdkconfig: CONFIG_ESP_TASK_WDT_PANIC is needed, see display/sdkconfig.defaults"
+#endif
+
 #define ROUND_MS            20      // one reading of the switch (knob.h, hold.h)
 #define TICK_ROUNDS         10      // app_tick() five times a second
 #define TOUCH_ROUNDS        2       // the touch controller every 40 ms (touch.h: about every 30 ms)
+// A reading of the switch takes one transfer of a byte, well under a millisecond at 100 kHz. One that took
+// longer than this was held up in the middle, and when in that time the switch was read nobody knows: it
+// does not count (screen_task()). Not measured on the board - if the knob loses presses there while nothing
+// writes to the flash, the readings take longer than assumed here.
+#define READ_MS             10
 
 // Above the task of LVGL, so that drawing never delays a reading, and above the web server of ESP-IDF (5)
 #define SCREEN_PRIORITY     6
@@ -113,9 +131,26 @@
 // Too large for the stack of the task. Written under the lock of the app, drawn after it; only this task
 // uses it.
 static scene_t scene;
+// The scene LVGL was given last. scene.h fills every byte of a scene, and two that show the same are the
+// same memory: comparing the two tells whether there is anything new to draw.
+static scene_t given;
 
 // The lock of LVGL: held by the drawing task for a frame, asked for by the screen task
 static SemaphoreHandle_t lvgl_mutex;
+// The drawing task, for the screen task to wake it
+static TaskHandle_t lvgl_handle;
+
+// The task that calls this is watched from now on: it has to come round (esp_task_wdt_reset()) within the
+// time of the watchdog, or the display ends in a panic and starts anew
+static void watched(const char *name)
+{
+	esp_err_t err = esp_task_wdt_add(NULL);
+
+	if(err != ESP_OK)
+	{
+		ESP_LOGE(TAG, "the task %s is not watched: %s", name, esp_err_to_name(err));
+	}
+}
 
 // The clock of LVGL: milliseconds since the start, from the clock every task uses
 static uint32_t lvgl_tick(void)
@@ -133,14 +168,22 @@ static void lvgl_flush(lv_display_t *display, const lv_area_t *area, uint8_t *pi
 	lv_display_flush_ready(display);
 }
 
-// The only place that draws
+/*
+ * The only place that draws. Between two calls of lv_timer_handler() the task sleeps for as long as LVGL
+ * says nothing is due - or until the screen task has handed over another scene: LVGL stops the timer of
+ * its display after every refresh (lv_display_refr_timer(), lv_refr.c) and starts it again when something
+ * is to be drawn, but that tells nobody who sleeps (lv_timer_resume() only calls a resume callback, and
+ * none is set here). Without the wake every new scene would wait for the rest of a sleep, 50 ms at most.
+ */
 static void lvgl_task(void *unused)
 {
 	(void)unused;
+	watched("lvgl");
 	for(;;)
 	{
 		uint32_t sleep_ms = LVGL_SLEEP_MIN_MS;
 
+		esp_task_wdt_reset();
 		if(xSemaphoreTake(lvgl_mutex, portMAX_DELAY) == pdTRUE)
 		{
 			sleep_ms = lv_timer_handler();
@@ -148,7 +191,7 @@ static void lvgl_task(void *unused)
 		}
 		if(sleep_ms < LVGL_SLEEP_MIN_MS) sleep_ms = LVGL_SLEEP_MIN_MS;
 		if(sleep_ms > LVGL_SLEEP_MAX_MS) sleep_ms = LVGL_SLEEP_MAX_MS;
-		vTaskDelay(pdMS_TO_TICKS(sleep_ms) > 0 ? pdMS_TO_TICKS(sleep_ms) : 1);
+		ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(sleep_ms) > 0 ? pdMS_TO_TICKS(sleep_ms) : 1);
 	}
 }
 
@@ -171,16 +214,16 @@ static void screen_task(void *arg)
 	TickType_t woken = xTaskGetTickCount();
 	touch_t touch;
 	unsigned round = 0;
-	bool was_pressed = false;
-	bool show = false;          // a scene is due: the time for it came or an input was passed on
 	bool tap_waits = false;     // a tap whose row has not been looked up yet
 	bool row_waits = false;     // its row, which the app has not been told yet
 	int tap_x = 0;
 	int tap_y = 0;
 	int row = -1;
 	int light = -1;             // what the backlight was set to; -1: nothing yet
+	bool given_any = false;     // LVGL was given a scene: before that there is none to compare with
 
 	touch_init(&touch);
+	watched("screen");
 	for(;;)
 	{
 		// Read before anything can wait: the time of the reading, not of the lock (app.h)
@@ -190,7 +233,18 @@ static void screen_task(void *arg)
 		bool pressed = false;
 		bool button_ok = board_button(&pressed);
 		int counts = board_encoder();
+		bool show;                  // the scene is another one than LVGL was given last
 		int percent;
+
+		// The time above is the time of the reading only if the reading followed it at once. If the task was
+		// held up in between (the flash was erased: nobody runs), the switch was read later than its time
+		// says, a press that began in between is dated early, and a hold (hold.h) would be complete that
+		// much before its three seconds. Such a reading has observed nothing, like one that failed.
+		if(platform_now_ms() - now_ms > READ_MS)
+		{
+			button_ok = false;
+		}
+		esp_task_wdt_reset();
 
 		if(round % TOUCH_ROUNDS == 0)
 		{
@@ -213,18 +267,6 @@ static void screen_task(void *arg)
 		}
 		round++;
 
-		// What changes the picture is shown at once, not with the next tick: a detent, the switch going
-		// down or up, a tap, a swipe
-		if(tick || counts != 0 || (button_ok && pressed != was_pressed) || row_waits ||
-		   (gesture != TOUCH_NONE && gesture != TOUCH_TAP))
-		{
-			show = true;
-		}
-		if(button_ok)
-		{
-			was_pressed = pressed;
-		}
-
 		platform_lock();
 		app_button(app, pressed, button_ok, now_ms);
 		app_encoder(app, counts, now_ms);
@@ -239,17 +281,30 @@ static void screen_task(void *arg)
 		{
 			app_tick(app, now_ms);
 		}
-		if(show)
-		{
-			// Made anew in every round until LVGL has taken it: the one that is drawn is never an old one
-			app_scene(app, &scene, now_ms);
-		}
+		// Made anew in every round, and what it shows decides whether there is something to draw - not which
+		// input came. This task cannot know that: a press counts one reading after its edge (knob.h), a long
+		// press and the outcome of a hold come without any edge, a value arrives with the network task. And
+		// the scene that is drawn is never an old one.
+		app_scene(app, &scene, now_ms);
 		percent = app_backlight(app, now_ms);
 		platform_events();
 		platform_unlock();
+		show = !given_any || memcmp(&scene, &given, sizeof(scene)) != 0;
 
+		// Dark before a restart: the chip leaves the backlight as it is when it restarts (main.c)
+		if(platform_restarting())
+		{
+			percent = 0;
+		}
 		if(percent != light)
 		{
+			// A screen that stays dark has more than one possible cause, and from outside they all look the
+			// same. With this line the log tells whether the app wants it dark (standby, heat: the info page
+			// has the temperature) or the board does not do what it is told (board.c: polarity, panel).
+			if(light < 0 || (percent == 0) != (light == 0))
+			{
+				ESP_LOGI(TAG, "backlight %d %%", percent);
+			}
 			board_backlight(percent);
 			light = percent;
 		}
@@ -270,16 +325,22 @@ static void screen_task(void *arg)
 			if(show)
 			{
 				ui_show(&scene);
-				show = false;
+				memcpy(&given, &scene, sizeof(given));
+				given_any = true;
 			}
 			xSemaphoreGive(lvgl_mutex);
+			if(show)
+			{
+				// The drawing task sleeps while LVGL has nothing due (lvgl_task())
+				xTaskNotifyGive(lvgl_handle);
+			}
 		}
 
-		if(xTaskDelayUntil(&woken, pdMS_TO_TICKS(ROUND_MS)) == pdFALSE)
-		{
-			// Late: the next round is a whole one from now
-			woken = xTaskGetTickCount();
-		}
+		// The next round is due ROUND_MS after this one began, whenever that was. xTaskDelayUntil() keeps to
+		// its own plan instead: after a wake that came late it returns at once the next time, and that would
+		// be two readings within a millisecond, one round after the late one.
+		xTaskDelayUntil(&woken, pdMS_TO_TICKS(ROUND_MS));
+		woken = xTaskGetTickCount();
 	}
 }
 
@@ -330,7 +391,7 @@ esp_err_t screen_start(esp_lcd_panel_handle_t panel)
 	// Before the drawing task exists: it is to find the screen of ui_init(), not an empty one
 	ui_init(display);
 
-	ESP_RETURN_ON_FALSE(xTaskCreatePinnedToCore(lvgl_task, "lvgl", LVGL_STACK, NULL, LVGL_PRIORITY, NULL,
+	ESP_RETURN_ON_FALSE(xTaskCreatePinnedToCore(lvgl_task, "lvgl", LVGL_STACK, NULL, LVGL_PRIORITY, &lvgl_handle,
 	                                            core) == pdPASS,
 	                    ESP_ERR_NO_MEM, TAG, "no memory for the task of LVGL");
 	ESP_RETURN_ON_FALSE(xTaskCreatePinnedToCore(screen_task, "screen", SCREEN_STACK, NULL, SCREEN_PRIORITY, NULL,

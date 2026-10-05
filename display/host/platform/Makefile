@@ -1,0 +1,60 @@
+# The platform of the display (display/main) on a PC: each simulation includes one of its files unchanged
+# and runs it against the real core, with stand-ins for ESP-IDF (idf/, and what the simulation itself says
+# of the driver, the server, the flash, the boot loader and FreeRTOS).
+#
+#   make                    build and run the three simulations; the output of each is build/<name>.log
+#   make build/net_sim      build one
+#   make clean
+#
+# The CI runs "make" in this directory (.github/workflows/display.yml, job host-tests).
+# For people, not in the CI: "python3 redproof.py" breaks the platform files in one place at a time
+# (mutations/) and expects a check of the simulation to fail; see the head of that script.
+#
+# screen.c has no simulation: what it does is LVGL and the rhythm of two tasks.
+# Needs a C library with strlcpy(), which the platform files use (glibc from 2.38 on, macOS).
+
+CC      ?= cc
+# The dialect of C the firmware is built in (ESP-IDF v5.5.2, tools/cmake/build.cmake)
+STD     := -std=gnu17
+# As the host tests of the logic are built (display/test/Makefile)
+CFLAGS  ?= $(STD) -Wall -Wextra -Wimplicit-fallthrough -Werror -fsanitize=address,undefined -fno-sanitize-recover=all
+# The three warnings the build of ESP-IDF switches off for every file of the firmware (the same build.cmake):
+# the platform files were never asked to be free of them, and each simulation is one unit with its file
+IDF_OFF := -Wno-unused-parameter -Wno-sign-compare -Wno-enum-conversion
+# EXTRA=-funsigned-char builds as the ESP32 does (char is unsigned there, signed on PC and Mac)
+EXTRA   ?=
+
+MAIN    := ../../main
+CORE    := ../../components/core
+BUILD   := build
+SIMS    := main_sim net_sim web_sim
+
+# idf/ first: its headers stand for those of ESP-IDF, and its sys/socket.h for that of lwIP. board.h and
+# store.h are the real ones: main.c is run against what they promise.
+INCLUDES := -Iidf -I$(MAIN) -I$(CORE) -I../../components/board -I../../components/store
+
+# What the build of the firmware embeds (EMBED_FILES in $(MAIN)/CMakeLists.txt): the page and the built-in
+# layout, each between the two symbols web.c and main.c ask for, as it is and without a zero behind it
+PAGE    := $(MAIN)/web/index.html
+LAYOUT  := ../../layouts/w906_default.json
+
+SOURCES := $(wildcard $(CORE)/*.c)
+HEADERS := sim.h $(wildcard idf/*.h idf/*/*.h $(CORE)/*.h $(MAIN)/*.h ../../components/board/*.h ../../components/store/*.h)
+
+.PHONY: all clean
+
+all: $(addprefix $(BUILD)/,$(SIMS))
+	@set -e; for sim in $(SIMS); do echo "== $$sim"; $(BUILD)/$$sim > $(BUILD)/$$sim.log || { cat $(BUILD)/$$sim.log; exit 1; }; tail -1 $(BUILD)/$$sim.log; done
+
+# A simulation is named after the file it includes: main_sim.c runs $(MAIN)/main.c
+$(BUILD)/%_sim: %_sim.c $(MAIN)/%.c $(HEADERS) $(SOURCES) $(BUILD)/embed.o
+	$(CC) $(CFLAGS) $(IDF_OFF) $(EXTRA) $(INCLUDES) $< $(SOURCES) $(BUILD)/embed.o -lm -o $@
+
+# The same way display/host/Makefile embeds the font
+$(BUILD)/embed.o: $(PAGE) $(LAYOUT)
+	@mkdir -p $(BUILD)
+	printf '#ifdef __ELF__\n\t.section .note.GNU-stack,"",%%progbits\n\t.section .rodata\n#else\n\t.const\n#endif\n\t.globl _binary_index_html_start\n_binary_index_html_start:\n\t.incbin "%s"\n\t.globl _binary_index_html_end\n_binary_index_html_end:\n\t.globl _binary_w906_default_json_start\n_binary_w906_default_json_start:\n\t.incbin "%s"\n\t.globl _binary_w906_default_json_end\n_binary_w906_default_json_end:\n' '$(PAGE)' '$(LAYOUT)' \
+		| $(CC) -c -x assembler-with-cpp -o $@ -
+
+clean:
+	rm -rf $(BUILD)

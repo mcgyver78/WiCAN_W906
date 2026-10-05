@@ -9,6 +9,7 @@
 
 #include <string.h>
 #include <strings.h>
+#include <stdatomic.h>
 #include "platform.h"
 #include "app_web.h"
 #include "freertos/FreeRTOS.h"
@@ -31,10 +32,20 @@
  * One task does both, so nothing here needs a lock of its own. What the task waits on, wherever it waits:
  *   net_task()       an event of the driver, at most NET_STEP_MS; the link and the poll have times of their
  *                    own and are asked again then
+ *   poll_step()      the main task, until what the events named is stored (platform_stored(); app.h)
  *   ask()            the adapter, at most POLL_TIMEOUT_MS for the whole request
  *   find()           the first answer to the mDNS query, at most NET_FIND_MS
  *   station_stop()   the driver's report that the station has left, at most NET_STOP_WAIT_MS
  *   leave()          NET_LEAVE_WAIT_MS, so that the answer of the web server is out before the network is
+ *
+ * Two of these limits are not this task's to keep. ask(): the HTTP client knows a time for each of its
+ * steps, not for a request, and on_http() shortens it step by step - but while the headers of the answer
+ * are read no step ends as long as bytes arrive (esp_http_client_fetch_headers() reads on until the headers
+ * are complete, whatever its parser made of them), and the client does not look at what on_http() returns.
+ * An adapter, or something else at its address, that never finishes its headers holds the task. find(): the
+ * mDNS component ends the query by a timer of its own task, and mdns_query_ptr() waits for that task
+ * without a limit. So the task counts its turns, and the main task restarts the display when the count
+ * stands still (net_turns(), main.c).
  *
  * The events of the driver arrive in the task of the event loop. They are passed on as bits and not as a
  * queue of messages: bits cannot run over while this task waits for the adapter, and what an event says is
@@ -57,6 +68,7 @@
 #define NET_PROTO           "_tcp"
 #define NET_AP_CHANNEL      1       // until the station joins a network: then the driver moves it there
 #define NET_AP_CLIENTS      4
+#define NET_AP_RETRY_MS     1000u   // a refused order for the access point is given again this often
 #define NET_ADDRESS_SIZE    16      // "255.255.255.255" and its zero
 
 #define NET_EVENT_SCAN_DONE     ((EventBits_t)0x01)
@@ -96,6 +108,8 @@ static esp_netif_t *ap_netif;
 static bool sta_busy;       // esp_wifi_connect() was called and the driver has not reported the end of it
 static bool joining;        // the link waits for the outcome of that call
 static bool has_ip;         // the station is in a network
+static atomic_uchar sta_reason;     // why the driver last reported the station as disconnected: set by the
+                                    // task of the event loop, read by this one for the log
 static char sta_ssid[NET_SSID_SIZE];
 static char sta_ip[NET_ADDRESS_SIZE];
 static int sta_rssi;
@@ -106,7 +120,12 @@ static uint64_t scan_since_ms;
 
 static wifi_config_t ap_config;
 static bool ap_on;
+static bool ap_wanted;      // as the link ordered last
+static bool ap_owed;        // the driver has refused that order: ap_step() gives it again
+static uint64_t ap_tried_ms;
 static char ap_ip[NET_ADDRESS_SIZE];
+
+static atomic_uint task_turns;   // of net_task(), for the main task (net_turns())
 
 // The conversation with the adapter
 static esp_http_client_handle_t client;
@@ -114,6 +133,11 @@ static char client_host[LINK_HOST_SIZE];    // the address `client` was made for
 static bool kept;           // a connection to the adapter was opened, and it was not the display that closed it
 static uint32_t reconnects;
 static net_reply_t reply;
+
+uint32_t net_turns(void)
+{
+	return (uint32_t)atomic_load(&task_turns);
+}
 
 /* What the info page shows --------------------------------------------------------------------------- */
 
@@ -383,6 +407,10 @@ static bool poll_step(void)
 		return false;
 	}
 
+	// Not before all that the events named up to here is stored (app.h): what the last answer raised, and
+	// what the knob or the browser stored meanwhile. Usually nothing waits. A restart that is under way is
+	// waited for as well: no request goes out in its last half second.
+	platform_stored();
 	status = ask(host, &request);
 
 	now = platform_now_ms();
@@ -413,7 +441,12 @@ static void station_idle(void)
  *
  * CHECK: the warning below never shows. esp_wifi_disconnect() is documented to end with the disconnected
  * event for a station that is connected; for one that is still connecting nothing is written down. If the
- * warning shows there, the wait is lost time and nothing else.
+ * warning shows there, the wait is lost time - and the report may still come later. It is then booked on
+ * whatever the station does by that time (station_ended()): a join that is under way counts as failed
+ * although it goes on, and the order after it finds a driver that is still connecting. The link gets over
+ * that with its own waits, half a minute at most. Each such report is logged with the reason the driver
+ * gives for it; 8 (WIFI_REASON_ASSOC_LEAVE) is the one a disconnect that was asked for ends with. If the
+ * log shows that reason behind the warning, a late report has to be told apart from a failed join by it.
  */
 static void station_stop(void)
 {
@@ -450,7 +483,8 @@ static void station_ended(void)
 	uint64_t now;
 
 	station_idle();
-	ESP_LOGI(TAG, "\"%s\": %s", sta_ssid, failed ? "not joined" : "left by the network");
+	ESP_LOGI(TAG, "\"%s\": %s (reason %u of the driver)", sta_ssid, failed ? "not joined" : "left by the network",
+	         (unsigned)atomic_load(&sta_reason));
 
 	now = report_begin();
 	if(failed)
@@ -672,21 +706,57 @@ static void access_point(bool on)
 			esp_wifi_set_mode(WIFI_MODE_STA);
 		}
 	}
-	if(err != ESP_OK)
+	ap_wanted = on;
+	ap_tried_ms = platform_now_ms();
+	if(err == ESP_OK)
 	{
-		ESP_LOGE(TAG, "access point %s: %s", on ? "on" : "off", esp_err_to_name(err));
+		ap_owed = false;
+		ap_on = on;
+		ESP_LOGI(TAG, "access point %s", on ? "on" : "off");
 	}
-	ap_on = on && err == ESP_OK;
+	else
+	{
+		// Said once for an order, not with every attempt at it
+		if(!ap_owed)
+		{
+			ESP_LOGE(TAG, "access point %s: %s, tried again until the driver takes it", on ? "on" : "off",
+			         esp_err_to_name(err));
+		}
+		ap_owed = true;
+		// One that was to open is closed (above); one that was to close is as open as it was
+		if(on)
+		{
+			ap_on = false;
+		}
+	}
 	ap_ip[0] = '\0';
 	if(ap_on && esp_netif_get_ip_info(ap_netif, &ip) == ESP_OK)
 	{
 		esp_ip4addr_ntoa(&ip.ip, ap_ip, sizeof(ap_ip));
 	}
-	ESP_LOGI(TAG, "access point %s", ap_on ? "on" : "off");
 
 	platform_lock();
 	info_fill();
 	platform_unlock();
+}
+
+/*
+ * The link hands each of its orders out once and takes it as carried out (link.h): an order for the access
+ * point that the driver refused would be lost for good - the menu says "on", and no network opens. So it is
+ * given again until the driver takes it. Not while the station is on its way into a network: that is when
+ * the driver is documented to refuse a configuration (ESP_ERR_WIFI_STATE, esp_wifi.h), and a change of the
+ * mode in the middle of an attempt is not known to leave the attempt alone. Between two attempts at a
+ * network that does not take the display there is time for it: in every turn of the task this comes after
+ * the reports of the driver and before the next order of the link.
+ * CHECK: with a stored network whose password is wrong, switch the access point on in the menu while the
+ * log says "joining": the access point has to open, at once or with the next "not joined".
+ */
+static void ap_step(void)
+{
+	if(ap_owed && !(sta_busy && !has_ip) && platform_now_ms() - ap_tried_ms >= NET_AP_RETRY_MS)
+	{
+		access_point(ap_wanted);
+	}
 }
 
 // CHECK: with a phone that joins the access point and leaves it again the access point closes
@@ -719,7 +789,14 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 		switch(id)
 		{
 			case WIFI_EVENT_SCAN_DONE:          bits = NET_EVENT_SCAN_DONE; break;
-			case WIFI_EVENT_STA_DISCONNECTED:   bits = NET_EVENT_DISCONNECTED; break;
+			case WIFI_EVENT_STA_DISCONNECTED:
+				bits = NET_EVENT_DISCONNECTED;
+				// The one thing a bit cannot carry and the driver does not tell again when asked
+				if(data != NULL)
+				{
+					atomic_store(&sta_reason, ((const wifi_event_sta_disconnected_t *)data)->reason);
+				}
+				break;
 			case WIFI_EVENT_AP_STACONNECTED:
 			case WIFI_EVENT_AP_STADISCONNECTED: bits = NET_EVENT_AP_CLIENTS; break;
 			default:                            break;
@@ -801,8 +878,10 @@ static void net_task(void *arg)
 	{
 		bool answered;
 
+		atomic_fetch_add(&task_turns, 1);
 		driver_events(bits);
 		scan_watch();
+		ap_step();
 		link_step();
 		answered = poll_step();
 		signal_step();
@@ -816,7 +895,7 @@ static void net_task(void *arg)
 
 esp_err_t net_start(const char *ap_ssid, const char *ap_password)
 {
-	const wifi_init_config_t init_config = WIFI_INIT_CONFIG_DEFAULT();
+	wifi_init_config_t init_config = WIFI_INIT_CONFIG_DEFAULT();
 	size_t ssid_length = ap_ssid != NULL ? strlen(ap_ssid) : 0;
 	size_t password_length = ap_password != NULL ? strlen(ap_password) : 0;
 	esp_err_t err;
@@ -839,7 +918,15 @@ esp_err_t net_start(const char *ap_ssid, const char *ap_password)
 	sta_netif = esp_netif_create_default_wifi_sta();
 	ap_netif = esp_netif_create_default_wifi_ap();
 
-	// Needs the NVS partition to be initialised (store_init()): the driver keeps its calibration there
+	// The driver gets no NVS of its own. It would keep there what it is told to keep in the RAM two lines
+	// below, and it is known not to start with one it cannot open ("wifi nvs_open fail"; that check is in
+	// the binary part of the driver and was not read). Without the store (store_init() failed, main.c goes
+	// on) the display would then have neither access point nor web interface, just when somebody needs them
+	// to get another firmware in. The calibration of the radio is not the driver's: esp_phy keeps it in the
+	// NVS and calibrates in full at every start when it cannot (esp_phy_load_cal_and_init(), phy_init.c).
+	// CHECK: once, with an NVS partition that cannot be read (the log names the failed store): the access
+	// point opens and the page answers.
+	init_config.nvs_enable = 0;
 	ESP_RETURN_ON_ERROR(esp_wifi_init(&init_config), TAG, "WiFi driver");
 	// The networks are in the store of the display (STORE_KEY_WIFI): the driver writes none into the flash
 	ESP_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM), TAG, "WiFi storage");

@@ -10,9 +10,34 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 # GPIO43 (UART0 TX) drives the LED of the board: log on the native USB instead
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 
+# The task watchdog of ESP-IDF watches the idle task of each core (its default) and the two tasks of
+# main/screen.c, which subscribe to it. Left to its default it only prints when one of them has not run for
+# its 5 s. A task that turns for ever - LVGL has loops without an exit - would then freeze the picture for
+# good, and with it everything the display is asked to do: the task that stores and restarts has the lowest
+# priority on that core (main/main.c). With the panic the hang ends in a restart, guard.h counts it as a
+# crash, and the boot loader takes back an update that nobody confirmed. main/screen.c does not compile
+# without this line.
+# CHECK: "Letzter Neustart" on the info page never says task_wdt. Look after the first picture, after turning
+# through every kind of screen once (each glyph is made when it is first shown), after a firmware upload
+# and after "Vorherige Version" (both check a whole image in one go). If one of these is cut short by the
+# watchdog, it is CONFIG_ESP_TASK_WDT_TIMEOUT_S that has to grow, not the panic that has to go.
+CONFIG_ESP_TASK_WDT_PANIC=y
+
+# A default of ESP-IDF v5.5.2 the firmware counts on, written down so that it does not change unseen: 100
+# ticks a second. The screen task reads the switch every 20 ms, which has to be a whole number of ticks, and
+# the 1 ms it has for the lock of LVGL is then no wait at all (main/screen.c).
+CONFIG_FREERTOS_HZ=100
+
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
+# Two more defaults of ESP-IDF v5.5.2 that are counted on, written down for the same reason. What ESP-IDF
+# and its components allocate themselves, below 16 KB a piece, comes from the internal RAM, and 32 KB of it
+# are kept back for what cannot lie anywhere else (the stacks of the tasks, memory for DMA). The rooms of
+# the display itself are asked for by name: MALLOC_CAP_SPIRAM, or MALLOC_CAP_INTERNAL for the block of a
+# firmware (main/web.c).
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
 
 # RGB panel (components/board): the frame buffer lies in the PSRAM, and an interrupt copies it a few lines
 # at a time into two bounce buffers in the internal RAM, which the DMA sends. board.c refuses to compile

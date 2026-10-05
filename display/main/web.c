@@ -28,15 +28,23 @@
  *
  * Every request goes through web_route(), whatever its method and path: one handler is registered for the
  * path "*" (httpd_uri_match_wildcard) and the method HTTP_ANY, and the server looks for no other match, so
- * it never comes to its own 404 or 405 (httpd_uri.c). What does not become a request at all - a method the
- * parser does not know, a line or headers too long, a client that falls silent - would be answered by the
- * server with a text of its own: on_error() is registered for all of that and closes the connection
- * without an answer. No header is ever set here but status, type and length.
+ * it never comes to its own 404 or 405 (httpd_uri.c) - once the handler is registered: web_start() names
+ * the moment before that. What does not become a request at all - a method the parser does not know, a
+ * line or headers too long, a client that falls silent - would be answered by the server with a text of its
+ * own: on_error() is registered for all of that and closes the connection without an answer. No header is
+ * ever set here but status, type and length, and with the page the two that forbid to show it in a frame
+ * (handle()).
  *
  * One request at a time: the server has a single task, which runs the handler of one request to its end
  * before it looks at the next connection (httpd_main.c), and nothing in this file runs in another task
  * after web_start(). The buffers below are used by that task alone. This is also what makes a firmware
  * upload the only one: while it runs, no other request is even read.
+ *
+ * And it is why every wait for a client has an end of its own here. The server gives each single read its
+ * receive timeout (5 s) and knows no time for a body: a client that sends a byte every few seconds would
+ * hold the one task, and with it the web interface, for as long as it likes. A body has WEB_BODY_MS, a
+ * firmware as long as the app lets the upload run (APP_UPLOAD_IDLE_MS without a block), and what is dropped
+ * behind an answer WEB_DROP_MS.
  */
 
 #define TAG "web"
@@ -51,6 +59,14 @@
 // another device at the same address is added; a request above the limit gets no answer at all.
 #define WEB_HEADERS_BYTES   2048
 #define WEB_BLOCK_SIZE      4096    // of a firmware: one sector of the flash
+// A body other than a firmware, from its first byte to its last: 16 KB of layout at most. The page gives
+// up on its request after 10 s (index.html, which has the CHECK for that number).
+#define WEB_BODY_MS         15000u
+// While a block of a firmware is received the app is asked this often whether the upload still runs
+#define WEB_LOOK_MS         1000u
+// What a refused request still sends is read and dropped for this long: a firmware of the size of the slot
+// that was refused has to pass in it, or its sender sees a broken connection instead of the refusal
+#define WEB_DROP_MS         60000u
 #define WEB_TYPE_JSON       "application/json"
 #define WEB_TYPE_PAGE       "text/html; charset=utf-8"
 
@@ -78,7 +94,9 @@ static const esp_partition_t *slot;     // the app slot a firmware is written to
 static uint32_t slot_size;
 
 // Of the request being served. A value that does not fit is cut, and each room is larger than every value
-// web_route() accepts: 25 bytes for a host, "1", ten digits. So a cut value is always a refused one.
+// web_route() accepts: 25 bytes for a host, "1", ten digits. So a cut host or X-Display is always a refused
+// one. Not so a length: zeros in front make a number long without making it large, and cut behind them it
+// is a small number. A length that fills its room is not read as a number at all (read_request()).
 static char host[64];
 static char header[4];
 static char length_text[16];
@@ -173,13 +191,20 @@ static void read_request(httpd_req_t *req, web_request_t *request)
 	request->header = header_value(req, WEB_HEADER_NAME, header, sizeof(header));
 	length = header_value(req, "Content-Length", length_text, sizeof(length_text));
 	request->has_length = length != NULL;
-	request->length = length_of(length);
+	// A value that fills its room may have lost its end, and the server does not say so for every one that
+	// has (it reports a cut value only from two bytes too many on, httpd_parse.c). Fifteen digits are more
+	// than 32 bit hold unless zeros lead them, and no client sends those: the largest number there is.
+	request->length = length != NULL && strlen(length) >= sizeof(length_text) - 1 ? UINT32_MAX : length_of(length);
 	request->slot_size = slot_size;
 
 	// The server reads a body of the length it was told and no other: what a request without one sends
 	// behind its headers would be taken for the next request. And a HEAD is answered like every method that
 	// is not served, with a body the client does not expect.
-	close_after = request->method == WEB_OTHER || (request->method != WEB_GET && !request->has_length);
+	// The length the server goes by is its own reading of the header (req->content_len, 0 for one it takes
+	// for none: beyond 32 bit it wraps). Where that is not the number web_route() was given, nobody knows
+	// where this request ends: it is answered - refused, with a length like that - and nothing more is read.
+	close_after = request->method == WEB_OTHER || (request->method != WEB_GET && !request->has_length) ||
+	              (request->has_length && request->length != req->content_len);
 }
 
 // Whether the firmware upload still runs. The app ends one that brings nothing (app_tick()).
@@ -194,26 +219,47 @@ static bool uploading(void)
 }
 
 // Receives exactly `length` bytes of the body, without the lock. Returns false if they did not all arrive:
-// the connection broke, or nothing came for the receive timeout of the server.
+// the connection broke, nothing came for the receive timeout of the server, or the body as a whole took
+// longer than WEB_BODY_MS.
 // patient: a block of a running firmware upload. How long an upload may bring nothing is the app's to say,
-// not the server's: after a timeout the app is asked, and the wait goes on while the upload runs.
+// not the server's: the wait goes on while the upload runs. The app is asked after every timeout, once in
+// WEB_LOOK_MS while bytes come in, and when the block is whole - the caller writes a block that is
+// returned, and nothing is written once the app has ended the upload (app_web.h).
 static bool receive(httpd_req_t *req, char *buffer, size_t length, bool patient)
 {
+	uint64_t begun_ms = platform_now_ms();
+	uint64_t looked_ms = begun_ms;
 	size_t got = 0;
 
 	while(got < length)
 	{
 		int more = httpd_req_recv(req, buffer + got, length - got);
+		uint64_t now = platform_now_ms();
 
-		if(more == HTTPD_SOCK_ERR_TIMEOUT && patient && uploading())
+		if(more > 0)
 		{
-			continue;
+			got += (size_t)more;
 		}
-		if(more <= 0)
+		else if(more != HTTPD_SOCK_ERR_TIMEOUT || !patient)
 		{
 			return false;
 		}
-		got += (size_t)more;
+
+		if(patient)
+		{
+			if(more <= 0 || got == length || now - looked_ms >= WEB_LOOK_MS)
+			{
+				looked_ms = now;
+				if(!uploading())
+				{
+					return false;
+				}
+			}
+		}
+		else if(got < length && now - begun_ms >= WEB_BODY_MS)
+		{
+			return false;
+		}
 	}
 	return true;
 }
@@ -224,10 +270,12 @@ static bool receive(httpd_req_t *req, char *buffer, size_t length, bool patient)
  * A request that was refused may have a body nobody read - megabytes, if it is a firmware. It is read and
  * dropped here, behind the answer: a browser does not look at the answer before it has sent all of its
  * request, and a connection closed under it shows there as a network error instead of the refusal. A client
- * that stops sending ends in the receive timeout of the server, and the connection is closed.
+ * that stops sending ends in the receive timeout of the server, one that is still sending after WEB_DROP_MS
+ * ends there, and the connection is closed: nobody else is served while this lasts.
  */
 static esp_err_t answer(httpd_req_t *req, int status, const char *type, const char *body, size_t length)
 {
+	uint64_t until_ms = 0;
 	int dropped;
 
 	httpd_resp_set_status(req, status_line(status));
@@ -236,12 +284,23 @@ static esp_err_t answer(httpd_req_t *req, int status, const char *type, const ch
 	{
 		return ESP_FAIL;
 	}
-	// Nothing of the request is left in most cases: the first call returns 0 then
-	do
+	// Nothing of the request is left in most cases: the first call returns 0 then, and no time is taken
+	for(;;)
 	{
 		dropped = httpd_req_recv(req, room->body, sizeof(room->body));
+		if(dropped <= 0)
+		{
+			break;
+		}
+		if(until_ms == 0)
+		{
+			until_ms = platform_now_ms() + WEB_DROP_MS;
+		}
+		else if(platform_now_ms() >= until_ms)
+		{
+			return ESP_FAIL;
+		}
 	}
-	while(dropped > 0);
 	return dropped == 0 ? ESP_OK : ESP_FAIL;
 }
 
@@ -310,11 +369,12 @@ static esp_err_t upload(httpd_req_t *req, uint32_t size)
 	}
 
 	// From here on app_web_upload_end() is owed, once, however this ends.
-	// First it is made known, for good, that the other slot holds no version to go back to (main.c)
-	platform_upload_begun();
+	// First it is made known, for good, that the other slot holds no version to go back to (main.c). If
+	// that cannot be written down, nothing is erased and the upload ends as one that failed: what it would
+	// leave in the slot could be started as the "previous version" after a restart.
 	ESP_LOGI(TAG, "firmware: %" PRIu32 " bytes into %s", size, slot->label);
 
-	begun = flashed(esp_ota_begin(slot, OTA_WITH_SEQUENTIAL_WRITES, &ota), "begin");
+	begun = platform_upload_begun() && flashed(esp_ota_begin(slot, OTA_WITH_SEQUENTIAL_WRITES, &ota), "begin");
 	ok = begun;
 	while(ok)
 	{
@@ -367,6 +427,10 @@ static esp_err_t handle(httpd_req_t *req)
 	uint64_t now;
 	int status;
 
+	// What the requests before this one raised is stored before this one is served (app_web.h). Usually
+	// nothing waits. After a request that restarts the display this waits for the restart: the answer to
+	// that request is out, and no other is given.
+	platform_stored();
 	read_request(req, &request);
 
 	// The time is read after the request has arrived and before the lock is waited for
@@ -384,6 +448,12 @@ static esp_err_t handle(httpd_req_t *req)
 	}
 	if(decision.route == WEB_ROUTE_PAGE)
 	{
+		// The page must not be shown inside the page of somebody else: a click that is led into it there
+		// is a request of the page itself, with its header and all, while the release is open. Said in the
+		// two ways browsers know; the policy the page carries cannot say it (frame-ancestors does not
+		// count in a <meta>). The server keeps the pointers until the answer is sent: constants.
+		httpd_resp_set_hdr(req, "X-Frame-Options", "DENY");
+		httpd_resp_set_hdr(req, "Content-Security-Policy", "frame-ancestors 'none'");
 		return answer(req, 200, WEB_TYPE_PAGE, page_start, (size_t)(page_end - page_start));
 	}
 	if(decision.route == WEB_ROUTE_OTA)
@@ -486,7 +556,12 @@ esp_err_t web_start(void)
 
 	// Needs the TCP/IP stack and the default event loop, which net_start() brings up
 	ESP_RETURN_ON_ERROR(httpd_start(&server, &config), TAG, "HTTP server");
-	// The errors first: the server runs already, and until the handler is there it would answer by itself
+	// The errors first: the server runs already, and until the handler is there it would answer by itself.
+	// It does, for a request that comes within the few instructions from httpd_start() to the turn of the
+	// loop below that registers on_error() for it: "404 Not Found" as text, without a header of ours and
+	// without anything of the display in it (httpd_uri.c, httpd_req_handle_err()). The handlers need the
+	// handle, so the moment cannot be closed. It lies at the start of the display: the station is in no
+	// network yet, and nobody can have joined the own access point.
 	for(int error = 0; error < HTTPD_ERR_CODE_MAX; error++)
 	{
 		ESP_RETURN_ON_ERROR(httpd_register_err_handler(server, (httpd_err_code_t)error, on_error), TAG, "error handler");

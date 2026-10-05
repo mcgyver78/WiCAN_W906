@@ -39,9 +39,11 @@ HORIZONTAL = "\telse what = nav_swipe(&app->nav, dx < 0 ? 1 : dx > 0 ? -1 : 0, &
 TICK_NAV = "\tapp_do(app, nav_tick(&app->nav, &world, now), now);"
 TICK_UPDATE_IF = "\tif(app->update_pending && !app->update_given_up && now >= app->update_until_ms)"
 TICK_UPDATE_DO = "\t\tapp->update_given_up = true;\n\t\tapp->events |= APP_EVENT_REBOOT;\n"
-HEAT_IF = "\tif(app->heat == GUARD_HEAT_OFF && app->nav.screen == NAV_DTC_CONFIRM)"
-HEAT_CLOSE = "\t\thold_close(&app->hold);\n\t\tapp_world(app, &world, app->clock_ms);\n"
-HEAT_LEAVE = "\t\tnav_hold(&app->nav, HOLD_CANCELLED, &world, app->clock_ms);"
+HEAT_IF = "\tif(app->heat != GUARD_HEAT_OFF) return;\n"
+HEAT_ASKING = "access_asking(&app->access, app->clock_ms) != ACCESS_ASK_NONE"
+HEAT_ASK = "\tif(" + HEAT_ASKING + ") app_do(app, NAV_DO_ASK_REFUSE, app->clock_ms);\n"
+HEAT_LEAVE = "\tapp_do(app, nav_cancel(&app->nav, &world, app->clock_ms), app->clock_ms);"
+HEAT_PRESS = "\tapp->woke = true;\n"
 TICK_UPLOAD = "\tif(app->uploading && passed(now, app->upload_ms) >= APP_UPLOAD_IDLE_MS) app->uploading = false;"
 TICK_DROP = "\tif(world.asking == ACCESS_ASK_NONE) drop_asked(app);"
 NET_WIFI = "\tpoll_wifi(&app->poll, link_up(&app->link), now);"
@@ -54,6 +56,7 @@ SCENE_READ = "\tinput.read_block = dtc_flow_read_block(&poll->flow, &poll->conn,
 SCENE_CLEAR = "\tinput.clear_block = dtc_flow_clear_block(&poll->flow, &poll->conn, &poll->values, &poll->catalog, hold_is_stuck(&app->hold), now);"
 SCENE_LIST = "\tif(poll->has_list)\n\t{\n\t\tinput.list = app->list;\n\t\tinput.summary = &app->summary;\n\t}"
 LEFT = "\tif(app->update_pending) input.update_left_s = (uint32_t)((passed(app->update_until_ms, now) + 999) / 1000);"
+AP_KEPT = "\tworld->ap_kept = link_ap_kept(&app->link);\n"
 BUSY = ("\treturn phase == DTC_FLOW_READ_SENT || phase == DTC_FLOW_READING || phase == DTC_FLOW_CLEAR_SENT || phase == DTC_FLOW_CLEARING ||\n"
         "\t       app->nav.screen == NAV_DTC_CONFIRM || app->uploading;")
 
@@ -344,7 +347,11 @@ MUTATIONS = [
     ("app_button_only_presses_in_the_dark_passed_on", T, F, KNOB, "\tif(knob_event != KNOB_NONE && app->woke)"),
     ("app_button_long_press_in_the_dark_passed_on", T, F, KNOB, "\tif(knob_event != KNOB_NONE && (!app->woke || knob_event == KNOB_LONG))"),
     ("app_button_short_press_in_the_dark_passed_on", T, F, KNOB, "\tif(knob_event != KNOB_NONE && (!app->woke || knob_event == KNOB_SHORT))"),
-    ("app_button_press_dropped_when_the_screen_is_dark_at_its_end", T, F, KNOB, "\tif(knob_event != KNOB_NONE && !app->woke && backlight(app, &world, now) != 0)"),
+    # There was a mutation here that dropped a press when the screen is dark at its end. It guarded the rule
+    # that a press begun on a lit screen counts although the heat switches the light off under it. That rule
+    # is reversed (app_temperature(), the mutations app_heat_*_press_*), and since then the mutation changes
+    # nothing that can happen: the heat drops such a press itself, and the standby rule restarts its time
+    # with every press, which is reported long before that time is over.
     ("app_button_press_in_the_dark_passed_on_when_the_screen_is_lit_at_its_end", T, F, KNOB, "\tif(knob_event != KNOB_NONE && (!app->woke || guard_brightness(app->heat, SETTINGS_BRIGHTNESS_MAX) > 0))"),
     ("app_button_short_press_not_passed_on", T, F, KNOB, "\tif(knob_event == KNOB_LONG && !app->woke)"),
     ("app_button_long_press_not_passed_on", T, F, KNOB, "\tif(knob_event == KNOB_SHORT && !app->woke)"),
@@ -443,19 +450,49 @@ MUTATIONS = [
     ("app_event_install_is_the_previous_bit", T, H, "#define APP_EVENT_INSTALL_FIRMWARE  0x0800u", "#define APP_EVENT_INSTALL_FIRMWARE  0x0400u"),
 
     # temperature and platform
-    ("app_heat_leaves_the_clear_dialog_open", T, F, HEAT_IF, "\tif(app->heat == GUARD_HEAT_OFF && app->nav.screen == NAV_PAGES)"),
-    ("app_heat_that_dims_closes_the_clear_dialog", T, F, HEAT_IF, HEAT_IF.replace("app->heat == GUARD_HEAT_OFF", "app->heat != GUARD_HEAT_NORMAL")),
-    ("app_heat_closes_the_clear_dialog_with_a_failed_reading_only", T, F, HEAT_IF, HEAT_IF.replace("app->heat == GUARD_HEAT_OFF", "app->heat == GUARD_HEAT_OFF && !valid")),
-    ("app_heat_closes_the_clear_dialog_only_above_the_limit", T, F, HEAT_IF, HEAT_IF.replace("app->heat == GUARD_HEAT_OFF", "app->heat == GUARD_HEAT_OFF && celsius > GUARD_TEMP_OFF_C")),
-    ("app_heat_closes_the_clear_dialog_by_a_failed_reading", T, F, HEAT_IF, HEAT_IF.replace("app->heat == GUARD_HEAT_OFF", "celsius >= GUARD_TEMP_OFF_C")),
-    ("app_heat_leaves_the_clear_dialog_open_with_the_focus_on_abbrechen", T, F, HEAT_IF, HEAT_IF.replace("app->heat == GUARD_HEAT_OFF", "app->heat == GUARD_HEAT_OFF && app->nav.row == ROW_CLEAR")),
-    ("app_heat_leaves_the_hold_open", T, F, HEAT_CLOSE, "\t\tapp_world(app, &world, app->clock_ms);\n"),
-    ("app_heat_closes_the_hold_only", T, F, HEAT_LEAVE, HEAT_LEAVE.replace("HOLD_CANCELLED", "HOLD_WAITING")),
-    ("app_heat_confirms_the_hold", T, F, HEAT_LEAVE, HEAT_LEAVE.replace("HOLD_CANCELLED", "HOLD_CONFIRMED")),
-    ("app_heat_clears", T, F, HEAT_LEAVE, "\t\tapp_do(app, nav_hold(&app->nav, HOLD_CONFIRMED, &world, app->clock_ms), app->clock_ms);"),
-    ("app_heat_leaves_the_dialog_at_a_later_time", T, F, HEAT_LEAVE, HEAT_LEAVE.replace("&world, app->clock_ms", "&world, app->clock_ms + 1000")),
-    ("app_heat_leaving_the_dialog_is_an_input", T, F, HEAT_LEAVE, HEAT_LEAVE + "\n\t\tapp->last_input_ms = app->clock_ms;"),
-    ("app_heat_leaves_the_dialog_for_the_value_pages", T, F, HEAT_LEAVE, HEAT_LEAVE + "\n\t\tnav_init(&app->nav, &world, app->clock_ms);"),
+    # a question nobody can see is none: the level that switches the light off, and no other
+    ("app_heat_takes_nothing_away", T, F, HEAT_IF, "\tif(app->heat != GUARD_HEAT_OFF || celsius > -1000) return;\n"),
+    ("app_heat_takes_the_questions_away_at_every_level", T, F, HEAT_IF, ""),
+    ("app_heat_that_dims_takes_the_questions_away", T, F, HEAT_IF, "\tif(app->heat == GUARD_HEAT_NORMAL) return;\n"),
+    ("app_heat_takes_the_questions_away_with_a_failed_reading_only", T, F, HEAT_IF, "\tif(app->heat != GUARD_HEAT_OFF || valid) return;\n"),
+    ("app_heat_takes_the_questions_away_only_with_a_reading_that_succeeded", T, F, HEAT_IF, "\tif(app->heat != GUARD_HEAT_OFF || !valid) return;\n"),
+    ("app_heat_takes_the_questions_away_only_above_the_limit", T, F, HEAT_IF, "\tif(app->heat != GUARD_HEAT_OFF || celsius <= GUARD_TEMP_OFF_C) return;\n"),
+    ("app_heat_takes_the_questions_away_by_the_reading_not_the_level", T, F, HEAT_IF, "\tif(celsius < GUARD_TEMP_OFF_C) return;\n"),
+    # ... the question of the browser
+    ("app_heat_leaves_the_question_of_the_browser", T, F, HEAT_ASK, ""),
+    ("app_heat_confirms_the_question_of_the_browser", T, F, HEAT_ASK, HEAT_ASK.replace("NAV_DO_ASK_REFUSE", "NAV_DO_ASK_CONFIRM")),
+    ("app_heat_refuses_and_keeps_what_was_asked", T, F, HEAT_ASK, "\tif(" + HEAT_ASKING + ") access_refuse(&app->access, app->clock_ms);\n"),
+    ("app_heat_drops_what_was_asked_and_lets_the_question_wait", T, F, HEAT_ASK, "\tif(" + HEAT_ASKING + ") drop_asked(app);\n"),
+    ("app_heat_leaves_the_network_question", T, F, HEAT_ASK, HEAT_ASK.replace(HEAT_ASKING, HEAT_ASKING + " && access_asking(&app->access, app->clock_ms) != ACCESS_ASK_WIFI")),
+    ("app_heat_leaves_the_firmware_question", T, F, HEAT_ASK, HEAT_ASK.replace(HEAT_ASKING, HEAT_ASKING + " && access_asking(&app->access, app->clock_ms) != ACCESS_ASK_FIRMWARE")),
+    ("app_heat_leaves_the_question_of_the_factory_reset", T, F, HEAT_ASK, HEAT_ASK.replace(HEAT_ASKING, HEAT_ASKING + " && access_asking(&app->access, app->clock_ms) != ACCESS_ASK_RESET")),
+    ("app_heat_refuses_the_question_at_a_later_time", T, F, HEAT_ASK, HEAT_ASK.replace("NAV_DO_ASK_REFUSE, app->clock_ms", "NAV_DO_ASK_REFUSE, app->clock_ms + 1000")),
+    ("app_heat_touches_the_release_without_a_question", T, F, HEAT_ASK, "\tapp_do(app, NAV_DO_ASK_REFUSE, app->clock_ms);\n"),
+    ("app_heat_takes_the_release_back", T, F, HEAT_ASK, HEAT_ASK.replace("NAV_DO_ASK_REFUSE", "NAV_DO_RELEASE_OFF")),
+    ("app_heat_refusing_the_question_is_an_input", T, F, HEAT_ASK, HEAT_ASK.replace("app_do(app, NAV_DO_ASK_REFUSE, app->clock_ms);", "\n\t{\n\t\tapp_do(app, NAV_DO_ASK_REFUSE, app->clock_ms);\n\t\tapp->last_input_ms = app->clock_ms;\n\t}")),
+    # ... and the two dialogs
+    ("app_heat_leaves_the_press_under_way", T, F, HEAT_PRESS, ""),
+    ("app_heat_passes_on_the_press_under_way_also_one_begun_in_the_dark", T, F, HEAT_PRESS, HEAT_PRESS.replace("true", "false")),
+    ("app_heat_drops_the_press_under_way_at_every_level", T, F, HEAT_IF, HEAT_PRESS + HEAT_IF),
+    ("app_heat_drops_the_press_only_when_the_knob_is_released", T, F, HEAT_PRESS, "\tif(!knob_is_pressed(&app->knob)) app->woke = true;\n"),
+    ("app_heat_drops_the_press_under_way_only_under_a_question", T, F, HEAT_PRESS, "\tif(" + HEAT_ASKING + ") app->woke = true;\n"),
+    ("app_heat_drops_the_press_under_way_only_without_a_question", T, F, HEAT_PRESS, "\tif(!(" + HEAT_ASKING + ")) app->woke = true;\n"),
+    ("app_heat_drops_the_press_under_way_only_on_the_pages", T, F, HEAT_PRESS, "\tif(app->nav.screen == NAV_PAGES) app->woke = true;\n"),
+    ("app_heat_leaves_the_dialogs_open", T, F, HEAT_LEAVE, "\tapp_do(app, NAV_DO_NOTHING, app->clock_ms);"),
+    ("app_heat_leaves_the_clear_dialog_open", T, F, HEAT_LEAVE, "\tif(app->nav.screen != NAV_DTC_CONFIRM) " + HEAT_LEAVE[1:]),
+    ("app_heat_leaves_the_dialog_of_the_settings_open", T, F, HEAT_LEAVE, "\tif(app->nav.screen != NAV_CONFIRM) " + HEAT_LEAVE[1:]),
+    ("app_heat_leaves_the_clear_dialog_open_with_the_focus_on_abbrechen", T, F, HEAT_LEAVE, "\tif(app->nav.screen != NAV_DTC_CONFIRM || app->nav.row == ROW_CLEAR) " + HEAT_LEAVE[1:]),
+    ("app_heat_leaves_the_dialogs_open_under_an_overlay", T, F, HEAT_LEAVE, "\tif(nav_overlay(&world) == NAV_OVER_NONE) " + HEAT_LEAVE[1:]),
+    ("app_heat_leaves_the_hold_open", T, F, HEAT_LEAVE, "\tnav_cancel(&app->nav, &world, app->clock_ms);"),
+    ("app_heat_closes_the_hold_only", T, F, HEAT_LEAVE, "\tif(app->nav.screen == NAV_DTC_CONFIRM) hold_close(&app->hold);"),
+    ("app_heat_confirms_the_hold", T, F, HEAT_LEAVE, "\tapp_do(app, nav_hold(&app->nav, HOLD_CONFIRMED, &world, app->clock_ms), app->clock_ms);"),
+    ("app_heat_carries_out_what_the_dialog_of_the_settings_asks", T, F,
+     HEAT_LEAVE, "\tif(app->nav.screen == NAV_CONFIRM) app_do(app, app->nav.confirm, app->clock_ms);\n" + HEAT_LEAVE),
+    ("app_heat_leaves_the_dialogs_at_a_later_time", T, F, HEAT_LEAVE, HEAT_LEAVE.replace("&world, app->clock_ms)", "&world, app->clock_ms + 1000)")),
+    ("app_heat_leaving_the_dialogs_is_an_input", T, F, HEAT_LEAVE, HEAT_LEAVE + "\n\tapp->last_input_ms = app->clock_ms;"),
+    ("app_heat_leaves_the_dialogs_for_the_value_pages", T, F, HEAT_LEAVE, HEAT_LEAVE + "\n\tnav_init(&app->nav, &world, app->clock_ms);"),
+    ("app_heat_confirms_the_update", T, F, HEAT_LEAVE, HEAT_LEAVE + "\n\tif(app->update_pending) app_do(app, NAV_DO_UPDATE_OK, app->clock_ms);"),
+    ("app_heat_ends_an_upload", T, F, HEAT_LEAVE, HEAT_LEAVE + "\n\tapp->uploading = false;"),
     ("app_temperature_level_not_followed", T, F, "\tapp->heat = guard_heat(app->heat, celsius, valid);\n", ""),
     ("app_temperature_failed_reading_counts", T, F, "\tapp->heat = guard_heat(app->heat, celsius, valid);", "\tapp->heat = guard_heat(app->heat, celsius, true);"),
     ("app_temperature_level_always_from_normal", T, F, "\tapp->heat = guard_heat(app->heat, celsius, valid);", "\tapp->heat = guard_heat(GUARD_HEAT_NORMAL, celsius, valid);"),
@@ -603,6 +640,19 @@ MUTATIONS = [
     ("app_world_no_upload", T, F, "\tworld->uploading = app->uploading;\n", ""),
     ("app_world_no_previous_firmware", T, F, "\tworld->previous_firmware = app->previous_firmware;\n", ""),
     ("app_world_previous_firmware_while_rolled_back", T, F, "\tworld->previous_firmware = app->previous_firmware;", "\tworld->previous_firmware = app->previous_firmware || app->rolled_back;"),
+    # whether the own access point can be switched: what the link says of itself right now (link_ap_kept()) - the
+    # safe mode of this start or no stored network, whether the access point is on already or not, whatever
+    # network the display is in
+    ("app_world_access_point_never_kept", T, F, AP_KEPT, ""),
+    ("app_world_access_point_always_kept", T, F, AP_KEPT, "\tworld->ap_kept = true;\n"),
+    ("app_world_access_point_kept_reversed", T, F, AP_KEPT, "\tworld->ap_kept = !link_ap_kept(&app->link);\n"),
+    ("app_world_access_point_kept_only_in_safe_mode", T, F, AP_KEPT, "\tworld->ap_kept = app->safe_mode;\n"),
+    ("app_world_access_point_kept_only_without_a_network", T, F, AP_KEPT, "\tworld->ap_kept = app->profile_count == 0;\n"),
+    ("app_world_access_point_kept_while_it_is_on", T, F, AP_KEPT, "\tworld->ap_kept = link_ap_on(&app->link);\n"),
+    ("app_world_access_point_kept_while_it_is_wanted", T, F, AP_KEPT, "\tworld->ap_kept = app->link.ap_wanted;\n"),
+    ("app_world_access_point_kept_only_once_it_is_on", T, F, AP_KEPT, "\tworld->ap_kept = link_ap_kept(&app->link) && link_ap_on(&app->link);\n"),
+    ("app_world_access_point_kept_while_in_no_network", T, F, AP_KEPT, "\tworld->ap_kept = app->safe_mode || !link_up(&app->link);\n"),
+    ("app_world_access_point_kept_while_the_release_is_open", T, F, AP_KEPT, "\tworld->ap_kept = link_ap_kept(&app->link) || world->release_open;\n"),
     ("app_world_never_night", T, F, "\tworld->night_mode = app->settings.night_mode;\n", ""),
     ("app_world_brightness_of_the_day", T, F, "\tworld->brightness = app->settings.night_mode ? app->settings.night : app->settings.brightness;", "\tworld->brightness = app->settings.brightness;"),
     ("app_world_brightness_of_the_night", T, F, "\tworld->brightness = app->settings.night_mode ? app->settings.night : app->settings.brightness;", "\tworld->brightness = app->settings.night;"),

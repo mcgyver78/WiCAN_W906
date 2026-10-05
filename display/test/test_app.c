@@ -49,10 +49,24 @@ static void set_text(char *field, size_t size, const char *text)
 	strncpy(field, text, size - 1);
 }
 
+// A fault memory request of the display is under way: what would take the adapter away is refused as busy
+static bool browser_under_way(void)
+{
+	dtc_flow_phase_t flow = app->poll.flow.phase;
+
+	return flow == DTC_FLOW_READ_SENT || flow == DTC_FLOW_READING || flow == DTC_FLOW_CLEAR_SENT || flow == DTC_FLOW_CLEARING;
+}
+
+// The heat keeps the screen dark: nobody could see a question, none is asked and no upload begins ("hot")
+static bool browser_hot(void)
+{
+	return app->heat == GUARD_HEAT_OFF;
+}
+
 // POST /api/wifi. password NULL: the member is missing. Returns the ticket, 0 if refused.
 static uint32_t browser_wifi(const char *ssid, const char *password, const char *host)
 {
-	if(access_may_ask(&app->access, ACCESS_ASK_WIFI, now) != ACCESS_ALLOWED) return 0;
+	if(browser_under_way() || browser_hot() || access_may_ask(&app->access, ACCESS_ASK_WIFI, now) != ACCESS_ALLOWED) return 0;
 
 	memset(&app->wifi_asked, 0, sizeof(app->wifi_asked));
 	set_text(app->wifi_asked.ssid, sizeof(app->wifi_asked.ssid), ssid);
@@ -67,14 +81,14 @@ static uint32_t browser_wifi(const char *ssid, const char *password, const char 
 // POST /api/reset
 static uint32_t browser_reset(void)
 {
-	if(app_busy(app) || access_may_ask(&app->access, ACCESS_ASK_RESET, now) != ACCESS_ALLOWED) return 0;
+	if(app_busy(app) || browser_hot() || access_may_ask(&app->access, ACCESS_ASK_RESET, now) != ACCESS_ALLOWED) return 0;
 	return access_ask(&app->access, ACCESS_ASK_RESET, now);
 }
 
 // POST /api/ota: the first bytes arrived
 static bool browser_upload_begin(const char *version)
 {
-	if(!access_is_open(&app->access, now) || app_busy(app)) return false;
+	if(!access_is_open(&app->access, now) || app_busy(app) || browser_hot()) return false;
 
 	app->uploading = true;
 	app->upload_percent = 0;
@@ -95,7 +109,7 @@ static void browser_upload_progress(int percent)
 static uint32_t browser_upload_end(void)
 {
 	app->uploading = false;
-	if(access_may_ask(&app->access, ACCESS_ASK_FIRMWARE, now) != ACCESS_ALLOWED) return 0;
+	if(browser_hot() || access_may_ask(&app->access, ACCESS_ASK_FIRMWARE, now) != ACCESS_ALLOWED) return 0;
 
 	set_text(app->ask_detail, sizeof(app->ask_detail), app->upload_version);
 	return access_ask(&app->access, ACCESS_ASK_FIRMWARE, now);
@@ -114,7 +128,7 @@ static bool browser_layout(const char *text, bool stored)
 	app->layout_length = length;
 	app->source = stored ? APP_LAYOUT_STORED : APP_LAYOUT_PREVIEW;
 	app->nav.page = -1;
-	if(stored) app->events |= APP_EVENT_STORE_LAYOUT;
+	if(stored) app->events = (app->events & ~APP_EVENT_ERASE_LAYOUT) | APP_EVENT_STORE_LAYOUT;
 	return true;
 }
 
@@ -124,7 +138,7 @@ static bool browser_layout_reset(void)
 	if(!access_write(&app->access, now)) return false;
 
 	app_choose_layout(app);
-	app->events |= APP_EVENT_ERASE_LAYOUT;
+	app->events = (app->events & ~APP_EVENT_STORE_LAYOUT) | APP_EVENT_ERASE_LAYOUT;
 	return true;
 }
 
@@ -133,7 +147,7 @@ static bool browser_forget(const char *ssid)
 {
 	int left;
 
-	if(!access_write(&app->access, now)) return false;
+	if(!access_write(&app->access, now) || browser_under_way()) return false;
 
 	left = net_forget(app->profiles, app->profile_count, ssid);
 	if(left == app->profile_count) return false;
@@ -168,6 +182,9 @@ static bool browser_reboot(void)
  * Stories
  */
 
+static bool nothing_asked(void);
+static void scene_released(void);
+
 static void test_constants(void)
 {
 	check(APP_UPDATE_CONFIRM_MS == 300000 && APP_UPLOAD_IDLE_MS == 30000 && APP_INFO_LINES == 14 && APP_INFO_SIZE == 64 && APP_SWIPE_ROWS == 3,
@@ -178,8 +195,8 @@ static void test_constants(void)
 	      "the events are twelve different bits");
 	printf("  sizeof(app_t) is %lu: poll %lu, three layouts %lu, three lists of lines %lu, layout text %lu\n", (unsigned long)sizeof(app_t),
 	       (unsigned long)sizeof(app->poll), (unsigned long)(3 * sizeof(layout_t)), (unsigned long)(3 * sizeof(app->list)), (unsigned long)sizeof(app->layout_text));
-	check(sizeof(void *) != 8 || sizeof(app_t) == 227088, "app_t has the 227088 bytes app.h names (on a 64 bit host)");
-	check(sizeof(app->poll) == 39472 && 3 * sizeof(layout_t) == 105360 && 3 * sizeof(app->list) == 62376 && sizeof(app->layout_text) == 16385,
+	check(sizeof(void *) != 8 || sizeof(app_t) == 227128, "app_t has the 227128 bytes app.h names (on a 64 bit host)");
+	check(sizeof(app->poll) == 39512 && 3 * sizeof(layout_t) == 105360 && 3 * sizeof(app->list) == 62376 && sizeof(app->layout_text) == 16385,
 	      "the large parts of app_t have the sizes app.h names: the poll, the two layouts and the room for a third, the lines of three lists, the layout text");
 }
 
@@ -1686,7 +1703,7 @@ static void test_heat(void)
 	app_temperature(app, 85, true);
 	switch_pressed = false;
 	run(60);
-	check(on(NAV_PAGES) && light() == 0, "a press that began on a lit screen counts, also when the heat switches the light off before it ends: Zurück leaves the menu");
+	check(on(NAV_MENU) && app->nav.row == 6 && light() == 0, "a press under which the heat switches the light off is dropped as well: Zurück does not leave the menu in the dark");
 	app_temperature(app, 69, true);
 
 	garage();
@@ -1783,17 +1800,203 @@ static void test_heat(void)
 	check(hold_is_stuck(&app->hold) && on(NAV_DTC_LIST) && sent[POLL_DTC_CLEAR] == 0, "20000 ms after the press began the switch hangs: the heat closed the dialog, it did not forget the press");
 	switch_pressed = false;
 
-	// ... and while a question of the browser lies over the dialog
+	// ... and while a question of the browser lies over the dialog: both are gone with the light
 	scene_dialog();
 	app_do(app, NAV_DO_RELEASE_ON, now);
 	check(browser_wifi("Neu", "passwort1", "") == 1 && has_line("over: ask"), "the scene of the question over the clear dialog, asked at 7600");
 	app_temperature(app, 85, true);
-	check(on(NAV_DTC_LIST) && !app->hold.open && access_asking(&app->access, now) == ACCESS_ASK_WIFI, "the heat switches the light off under a question: the dialog below it is left, the question waits on");
+	check(on(NAV_DTC_LIST) && app->nav.row == 8 && !app->hold.open, "the heat switches the light off under a question: the clear dialog below it is left all the same");
+	check(access_asking(&app->access, now) == ACCESS_ASK_NONE && access_ticket(&app->access, 1, now) == ACCESS_TICKET_REFUSED && nothing_asked() && !has_line("over: ask"),
+	      "the heat switches the light off while a question of the browser waits: it is refused at once, and what it asked for is dropped, password included");
+	check(access_is_open(&app->access, now) && app_take_events(app) == 0 && app->profile_count == 1, "the question the heat took away: the release goes on, nothing is stored");
 	run(1600);
 	short_press();
-	check(done.wifi == 0 && access_asking(&app->access, now) == ACCESS_ASK_WIFI, "on the screen the heat keeps dark a press is no answer to the question");
-	run_to(67600);
-	check(access_ticket(&app->access, 1, now) == ACCESS_TICKET_EXPIRED && done.wifi == 0, "the question nobody could see runs out after its 60 s");
+	app_temperature(app, 69, true);
+	run(200);
+	check(done.wifi == 0 && app->profile_count == 1 && !has_line("over: ask") && light() == 80, "cooled down again: the question does not come back, and the press made in the dark stored nothing");
+}
+
+// A question nobody can see is none: what the heat does to each question on the screen
+static void test_heat_and_questions(void)
+{
+	static const struct
+	{
+		access_ask_t question;
+		const char *dim, *failed, *off;
+	} asked[] = {
+		{ACCESS_ASK_WIFI, "84 degrees while the network question waits: the backlight is limited, the question waits on",
+		 "a reading of 99 degrees that failed while the network question waits: it waits on",
+		 "85 degrees while the network question waits: it is refused at once and dropped, nothing is stored, the release goes on"},
+		{ACCESS_ASK_FIRMWARE, "84 degrees while the firmware question waits: the question waits on",
+		 "a reading of 99 degrees that failed while the firmware question waits: it waits on",
+		 "85 degrees while the firmware question waits: it is refused at once and its version dropped, nothing is installed"},
+		{ACCESS_ASK_RESET, "84 degrees while the question of the factory reset waits: the question waits on",
+		 "a reading of 99 degrees that failed while the question of the factory reset waits: it waits on",
+		 "85 degrees while the question of the factory reset waits: it is refused at once, nothing is reset"},
+	};
+	static const struct
+	{
+		int row;
+		const char *dim, *off[2], *again;
+	} dialogs[] = {
+		{2, "84 degrees and a reading that failed while the dialog of the restart shows: it stays",
+		 {"85 degrees while the dialog of the restart shows, the focus on Abbrechen: it is left for the settings, the focus on Neustart; no restart, no input",
+		  "85 degrees while the dialog of the restart shows, the focus on Ausführen: it is left for the settings, the focus on Neustart; no restart, no input"},
+		 "cooled down behind the dialog of the restart the heat closed: a short press asks anew, the focus on Abbrechen - nothing is carried out"},
+		{3, "84 degrees and a reading that failed while the dialog of the previous version shows: it stays",
+		 {"85 degrees while the dialog of the previous version shows, the focus on Abbrechen: it is left for the settings, the focus on Vorherige Version; nothing is started",
+		  "85 degrees while the dialog of the previous version shows, the focus on Ausführen: it is left for the settings, the focus on Vorherige Version; nothing is started"},
+		 "cooled down behind the dialog of the previous version the heat closed: a short press asks anew, the focus on Abbrechen"},
+		{4, "84 degrees and a reading that failed while the dialog of the factory reset shows: it stays",
+		 {"85 degrees while the dialog of the factory reset shows, the focus on Abbrechen: it is left for the settings, the focus on Werkseinstellungen; nothing is reset",
+		  "85 degrees while the dialog of the factory reset shows, the focus on Ausführen: it is left for the settings, the focus on Werkseinstellungen; nothing is reset"},
+		 "cooled down behind the dialog of the factory reset the heat closed: a short press asks anew, the focus on Abbrechen"},
+	};
+	uint64_t nav_input, input, at;
+	access_t release;
+
+	// What the browser asks for
+	for(int i = 0; i < COUNT(asked); i++)
+	{
+		bool waits;
+
+		scene_released();
+		if(asked[i].question == ACCESS_ASK_WIFI) browser_wifi("Neu", "passwort1", "10.0.0.5");
+		else if(asked[i].question == ACCESS_ASK_RESET) browser_reset();
+		else
+		{
+			browser_upload_begin("0.2.0");
+			browser_upload_end();
+		}
+		run(1600);
+		waits = access_asking(&app->access, now) == asked[i].question && access_ticket(&app->access, 1, now) == ACCESS_TICKET_WAITING && has_line("over: ask");
+		app_temperature(app, 84, true);
+		check(waits && light() == 30 && access_asking(&app->access, now) == asked[i].question && access_ticket(&app->access, 1, now) == ACCESS_TICKET_WAITING, asked[i].dim);
+		app_temperature(app, 99, false);
+		check(access_asking(&app->access, now) == asked[i].question && has_line("over: ask") && (asked[i].question == ACCESS_ASK_RESET || app->ask_detail[0] != '\0'), asked[i].failed);
+		nav_input = app->nav.last_input_ms;
+		input = app->last_input_ms;
+		at = app->clock_ms;
+		app_temperature(app, 85, true);
+		check(light() == 0 && access_asking(&app->access, now) == ACCESS_ASK_NONE && access_ticket(&app->access, 1, now) == ACCESS_TICKET_REFUSED && nothing_asked() && !has_line("over: ask") &&
+		      app_take_events(app) == 0 && access_is_open(&app->access, now) && app->profile_count == 1 && on(NAV_PAGES), asked[i].off);
+		check(app->nav.last_input_ms == nav_input && app->last_input_ms == input && app->clock_ms == at && app->access.clock_ms == at,
+		      "the question the heat refused: that was no input, and it happened at the time the app had");
+		short_press();
+		app_temperature(app, 69, true);
+		run(1600);
+		short_press();
+		check(stores() == 0 && restarts() == 0 && on(NAV_MENU) && access_ticket(&app->access, 1, now) == ACCESS_TICKET_REFUSED,
+		      "cooled down behind a question the heat refused: a press is a press on the screen, what was asked for is not carried out by it");
+	}
+
+	// The level stays: a question that is there with a later reading is refused by that reading
+	scene_released();
+	app_temperature(app, 85, true);
+	check(access_ask(&app->access, ACCESS_ASK_RESET, now) == 1, "the scene of a question asked while the heat keeps the screen dark, as app_web.h never asks it");
+	app_temperature(app, 99, false);
+	check(access_ticket(&app->access, 1, now) == ACCESS_TICKET_REFUSED, "a reading that failed leaves the level at off: the question that waits with it is refused");
+	access_ask(&app->access, ACCESS_ASK_RESET, now);
+	app_temperature(app, 80, true);
+	check(app->heat == GUARD_HEAT_OFF && access_ticket(&app->access, 2, now) == ACCESS_TICKET_REFUSED, "back at 80 degrees the light is still off: a question that waits is refused with that reading as well");
+	access_ask(&app->access, ACCESS_ASK_RESET, now);
+	app_temperature(app, 79, true);
+	check(app->heat == GUARD_HEAT_DIM && access_ticket(&app->access, 3, now) == ACCESS_TICKET_WAITING && has_line("over: ask"), "back at 79 degrees the light is on again: a question waits on");
+
+	// A question that is over keeps its end, and the release is not touched by a reading
+	scene_released();
+	browser_reset();
+	run(61000);
+	release = app->access;
+	app_temperature(app, 85, true);
+	check(access_ticket(&app->access, 1, now) == ACCESS_TICKET_EXPIRED && memcmp(&release, &app->access, sizeof(release)) == 0,
+	      "the heat switches the light off after a question has expired: its ticket stays expired, and the release is not touched");
+	scene_released();
+	release = app->access;
+	app_temperature(app, 85, true);
+	app_temperature(app, 90, true);
+	check(memcmp(&release, &app->access, sizeof(release)) == 0 && access_is_open(&app->access, now), "85 and 90 degrees while no question waits: the release is as it was, byte for byte");
+
+	// The dialog of the settings, for each of its three questions
+	for(int i = 0; i < COUNT(dialogs); i++)
+	{
+		for(int focus = 0; focus < 2; focus++)
+		{
+			garage();
+			machine.previous_firmware = true;
+			start();
+			run(2100);
+			memset(&done, 0, sizeof(done));
+			short_press();
+			turn(5);
+			short_press();
+			turn(dialogs[i].row);
+			short_press();
+			turn(focus);
+			if(focus == 0)
+			{
+				app_temperature(app, 84, true);
+				app_temperature(app, 99, false);
+				check(on(NAV_CONFIRM) && app->nav.row == 0 && light() == 30, dialogs[i].dim);
+			}
+			nav_input = app->nav.last_input_ms;
+			input = app->last_input_ms;
+			at = app->clock_ms;
+			app_temperature(app, 85, true);
+			check(on(NAV_SETTINGS) && app->nav.row == dialogs[i].row && app->nav.confirm == NAV_DO_NOTHING && light() == 0 && app_take_events(app) == 0 &&
+			      app->nav.last_input_ms == nav_input && app->last_input_ms == input && app->clock_ms == at, dialogs[i].off[focus]);
+			short_press();
+			check(on(NAV_SETTINGS) && restarts() == 0, "while the heat keeps the screen dark a press on that row of the settings opens no dialog");
+			app_temperature(app, 69, true);
+			short_press();
+			check(on(NAV_CONFIRM) && app->nav.row == 0 && restarts() == 0 && light() == 80, dialogs[i].again);
+		}
+	}
+
+	// ... also while something lies over it
+	scene_released();
+	short_press();
+	turn(5);
+	short_press();
+	turn(4);
+	short_press();
+	turn(1);
+	check(on(NAV_CONFIRM) && app->nav.row == 1 && browser_wifi("Neu", "passwort1", "") == 1 && has_line("over: ask"), "the scene of a question over the dialog of the factory reset, the focus on Ausführen");
+	app_temperature(app, 85, true);
+	check(on(NAV_SETTINGS) && app->nav.row == 4 && access_ticket(&app->access, 1, now) == ACCESS_TICKET_REFUSED && nothing_asked() && restarts() == 0 && stores() == 0,
+	      "the heat switches the light off while a question lies over the dialog of the factory reset: the question is refused and the dialog left");
+	scene_released();
+	short_press();
+	turn(5);
+	short_press();
+	turn(2);
+	short_press();
+	turn(1);
+	app->uploading = true;
+	app->upload_ms = now;
+	app_temperature(app, 85, true);
+	check(on(NAV_SETTINGS) && app->nav.row == 2 && app->uploading && restarts() == 0, "the heat switches the light off while an upload lies over the dialog of the restart: the dialog is left, the upload runs on");
+	app->uploading = false;
+
+	// The update question has no answer that takes it back: it stays, and its time runs on
+	garage();
+	machine.update_pending = true;
+	start();
+	run(1000);
+	app_temperature(app, 85, true);
+	check(app->update_pending && done.valid == 0 && restarts() == 0 && has_line("over: update") && light() == 0, "the heat switches the light off under the update question: the question stays, nothing is confirmed");
+	short_press();
+	tap(0);
+	check(app->update_pending && done.valid == 0, "on the screen the heat keeps dark neither a press nor a tap says that the update is in order");
+	app_temperature(app, 69, true);
+	short_press();
+	check(!app->update_pending && done.valid == 1, "cooled down: a short press says that the update is in order");
+	garage();
+	machine.update_pending = true;
+	start();
+	app_temperature(app, 85, true);
+	run_to(300020);
+	check(done.reboot == 1 && done.valid == 0, "the time of an update nobody can confirm in the heat runs on: after 300 s the platform is asked to restart");
 
 	// Not in the dialog: the level changes nothing on the screen
 	scene_list();
@@ -1822,12 +2025,191 @@ static void test_safe_mode(void)
 	turn(1);
 	short_press();
 	run(100);
-	check(wifi.ap_on && wifi.aps_off == 0 && has_line("row: > action | Hotspot | an | enabled"), "safe mode: the own access point cannot be switched off at the device");
+	check(wifi.ap_on && wifi.aps_off == 0 && has_line("row: > action | Hotspot | an | disabled"),
+	      "safe mode: the own access point cannot be switched off at the device, and the row that would do it is not offered");
 
 	machine.safe_mode = false;
 	start();
 	run(100);
 	check(app->source == APP_LAYOUT_STORED && !wifi.ap_on && has_line("title: Fahrt"), "the start after the safe mode: the stored views, no access point");
+}
+
+// What the platform was asked to carry out, what the WiFi was ordered, what the flash holds and what the
+// screen shows: taken before an input that must change nothing, and compared behind it
+static struct
+{
+	done_t done;
+	wifi_t wifi;
+	flash_t flash;
+	scene_t scene;
+} taken;
+
+static void take(void)
+{
+	memcpy(&taken.done, &done, sizeof(done));
+	memcpy(&taken.wifi, &wifi, sizeof(wifi));
+	memcpy(&taken.flash, &flash, sizeof(flash));
+	app_scene(app, &taken.scene, now);
+}
+
+// No event was raised since, nothing was ordered of the WiFi, the flash holds what it held
+static bool nothing_followed(void)
+{
+	return memcmp(&taken.done, &done, sizeof(done)) == 0 && memcmp(&taken.wifi, &wifi, sizeof(wifi)) == 0 && memcmp(&taken.flash, &flash, sizeof(flash)) == 0 &&
+	       app->events == 0;
+}
+
+// The screen is the one that was taken, byte for byte: scene.h fills every byte of a scene
+static bool same_screen(void)
+{
+	static scene_t shown;
+
+	app_scene(app, &shown, now);
+	return memcmp(&taken.scene, &shown, sizeof(shown)) == 0;
+}
+
+// The row Hotspot of the settings. The own access point stays on whatever is asked in safe mode and while no
+// network is stored (link.h): a press on the row would switch nothing, so nav.h does nothing with it and the
+// screen does not offer it. With a stored network and outside the safe mode the row switches the access point.
+static void test_hotspot_kept(void)
+{
+	uint64_t turned, pressed;
+
+	// Safe mode, a network stored
+	garage();
+	machine.safe_mode = true;
+	start();
+	run(2100);
+	check(app->safe_mode && app->profile_count == 1 && link_ap_kept(&app->link) && wifi.ap_on && wifi.aps_on == 1 && wifi.joined && view() == CONN_VIEW_LIVE,
+	      "Hotspot, safe mode with a stored network: the display is in its network, and the own access point is open and kept");
+	short_press();
+	turn(5);
+	short_press();
+	turn(1);
+	shows("settings_safe_mode", "Hotspot, safe mode: the settings tell that the own access point is on, and the row that cannot switch it is disabled");
+	turned = app->nav.last_input_ms;
+	run(1000);
+	take();
+	short_press();
+	pressed = app->nav.last_input_ms;
+	check(on(NAV_SETTINGS) && app->nav.row == 1 && same_screen(), "Hotspot, safe mode, a short press on the row: the screen is the same, byte for byte");
+	check(link_ap_on(&app->link) && app->link.ap_wanted && wifi.ap_on && wifi.aps_off == 0, "Hotspot, safe mode, a short press on the row: the own access point stays on");
+	check(nothing_followed(), "Hotspot, safe mode, a short press on the row: no event, no order to the WiFi, nothing stored");
+	run(1000);
+	check(same_screen() && nothing_followed() && link_ap_on(&app->link), "Hotspot, safe mode: a second behind the press nothing has followed it");
+	turn(-1);
+	take();
+	tap(1);
+	check(on(NAV_SETTINGS) && app->nav.row == 1 && nothing_followed() && link_ap_on(&app->link) && app->link.ap_wanted,
+	      "Hotspot, safe mode, a tap on the row: the focus goes there, the own access point stays on, no event");
+	run(1000);
+	shows("settings_safe_mode", "Hotspot, safe mode, a second behind a tap on the row: the screen with the focus on it, the access point on, the row disabled");
+	check(nothing_followed() && wifi.ap_on && wifi.aps_on == 1 && wifi.aps_off == 0, "Hotspot, safe mode: nothing has followed the tap either");
+	// The link has the last word (link.h): a toggle that is carried out past nav leaves the access point on
+	app_do(app, NAV_DO_AP_TOGGLE, now);
+	run(1000);
+	check(link_ap_on(&app->link) && app->link.ap_wanted && wifi.ap_on && wifi.aps_off == 0,
+	      "Hotspot, safe mode: a toggle carried out past nav leaves the own access point on as well - the link keeps it");
+	// The press and the tap that did nothing were inputs all the same, as every press and tap: nav took the
+	// press at its time, and the idle time of the screen counts from the tap, the last of them
+	check(pressed >= turned + 1000 && pressed < turned + 1300, "Hotspot, safe mode: nav took the short press as an input, a second behind the detent before it");
+	pressed = app->nav.last_input_ms;
+	run_to(pressed + 119980);
+	check(on(NAV_SETTINGS), "Hotspot, safe mode: 119.98 s behind the tap that did nothing the settings still show");
+	run_to(pressed + 120220);
+	check(on(NAV_PAGES) && wifi.ap_on && wifi.aps_off == 0, "Hotspot, safe mode: the settings are left 120 s behind that tap, the access point still on");
+
+	// No network stored
+	factory();
+	start();
+	run(100);
+	check(!app->safe_mode && app->profile_count == 0 && link_ap_kept(&app->link) && wifi.ap_on && wifi.aps_on == 1 && !wifi.joined,
+	      "Hotspot, no network stored: the own access point is open and kept, the display is in no network");
+	short_press();
+	turn(5);
+	short_press();
+	turn(1);
+	shows("settings_no_network", "Hotspot, no network stored: the settings tell that the own access point is on, and the row that cannot switch it is disabled");
+	take();
+	short_press();
+	check(on(NAV_SETTINGS) && app->nav.row == 1 && same_screen(), "Hotspot, no network stored, a short press on the row: the screen is the same, byte for byte");
+	check(link_ap_on(&app->link) && app->link.ap_wanted && wifi.ap_on && wifi.aps_off == 0, "Hotspot, no network stored, a short press on the row: the own access point stays on");
+	check(nothing_followed(), "Hotspot, no network stored, a short press on the row: no event, no order to the WiFi, nothing stored");
+	run(1000);
+	check(same_screen() && nothing_followed() && link_ap_on(&app->link), "Hotspot, no network stored: a second behind the press nothing has followed it");
+	turn(-1);
+	take();
+	tap(1);
+	run(1000);
+	shows("settings_no_network", "Hotspot, no network stored, a second behind a tap on the row: the screen with the focus on it, the access point on, the row disabled");
+	check(nothing_followed() && link_ap_on(&app->link) && wifi.aps_on == 1 && wifi.aps_off == 0, "Hotspot, no network stored: nothing has followed the tap");
+	app_do(app, NAV_DO_AP_TOGGLE, now);
+	run(1000);
+	check(link_ap_on(&app->link) && app->link.ap_wanted && wifi.ap_on && wifi.aps_off == 0,
+	      "Hotspot, no network stored: a toggle carried out past nav leaves the own access point on as well - the link keeps it");
+
+	// The stored network counts, not the network the display is in: out of its range the row switches all the same
+	garage();
+	wifi.in_range_count = 0;
+	start();
+	run(2100);
+	check(!wifi.joined && !link_up(&app->link) && app->profile_count == 1 && !link_ap_kept(&app->link) && !wifi.ap_on && wifi.aps_on == 0,
+	      "Hotspot, the stored network out of range: the display is in no network, its own access point closed and not kept");
+	short_press();
+	turn(5);
+	short_press();
+	turn(1);
+	check(has_line("row: > action | Hotspot | aus | enabled"), "Hotspot, the stored network out of range: the row is enabled");
+	short_press();
+	check(wifi.ap_on && wifi.aps_on == 1 && has_line("row: > action | Hotspot | an | enabled"), "Hotspot, the stored network out of range: a short press opens the own access point");
+	short_press();
+	check(!wifi.ap_on && wifi.aps_off == 1 && has_line("row: > action | Hotspot | aus | enabled"), "Hotspot, the stored network out of range: a second short press closes it");
+
+	// A network stored, no safe mode: the row switches the access point
+	drive();
+	short_press();
+	turn(5);
+	short_press();
+	turn(1);
+	check(!link_ap_kept(&app->link) && !wifi.ap_on && has_line("row: > action | Hotspot | aus | enabled"), "Hotspot, a network stored and no safe mode: the row is enabled, the own access point not kept");
+	short_press();
+	check(wifi.ap_on && wifi.aps_on == 1 && link_ap_on(&app->link) && has_line("row: > action | Hotspot | an | enabled") && stores() + restarts() == 0,
+	      "Hotspot, a network stored and no safe mode: a short press opens the own access point, and the row stays enabled");
+	short_press();
+	check(!wifi.ap_on && wifi.aps_off == 1 && !link_ap_on(&app->link) && has_line("row: > action | Hotspot | aus | enabled"),
+	      "Hotspot, a network stored and no safe mode: a second short press closes it again");
+	turn(-1);
+	tap(1);
+	run(20);
+	check(wifi.ap_on && wifi.aps_on == 2 && app->nav.row == 1 && has_line("row: > action | Hotspot | an | enabled"), "Hotspot, a network stored and no safe mode: a tap on the row opens the own access point as well");
+	short_press();
+	check(!wifi.ap_on && wifi.aps_off == 2, "Hotspot, a network stored and no safe mode: closed again by a short press");
+
+	// The last network is forgotten in the browser while the settings show: nothing to switch any more
+	app_do(app, NAV_DO_RELEASE_ON, now);
+	check(browser_forget("Werkstatt") && app->profile_count == 0, "Hotspot: the browser forgets the last stored network");
+	check(link_ap_kept(&app->link) && !link_ap_on(&app->link) && has_line("row: > action | Hotspot | aus | disabled"),
+	      "Hotspot, the last network forgotten: the row is disabled at once, before the own access point is ordered on - it still says aus");
+	tap(1);
+	check(app->link.ap_wanted && !link_ap_on(&app->link) && has_line("row: > action | Hotspot | aus | disabled"),
+	      "Hotspot, the last network forgotten, a tap on the row before the access point is ordered on: it stays wanted");
+	run(20);
+	check(wifi.ap_on && wifi.aps_on == 3 && !wifi.joined && done.wifi == 1 && flash.profile_count == 0 && has_line("row: > action | Hotspot | an | disabled"),
+	      "Hotspot, the last network forgotten: the own access point opens by itself, the network is left, the row stays disabled and says an");
+	take();
+	short_press();
+	check(same_screen() && nothing_followed() && link_ap_on(&app->link) && wifi.ap_on, "Hotspot, the last network forgotten, a short press on the row: nothing, the own access point stays on");
+
+	// A network is stored again in the browser: the row is back
+	check(browser_wifi("Werkstatt", "geheim-123", "192.168.1.50") == 1, "Hotspot: the browser asks to store a network again");
+	run(ACCESS_ASK_SHOWN_MS + 100);
+	short_press();
+	check(done.wifi == 2 && app->profile_count == 1 && !link_ap_kept(&app->link) && wifi.joined && on(NAV_SETTINGS) && app->nav.row == 1,
+	      "Hotspot: the question is confirmed with the knob, the network is stored and joined, the settings show again");
+	check(wifi.ap_on && has_line("row: > action | Hotspot | an | enabled"), "Hotspot, a network stored again: the own access point is still on, and the row is enabled again");
+	short_press();
+	check(!wifi.ap_on && wifi.aps_off == 3 && !link_ap_on(&app->link) && has_line("row: > action | Hotspot | aus | enabled"),
+	      "Hotspot, a network stored again: a short press closes the own access point");
 }
 
 /* The update and the upload --------------------------------------------------------------------------- */
@@ -1858,7 +2240,7 @@ static void test_update(void)
 	machine.update_pending = true;
 	start();
 	tap(3);
-	check(done.valid == 1 && !app->update_pending, "the update question: a tap anywhere says yes as well");
+	check(done.valid == 0 && app->update_pending && has_line("over: update"), "the update question: a tap says nothing - the knob alone says yes");
 
 	// Nobody answers
 	garage();
@@ -1944,6 +2326,102 @@ static void test_update(void)
 static bool nothing_asked(void)
 {
 	return !app->has_wifi_asked && all_bytes(&app->wifi_asked, sizeof(app->wifi_asked), 0) && app->ask_detail[0] == '\0';
+}
+
+// A press of the knob that began on the lit screen and is still under way when the heat switches the light off
+static void test_press_into_the_heat(void)
+{
+	// The menu of the fault memory, the focus on "Lesen": a short press there reads the fault memory
+	scene_dtc();
+	switch_pressed = true;
+	run(60);
+	app_temperature(app, 84, true);
+	switch_pressed = false;
+	run(100);
+	check(light() == 30 && sent[POLL_DTC_READ] == 1 && phase() != DTC_FLOW_IDLE,
+	      "84 degrees while the knob is pressed: the light is limited, the press counts - the fault memory is read");
+
+	scene_dtc();
+	switch_pressed = true;
+	run(60);
+	app_temperature(app, 85, true);
+	switch_pressed = false;
+	run(100);
+	check(light() == 0 && sent[POLL_DTC_READ] == 0 && phase() == DTC_FLOW_IDLE && on(NAV_DTC) && app->nav.row == 0 && app_take_events(app) == 0,
+	      "85 degrees while the knob is pressed on Lesen: the press that ends in the dark does nothing, the fault memory is not read");
+	app_temperature(app, 69, true);
+	run(200);
+	short_press();
+	check(light() > 0 && sent[POLL_DTC_READ] == 1, "cooled down behind it: the next press is a press again, the fault memory is read");
+
+	// The press is still under way when the light is back
+	scene_dtc();
+	switch_pressed = true;
+	run(60);
+	app_temperature(app, 85, true);
+	run(100);
+	app_temperature(app, 69, true);
+	run(100);
+	switch_pressed = false;
+	run(100);
+	check(light() > 0 && sent[POLL_DTC_READ] == 0 && on(NAV_DTC),
+	      "the heat switched the light off and on again under one press: that press does nothing when it ends on the lit screen either");
+
+	// Held on: a long press would go back to the menu
+	scene_dtc();
+	switch_pressed = true;
+	run(400);
+	app_temperature(app, 85, true);
+	run(800);
+	switch_pressed = false;
+	run(100);
+	check(on(NAV_DTC) && app->nav.row == 0 && sent[POLL_DTC_READ] == 0 && sent[POLL_DTC_CLEAR] == 0,
+	      "a long press under which the heat switched the light off: it does not leave the screen");
+
+	// Under the finger the question of the browser is refused: the press meant for it must not reach the
+	// screen below, where a short press opens the menu
+	scene_released();
+	browser_wifi("Neu", "passwort1", "10.0.0.5");
+	run(1600);
+	switch_pressed = true;
+	run(60);
+	app_temperature(app, 85, true);
+	switch_pressed = false;
+	run(100);
+	check(access_ticket(&app->access, 1, now) == ACCESS_TICKET_REFUSED && on(NAV_PAGES) && stores() == 0 && app->profile_count == 1 && access_is_open(&app->access, now),
+	      "the heat refuses the network question under a press that was to confirm it: the press does nothing to the page below, nothing is stored");
+
+	// The switch is released already, but to the knob the press is still under way: it ends, and is reported,
+	// with the second reading that sees the switch released
+	scene_dtc();
+	switch_pressed = true;
+	run(100);
+	switch_pressed = false;
+	run(20);
+	app_temperature(app, 85, true);
+	run(100);
+	check(light() == 0 && sent[POLL_DTC_READ] == 0 && phase() == DTC_FLOW_IDLE && on(NAV_DTC),
+	      "the heat switches the light off 20 ms after the switch was released on Lesen, before the knob takes the press for over: it is dropped, the fault memory is not read");
+	scene_dtc();
+	switch_pressed = true;
+	run(100);
+	switch_pressed = false;
+	run(60);
+	app_temperature(app, 85, true);
+	run(100);
+	check(light() == 0 && sent[POLL_DTC_READ] == 1, "the heat switches the light off 60 ms after the release: the press was reported on the lit screen, the fault memory is read");
+
+	// A press that began in the dark of the heat stays one that began in the dark, whatever is read after
+	scene_dtc();
+	app_temperature(app, 85, true);
+	switch_pressed = true;
+	run(60);
+	app_temperature(app, 85, true);
+	app_temperature(app, 69, true);
+	run(60);
+	switch_pressed = false;
+	run(100);
+	check(light() > 0 && sent[POLL_DTC_READ] == 0 && on(NAV_DTC), "a press that began while the heat kept the screen dark and ends cooled down: not passed on");
 }
 
 // drive(), then the release given at the device at 2540; back on the value page it is 5460
@@ -2219,7 +2697,9 @@ static void test_questions(void)
 	check(browser_reset() == 1, "the browser asks for the factory reset");
 	run(1500);
 	tap(0);
-	check(done.reset == 1 && done.last == APP_EVENT_FACTORY_RESET && restarts() == 1, "a tap on the question of the factory reset confirms it");
+	check(restarts() == 0 && access_asking(&app->access, now) == ACCESS_ASK_RESET, "a tap on the question of the factory reset confirms nothing: the question waits on");
+	short_press();
+	check(done.reset == 1 && done.last == APP_EVENT_FACTORY_RESET && restarts() == 1, "a short press on the question of the factory reset confirms it");
 
 	scene_released();
 	browser_upload_begin("0.2.0");
@@ -2229,6 +2709,178 @@ static void test_questions(void)
 	run(1600);
 	short_press();
 	check(on(NAV_MENU) && restarts() == 0, "after the refusal a press is a press on the screen again");
+}
+
+/* No question is confirmed by a touch ------------------------------------------------------------------ */
+
+// A tap on each row a finger can mean: none (the screen passes a tap that hit no row with a row that does
+// not exist), every row a screen has, and what no screen has. skip: a row that is left out, INT_MIN for none.
+static void tap_everywhere(int skip)
+{
+	static const int rows[] = {-1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, INT_MAX, INT_MIN};
+
+	for(int i = 0; i < COUNT(rows); i++)
+	{
+		if(rows[i] != skip || skip == INT_MIN) tap(rows[i]);
+	}
+}
+
+// What an input at the display or a question can make the platform store: settings, networks, views. (The
+// catalogue, the binding and the old list are stored by the conversation with the adapter, whenever it likes.)
+static int changes(void)
+{
+	return done.settings + done.wifi + done.layout + done.erase;
+}
+
+// Every question the display asks - the three of the browser, the update, the clear of the fault memory and
+// the three of the settings - with taps on every row at the beginning, in the middle and at the end of its
+// time: none of them confirms, and behind them the knob still does
+static void test_no_tap_confirms(void)
+{
+	// Behind the question: at once, just before and from the moment the knob counts, in the middle, 2 s before it expires
+	static const uint64_t ask_times[] = {0, 1480, 1500, 1520, 30000, 58000};
+	static const uint64_t update_times[] = {0, 1000, 150000, 299000};
+	// Behind the dialog of the settings opened: its idle time of 120 s begins anew with every tap
+	static const uint64_t dialog_times[] = {0, 1000, 60000, 170000};
+	static const struct
+	{
+		access_ask_t question;
+		const char *taps, *knob;
+	} asked[] = {
+		{ACCESS_ASK_WIFI, "the question to store a network, 0, 1480, 1500, 1520, 30000 and 58000 ms after it was asked: no tap on any row confirms it, refuses it, drops what it asks for or reaches the menu below",
+		 "behind all those taps a short press of the knob stores the network: the question was still there, and the knob alone confirms it"},
+		{ACCESS_ASK_FIRMWARE, "the question to install the uploaded firmware, at the same times: no tap on any row confirms it, refuses it or reaches the menu below",
+		 "behind all those taps a short press of the knob installs the firmware"},
+		{ACCESS_ASK_RESET, "the question of the factory reset, at the same times: no tap on any row confirms it, refuses it or reaches the menu below",
+		 "behind all those taps a short press of the knob asks the platform for the factory reset"},
+	};
+	static const struct
+	{
+		int row;
+		nav_do_t action;
+		const char *taps, *cancel, *knob;
+	} dialogs[] = {
+		{2, NAV_DO_REBOOT, "the dialog of the restart with the focus on Ausführen, 0, 1, 60 and 170 s after it opened: no tap on a row other than Abbrechen restarts, moves the focus or leaves the dialog",
+		 "a tap on Abbrechen of the dialog of the restart leaves it: a touch only cancels", "behind the taps a short press of the knob on Ausführen restarts"},
+		{3, NAV_DO_PREVIOUS_FIRMWARE, "the dialog of the previous version with the focus on Ausführen, at the same times: no tap on a row other than Abbrechen starts it, moves the focus or leaves the dialog",
+		 "a tap on Abbrechen of the dialog of the previous version leaves it", "behind the taps a short press of the knob on Ausführen starts the previous version"},
+		{4, NAV_DO_FACTORY_RESET, "the dialog of the factory reset with the focus on Ausführen, at the same times: no tap on a row other than Abbrechen resets, moves the focus or leaves the dialog",
+		 "a tap on Abbrechen of the dialog of the factory reset leaves it", "behind the taps a short press of the knob on Ausführen asks for the factory reset"},
+	};
+	uint64_t since;
+	bool ok;
+
+	// What the browser asks for, over the menu with the focus on Nachtmodus: a tap that reached the menu would
+	// store the settings or leave it
+	for(int i = 0; i < COUNT(asked); i++)
+	{
+		scene_released();
+		short_press();
+		turn(2);
+		if(asked[i].question == ACCESS_ASK_WIFI) browser_wifi("Neu", "passwort1", "10.0.0.5");
+		else if(asked[i].question == ACCESS_ASK_RESET) browser_reset();
+		else
+		{
+			browser_upload_begin("0.2.0");
+			browser_upload_end();
+		}
+		since = now;
+		ok = access_asking(&app->access, now) == asked[i].question && on(NAV_MENU) && app->nav.row == 2;
+		for(int t = 0; t < COUNT(ask_times); t++)
+		{
+			run_to(since + ask_times[t]);
+			tap_everywhere(INT_MIN);
+			ok = ok && changes() == 0 && restarts() == 0 && access_asking(&app->access, now) == asked[i].question && access_ticket(&app->access, 1, now) == ACCESS_TICKET_WAITING &&
+			     on(NAV_MENU) && app->nav.row == 2 && has_line("over: ask") && app->has_wifi_asked == (asked[i].question == ACCESS_ASK_WIFI) &&
+			     strcmp(app->ask_detail, asked[i].question == ACCESS_ASK_WIFI ? "Neu" : asked[i].question == ACCESS_ASK_FIRMWARE ? "0.2.0" : "") == 0;
+		}
+		check(ok && now == since + 58000, asked[i].taps);
+		short_press();
+		check(access_ticket(&app->access, 1, now) == ACCESS_TICKET_CONFIRMED && changes() == (asked[i].question == ACCESS_ASK_WIFI ? 1 : 0) &&
+		      done.wifi == (asked[i].question == ACCESS_ASK_WIFI ? 1 : 0) && done.install == (asked[i].question == ACCESS_ASK_FIRMWARE ? 1 : 0) &&
+		      done.reset == (asked[i].question == ACCESS_ASK_RESET ? 1 : 0) && restarts() == (asked[i].question == ACCESS_ASK_WIFI ? 0 : 1), asked[i].knob);
+	}
+
+	// "Update in Ordnung?", which lies over the value page from the start
+	garage();
+	machine.update_pending = true;
+	start();
+	ok = app->update_pending;
+	for(int t = 0; t < COUNT(update_times); t++)
+	{
+		run_to(update_times[t]);
+		tap_everywhere(INT_MIN);
+		ok = ok && app->update_pending && machine.update_pending && done.valid == 0 && changes() == 0 && restarts() == 0 && on(NAV_PAGES) && has_line("over: update");
+	}
+	check(ok && now == 299000, "the update question at its start, after 1 s, after 150 s and one second before its time is over: no tap on any row says that the update is in order");
+	short_press();
+	check(done.valid == 1 && !app->update_pending && done.last == APP_EVENT_MARK_VALID && restarts() == 0, "behind all those taps a short press of the knob says that the update is in order");
+
+	// The clear of the fault memory: the dialog is open since 7220, the focus on Löschen
+	scene_dialog();
+	ok = on(NAV_DTC_CONFIRM) && app->nav.row == 1;
+	for(int t = 0; t < 4; t++)
+	{
+		tap_everywhere(0);
+		run(4000);
+		ok = ok && sent[POLL_DTC_CLEAR] == 0 && phase() == DTC_FLOW_LIST && on(NAV_DTC_CONFIRM) && app->nav.row == 1 && app->hold.open;
+	}
+	// ... and while the knob is held on Löschen: 2900 of its 3000 ms have passed
+	switch_pressed = true;
+	run(2900);
+	tap_everywhere(0);
+	run(4000);
+	switch_pressed = false;
+	run(400);
+	check(ok && sent[POLL_DTC_CLEAR] == 0 && phase() == DTC_FLOW_LIST && on(NAV_DTC_CONFIRM) && app->nav.row == 1,
+	      "the clear dialog with the focus on Löschen, at its start, every 4 s and 2900 ms into a hold of the knob: no tap on a row other than Abbrechen clears, moves the focus or leaves the dialog");
+	switch_pressed = true;
+	run(3020);
+	switch_pressed = false;
+	check(sent[POLL_DTC_CLEAR] == 1, "behind all those taps the knob held for 3000 ms on Löschen clears: the knob alone confirms");
+	scene_dialog();
+	tap(0);
+	run(4000);
+	check(on(NAV_DTC_LIST) && !app->hold.open && sent[POLL_DTC_CLEAR] == 0, "a tap on Abbrechen of the clear dialog leaves it: a touch only cancels");
+
+	// Restart, previous version and factory reset of the settings
+	for(int i = 0; i < COUNT(dialogs); i++)
+	{
+		for(int pass = 0; pass < 2; pass++)
+		{
+			garage();
+			machine.previous_firmware = true;
+			start();
+			run(2100);
+			memset(&done, 0, sizeof(done));
+			short_press();
+			turn(5);
+			short_press();
+			turn(dialogs[i].row);
+			short_press();
+			turn(1);
+			since = now;
+			ok = on(NAV_CONFIRM) && app->nav.row == 1 && app->nav.confirm == dialogs[i].action;
+			for(int t = 0; t < COUNT(dialog_times); t++)
+			{
+				run_to(since + dialog_times[t]);
+				tap_everywhere(0);
+				ok = ok && restarts() == 0 && changes() == 0 && on(NAV_CONFIRM) && app->nav.row == 1 && app->nav.confirm == dialogs[i].action;
+			}
+			if(pass == 0)
+			{
+				check(ok && now == since + 170000, dialogs[i].taps);
+				tap(0);
+				check(on(NAV_SETTINGS) && app->nav.row == dialogs[i].row && restarts() == 0, dialogs[i].cancel);
+			}
+			else
+			{
+				short_press();
+				check(ok && restarts() == 1 && done.reboot == (dialogs[i].row == 2 ? 1 : 0) && done.previous == (dialogs[i].row == 3 ? 1 : 0) && done.reset == (dialogs[i].row == 4 ? 1 : 0),
+				      dialogs[i].knob);
+			}
+		}
+	}
 }
 
 /* The choice of the layout --------------------------------------------------------------------------- */
@@ -2603,6 +3255,40 @@ static void test_world(void)
 	app->hold.stuck = true;
 	app_world(app, &over.world, now);
 	check(!seen->can_clear && seen->can_read, "the world with a switch that hangs: clearing is not allowed, reading is");
+
+	// Whether the own access point can be switched at all: what link_ap_kept() says of the link right now
+	drive();
+	app_world(app, &over.world, now);
+	check(!seen->ap_kept, "the world with a stored network and no safe mode: the own access point is not kept");
+	app_do(app, NAV_DO_AP_TOGGLE, now);
+	link_step();
+	app_world(app, &over.world, now);
+	check(!seen->ap_kept && link_ap_on(&app->link), "the world with the own access point switched on by the user: on, and not kept");
+	app->profile_count = 0;
+	link_profiles(&app->link, app->profiles, 0, now);
+	app_world(app, &over.world, now);
+	check(seen->ap_kept, "the world right behind the call that took the last network from the link: the own access point is kept");
+	app->profile_count = 1;
+	link_profiles(&app->link, app->profiles, 1, now);
+	app_world(app, &over.world, now);
+	check(!seen->ap_kept, "the world right behind the call that gave the link a network again: not kept");
+	garage();
+	machine.safe_mode = true;
+	start();
+	app_world(app, &over.world, now);
+	check(seen->ap_kept && !link_ap_on(&app->link) && app->profile_count == 1, "the world at a start in safe mode with a stored network: the own access point is kept before it is ordered on");
+	run(2100);
+	app_world(app, &over.world, now);
+	check(seen->ap_kept && link_ap_on(&app->link) && link_up(&app->link), "the world in safe mode with the link up: kept");
+	factory();
+	start();
+	app_world(app, &over.world, now);
+	check(seen->ap_kept && !link_ap_on(&app->link) && !app->safe_mode, "the world at a start without a stored network: the own access point is kept before it is ordered on");
+	factory();
+	machine.safe_mode = true;
+	start();
+	app_world(app, &over.world, now);
+	check(seen->ap_kept, "the world at a start in safe mode without a stored network: kept");
 }
 
 static void test_scene_inputs(void)
@@ -3689,8 +4375,15 @@ typedef struct
 	long reboots_late, confirmed_asks, taps_that_acted;
 	long spoiled_holds;         // presses in the clear dialog that were kept for more than three seconds and must not clear
 	long heat_closed;           // clear dialogs the heat closed
+	long heat_refused;          // questions of the browser the heat refused
+	long heat_left;             // dialogs of the settings the heat closed
+	long heat_presses;          // presses begun on a lit screen that were under way when the heat switched the light off
+	long taps_on_asks;          // taps on a lit screen while a question of the browser lay over it
+	long taps_on_updates;       // ... while the update question did
 	long dialog_swipes;         // swipes in the two dialogs
 	long asks_refused;          // presses and taps on a row of the settings that asks first, while a request was under way
+	long kept[2];               // looks at the world in which the own access point is not kept, and is
+	long hotspot[2];            // short presses and taps on Hotspot that asked the link to switch it, and that did not: kept
 } run_result_t;
 
 // What the run knows by itself
@@ -3729,6 +4422,8 @@ typedef struct
 	nav_t twin;                 // what nav makes of that input, asked of a copy of it
 	bool toggles_release;       // the input acts on "Freigabe" of the web screen
 	bool was_open;              // the release before it
+	int tapped;                 // the row a tap on a lit screen meant, -1 if the input is none
+	bool ap_on, ap_wanted;      // the own access point before it: as ordered, and as wanted
 	bool uploading;             // an upload of the browser runs ...
 	uint64_t upload_ms;         // ... and brought something at this time
 	knob_event_t knob;          // what the knob will report with the reading
@@ -3847,6 +4542,8 @@ static uint32_t acts(int row, uint64_t time, bool by_touch)
 	uint64_t access_time = time > app->access.clock_ms ? time : app->access.clock_ms;
 	access_ask_t asking = access_asking(&app->access, time);
 
+	// What lies over the screen is answered with the knob alone: no touch confirms a question or an update
+	if(by_touch && m.over != NAV_OVER_NONE) return 0;
 	if(m.over == NAV_OVER_UPLOAD) return 0;
 	if(m.over == NAV_OVER_UPDATE) return APP_EVENT_MARK_VALID;
 	if(m.over == NAV_OVER_ASK)
@@ -4014,8 +4711,15 @@ static void world_holds(void)
 	{
 		broke(PROMISE_WORLD, "nav is told another brightness than the one stored");
 	}
+	// The own access point cannot be switched in the safe mode of this start and while no network is stored
+	if(seen.ap_kept != (machine.safe_mode || flash.profile_count == 0)) broke(PROMISE_WORLD, "nav is told that the own access point can be switched while it is kept on, or the other way round");
+	tally->kept[seen.ap_kept]++;
 	if(app_busy(app) != (under_way || on(NAV_DTC_CONFIRM) || app->uploading)) broke(PROMISE_WORLD, "busy is not what flow, clear dialog and upload say");
 	if(on(NAV_DTC_CONFIRM) && m.heat == GUARD_HEAT_OFF) broke(PROMISE_WORLD, "the clear dialog shows on a screen the heat keeps dark");
+	if(m.heat == GUARD_HEAT_OFF && (on(NAV_CONFIRM) || access_asking(&app->access, now) != ACCESS_ASK_NONE))
+	{
+		broke(PROMISE_WORLD, "the dialog of the settings shows or a question of the browser waits on a screen the heat keeps dark");
+	}
 	// nav.h leaves the dialog of the settings open when a request begins, because none begins below it
 	if(on(NAV_CONFIRM) && under_way) broke(PROMISE_DANGER, "the dialog of the settings shows while a request of the display is under way");
 	if(strcmp(app_host(app), link_host(&app->link)) != 0 || app->poll.wifi != link_up(&app->link) || dropped != 0)
@@ -4165,6 +4869,26 @@ static void before(uint64_t time)
 	m.events = 0;
 	m.answered = false;
 	m.page = app->nav.page;
+	m.tapped = -1;
+	m.ap_on = link_ap_on(&app->link);
+	m.ap_wanted = app->link.ap_wanted;
+}
+
+// A short press or a tap acted on the row Hotspot of the settings with nothing lying over them, and the link
+// has not had its turn since. Outside the safe mode and with a network stored the link is asked for the
+// opposite of what is on; else the access point is kept on, and the link is asked nothing.
+static void hotspot_taken(void)
+{
+	if(machine.safe_mode || flash.profile_count == 0)
+	{
+		if(!app->link.ap_wanted || !m.ap_wanted || link_ap_on(&app->link) != m.ap_on) broke(PROMISE_WORLD, "a press on Hotspot changed something about an access point that is kept on");
+		tally->hotspot[1]++;
+	}
+	else
+	{
+		if(app->link.ap_wanted == m.ap_on || link_ap_on(&app->link) != m.ap_on) broke(PROMISE_WORLD, "a press on Hotspot did not ask the link for the opposite of what is on");
+		tally->hotspot[0]++;
+	}
 }
 
 // The call is over, and what it asked for is carried out. quick: a reading between two ticks that the knob
@@ -4303,6 +5027,7 @@ static void run_button(void)
 		if(!on(NAV_SETTINGS)) broke(PROMISE_DANGER, "a row of the settings that leads to a restart was taken while a request of the display is under way");
 		tally->asks_refused++;
 	}
+	if(m.knob == KNOB_SHORT && !m.woke && m.over == NAV_OVER_NONE && m.nav.screen == NAV_SETTINGS && m.nav.row == 1) hotspot_taken();
 
 	// What the knob reports is an input for nav, unless its press began in the dark; a reading without a
 	// report is none
@@ -4415,6 +5140,9 @@ static void run_touch(touch_t kind, int a, int b)
 		m.must = acts(a, m.time, true);
 		if(m.must != 0) tally->taps_that_acted++;
 	}
+	if(kind == TOUCH_TAP && m.over == NAV_OVER_ASK) tally->taps_on_asks++;
+	if(kind == TOUCH_TAP && m.over == NAV_OVER_UPDATE) tally->taps_on_updates++;
+	if(kind == TOUCH_TAP) m.tapped = a;
 }
 
 static void run_touched(void)
@@ -4425,6 +5153,7 @@ static void run_touched(void)
 		if(app->nav.last_input_ms != m.time) broke(PROMISE_WAKE, "an input on a lit screen was not passed on");
 		if(memcmp(&m.twin, &app->nav, sizeof(nav_t)) != 0) broke(PROMISE_WAKE, "an input on a lit screen was not passed on to nav as app.h says");
 		if(m.toggles_release && access_is_open(&app->access, m.time) == m.was_open) broke(PROMISE_WORLD, "a tap on Freigabe did not give the release or take it back");
+		if(m.tapped == 1 && m.over == NAV_OVER_NONE && m.nav.screen == NAV_SETTINGS) hotspot_taken();
 		// A detent on the brightness screen sets the brightness at once
 		if(m.turned && m.nav.screen == NAV_BRIGHTNESS && m.over == NAV_OVER_NONE) m.preview = app->nav.value;
 	}
@@ -4520,16 +5249,55 @@ static void uploads(bool running)
 static void feel(int celsius, bool valid)
 {
 	bool in_dialog = on(NAV_DTC_CONFIRM);
+	bool in_settings = on(NAV_CONFIRM);
+	int came_from = app->nav.confirm == NAV_DO_REBOOT ? 2 : app->nav.confirm == NAV_DO_PREVIOUS_FIRMWARE ? 3 : 4;
+	bool asked = access_asking(&app->access, app->clock_ms) != ACCESS_ASK_NONE;
+	nav_t nav_before = app->nav;
 
 	m.heat = guard_heat(m.heat, celsius, valid);
 	m.has_temp = valid;
 	if(valid) m.temp = celsius;
 	app_temperature(app, celsius, valid);
-	if(m.heat != GUARD_HEAT_OFF || !in_dialog) return;
+	if(app->events != 0) broke(PROMISE_DANGER, "a reading of the temperature raised an event");
+	if(m.heat != GUARD_HEAT_OFF)
+	{
+		// While the light is on a temperature takes nothing away
+		if(memcmp(&nav_before, &app->nav, sizeof(nav_t)) != 0 || (access_asking(&app->access, app->clock_ms) != ACCESS_ASK_NONE) != asked)
+		{
+			broke(PROMISE_WORLD, "a temperature that leaves the light on took a dialog or a question away");
+		}
+		return;
+	}
 
+	// A press that is under way would end on a screen nobody sees: what the knob reports of it is dropped
+	if(knob_is_pressed(&app->knob) && !m.woke) tally->heat_presses++;
+	m.woke = true;
+	// A question nobody can see is none: what the browser asked for is refused and dropped
+	if(asked)
+	{
+		if(access_ticket(&app->access, app->access.ticket, app->clock_ms) != ACCESS_TICKET_REFUSED || app->has_wifi_asked || app->ask_detail[0] != '\0' ||
+		   !all_bytes(&app->wifi_asked, sizeof(app->wifi_asked), 0))
+		{
+			broke(PROMISE_WORLD, "the heat switched the light off and the question of the browser was not refused and dropped");
+		}
+		tally->heat_refused++;
+	}
 	// The heat switched the light off under the clear dialog: nobody may confirm a clear he cannot see
-	if(!on(NAV_DTC_LIST) || app->nav.row != app->list_lines + 1 || app->hold.open) broke(PROMISE_WORLD, "the heat switched the light off and the clear dialog was not left for the list");
-	tally->heat_closed++;
+	if(in_dialog)
+	{
+		if(!on(NAV_DTC_LIST) || app->nav.row != app->list_lines + 1 || app->hold.open) broke(PROMISE_WORLD, "the heat switched the light off and the clear dialog was not left for the list");
+		tally->heat_closed++;
+	}
+	// ... and nobody a restart, another firmware or a factory reset
+	if(in_settings)
+	{
+		if(!on(NAV_SETTINGS) || app->nav.row != came_from || app->nav.confirm != NAV_DO_NOTHING) broke(PROMISE_WORLD, "the heat switched the light off and the dialog of the settings was not left for its row");
+		tally->heat_left++;
+	}
+	if(!in_dialog && !in_settings && memcmp(&nav_before, &app->nav, sizeof(nav_t)) != 0 && (app->nav.screen != nav_before.screen || app->nav.row != nav_before.row))
+	{
+		broke(PROMISE_WORLD, "the heat switched the light off and a screen that asks nothing was left");
+	}
 }
 
 // A world in which nothing is wrong: the adapter the display is bound to, awake, with the W906 standing still
@@ -4691,11 +5459,14 @@ static void answer(void)
 	if(how < 55)
 	{
 		run(ACCESS_ASK_SHOWN_MS + 20u * (uint32_t)pick(20));
-		if(chance(50)) short_press();
-		else tap(pick(3));
+		// A finger first, now and then: it answers nothing, whatever row it means
+		if(chance(50)) tap(pick(5) - 1);
+		if(chance(80)) short_press();
 	}
 	else if(how < 70) long_press();
 	else if(how < 80) run(ACCESS_CONFIRM_MS + 1000);
+	// The board gets too hot to show the question
+	else if(how < 90) feel(85 + pick(10), true);
 }
 
 static void wait_long(void)
@@ -5021,6 +5792,12 @@ static void intent(void)
 					uploads(false);
 					web_end(0);
 				}
+				if(chance(10))
+				{
+					// The board gets too hot to show the dialog, with the focus on either answer
+					focus_on(pick(2));
+					feel(85 + pick(10), true);
+				}
 				if(chance(75))
 				{
 					focus_on(pick(2));
@@ -5294,6 +6071,16 @@ static void random_run(uint32_t number, run_result_t *result)
 		run(APP_UPDATE_CONFIRM_MS + 1000u * (uint32_t)pick(20));
 		stride = STEP_MS;
 	}
+	else if(machine.update_pending)
+	{
+		// Somebody touches the screen instead of the knob: that says nothing
+		doing = "taps on the update question";
+		for(int i = 0; i < 4; i++)
+		{
+			run(400);
+			tap(pick(6) - 1);
+		}
+	}
 
 	for(int deed = 0; deed < RUN_DEEDS; deed++) one();
 
@@ -5306,14 +6093,15 @@ static void test_random_runs(void)
 	static const char *const promises[PROMISES] = {
 		"in every random run a clear is handed out only after a press that began on Löschen behind 300 ms of released readings in the dialog and was read pressed there for 3000 ms, "
 		"with nothing over the dialog, no reading that failed, no two readings more than 200 ms apart and no detent or touch; once per hold, with the number of the list shown",
-		"in every random run restart, factory reset, previous and uploaded firmware and the confirmed update are raised exactly by the ways the headers name, never by a tap on Ausführen, "
-		"and the dialog of the settings never shows while a request of the display is under way",
+		"in every random run restart, factory reset, previous and uploaded firmware and the confirmed update are raised exactly by the ways the headers name, never by a tap - not on Ausführen, "
+		"not on a question of the browser, not on the update question -, and the dialog of the settings never shows while a request of the display is under way",
 		"in every random run settings, networks, binding and catalogue in use are those stored, and each store event comes exactly with its cause",
 		"in every random run the list before a clear is stored exactly when the adapter accepted or may have accepted, with the answer that says so, as the text the adapter sent",
 		"in every random run the screen shows no list, outcome, summary or value that the poll does not hold at that moment",
 		"in every random run the backlight is what the stored settings, the value being set, the standby rule and the heat say",
 		"in every random run an input on a dark screen is not passed on - dark by standby it only wakes it, dark by heat nothing does - and every other input is passed on",
-		"in every random run nav is told what the modules below hold, the poll follows the link, the time never runs backwards and the hold dialog is open exactly while the clear dialog shows",
+		"in every random run nav is told what the modules below hold, the poll follows the link, the time never runs backwards, the hold dialog is open exactly while the clear dialog shows, "
+		"and on a screen the heat keeps dark no dialog shows and no question of the browser waits: the heat refuses the question and leaves both dialogs",
 		"in every random run the layout is the built-in one where it suits the catalogue, a generated one where it does not, and the one of the user stays whatever the catalogue does",
 		"in every random run the info lines are what the platform, the adapter and the views say at the tick",
 		"in every random run no byte outside of the app is written",
@@ -5378,6 +6166,10 @@ static void test_random_runs(void)
 	       result.back, result.dim, result.off, result.standby, result.values, result.lines, result.summaries, result.reboots_late, result.taps_that_acted);
 	printf("  random runs: %ld presses of more than three seconds in the clear dialog that must not clear, %ld clear dialogs closed by the heat, %ld swipes in a dialog, "
 	       "%ld presses on a row of the settings that asks first while a request was under way\n", result.spoiled_holds, result.heat_closed, result.dialog_swipes, result.asks_refused);
+	printf("  random runs: %ld questions of the browser refused by the heat, %ld dialogs of the settings closed by it, %ld presses under way when it switched the light off; "
+	       "%ld taps on a question of the browser, %ld on the update question\n", result.heat_refused, result.heat_left, result.heat_presses, result.taps_on_asks, result.taps_on_updates);
+	printf("  random runs: the own access point kept on at %ld looks at the world and not kept at %ld; %ld short presses and taps on Hotspot that asked the link to switch it, "
+	       "%ld while it was kept on\n", result.kept[1], result.kept[0], result.hotspot[0], result.hotspot[1]);
 
 	check(complete && status != -1 && WIFEXITED(status) && WEXITSTATUS(status) == 0, "24 random runs of 240 deeds each: no crash and no hang");
 	for(int i = 0; i < PROMISES; i++) check(complete && result.broken[i] == 0, promises[i]);
@@ -5400,6 +6192,11 @@ static void test_random_runs(void)
 	check(complete && result.spoiled_holds >= 20 && result.heat_closed >= 2 && result.dialog_swipes >= 5 && result.asks_refused >= 3,
 	      "the random runs keep the knob pressed in the clear dialog in ways that must not clear, let the heat close the dialog, swipe in the dialogs and press the rows of the settings that "
 	      "lead to a restart while a request is under way");
+	check(complete && result.heat_refused >= 5 && result.heat_left >= 3 && result.heat_presses >= 2 && result.taps_on_asks >= 20 && result.taps_on_updates >= 5,
+	      "the random runs let the heat switch the light off under questions of the browser, under the dialog of the settings and under a press of the knob, and tap on questions of the browser and "
+	      "on the update question");
+	check(complete && result.kept[0] >= 5000 && result.kept[1] >= 5000 && result.hotspot[0] >= 3 && result.hotspot[1] >= 5,
+	      "the random runs look at the world with the own access point kept on and not, and press the row Hotspot in both");
 }
 
 
@@ -5422,11 +6219,15 @@ int main(void)
 	test_joining();
 	test_standby();
 	test_heat();
+	test_heat_and_questions();
+	test_press_into_the_heat();
 	test_safe_mode();
+	test_hotspot_kept();
 	test_update();
 	test_upload();
 	test_release();
 	test_questions();
+	test_no_tap_confirms();
 	test_layout_choice();
 	test_do();
 	test_world();

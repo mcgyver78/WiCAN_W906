@@ -73,7 +73,12 @@
 #define APP_EVENT_FACTORY_RESET     0x0200u     // erase STORE_CFG, then restart
 #define APP_EVENT_PREVIOUS_FIRMWARE 0x0400u     // boot the other slot, then restart
 #define APP_EVENT_INSTALL_FIRMWARE  0x0800u     // boot the uploaded firmware, then restart
-// The two events of the layout are raised by app_web.h alone.
+// The two events of the layout are raised by app_web.h alone. They undo each other, and the platform has no
+// order for the bits of one take: APP_EVENT_STORE_LAYOUT and APP_EVENT_ERASE_LAYOUT are never both set in
+// what app_take_events() returns. Of a save and a reset between two takes the later alone counts - a reset
+// after a save erases and stores nothing, a save after a reset stores and erases nothing: whoever raises
+// one of the two takes the other one back if it still waits. (Across two takes the platform sees to the
+// order itself: it carries them out one after the other.)
 
 typedef enum
 {
@@ -198,8 +203,8 @@ typedef struct
 } app_t;
 
 /*
- * The start. app_t is large (227088 bytes on a 64 bit host: the two layouts and the room for a third
- * 105360, the lines of the three fault memory lists 62376, the poll 39472, the layout text 16385; 226992
+ * The start. app_t is large (227128 bytes on a 64 bit host: the two layouts and the room for a third
+ * 105360, the lines of the three fault memory lists 62376, the poll 39512, the layout text 16385; 227032
  * bytes calculated for a 32 bit target that aligns 64 bit numbers to 8 bytes, not measured on the device):
  * static storage or the external RAM, never a stack.
  * - settings: settings_defaults(), then the stored text if settings_from_json() takes it
@@ -219,7 +224,8 @@ typedef struct
  * the check sum of the catalogue changed (app_net()): the built-in layout if layout_suits() it, else
  * layout_from_catalog(). layout_text follows the layout in use. When the choice changes the source the value
  * pages start at the first page of the new layout; when it does not, the page shown stays (nav_tick() finds
- * the nearest if it is not shown any more).
+ * the nearest if it is not shown any more). A layout the browser sends keeps the page shown where it has one
+ * at that position (app_web.h).
  */
 void app_init(app_t *app, const app_boot_t *boot, uint64_t now_ms);
 
@@ -232,9 +238,12 @@ void app_choose_layout(app_t *app);
  * - Off by the standby rule: that input wakes the screen, by restarting the idle time. A question of the
  *   browser, an upload and an unconfirmed update count as something to show: the screen lights up for them.
  * - Off by the heat (the level of guard_heat() is GUARD_HEAT_OFF): nothing wakes it, and no input is
- *   passed on for as long as it lasts. A question of the browser cannot be answered then and runs out, an
- *   update cannot be confirmed. When the heat switches the light off while the clear dialog shows, the
- *   dialog is left (app_temperature()): nobody may confirm a clear he cannot see.
+ *   passed on for as long as it lasts. A question nobody can see is none: when the heat switches the light
+ *   off, the question of the browser that waits is refused, and the clear dialog and the dialog of the
+ *   settings are left, and a press that is under way is dropped (app_temperature()); while it lasts
+ *   app_web.h asks no question and begins no upload.
+ *   Only "Update in Ordnung?" stays: it has no answer that takes it back, it cannot be confirmed in the
+ *   dark, and its time runs on.
  * A press is made with the reading with which the switch begins to count as pressed (knob.h); what the
  * knob reports of a press that began on a dark screen, short or long, is dropped. The idle time restarts
  * with every press, detent, tap and swipe, on a dark screen and on a lit one.
@@ -252,8 +261,11 @@ void app_button(app_t *app, bool pressed, bool read_ok, uint64_t now_ms);
 // hold_activity() while the clear dialog shows. Counts that make no detent are no input.
 void app_encoder(app_t *app, int counts, uint64_t now_ms);
 
-// A tap on row `row` of the screen (the drawing code knows where the rows are): nav_tap(). In the clear
-// dialog also hold_activity().
+// A tap on row `row` of the screen (the drawing code knows where the rows are; a tap that hit none comes
+// with a row that does not exist, as -1): nav_tap(). In the clear dialog also hold_activity().
+// No tap confirms a question, on whatever row and at whatever time (nav.h): the clear, the dialog of the
+// settings, what the browser asks for and "Update in Ordnung?" are answered with yes by the knob alone. A
+// tap on "Abbrechen" of the two dialogs leaves them; what lies over a screen takes no tap at all.
 void app_tap(app_t *app, int row, uint64_t now_ms);
 
 // A swipe: dx is negative (finger went left: next page), positive (previous page) or 0; dy is negative
@@ -295,9 +307,19 @@ void app_tick(app_t *app, uint64_t now_ms);
  */
 
 // A reading of the chip temperature (guard_heat()). temp_c is the last reading that succeeded, has_temp
-// tells whether the latest did. While the level is GUARD_HEAT_OFF the clear dialog does not show: if it
-// does, it is left as by a hold that was cancelled - hold_close(), and nav back to the list with the focus
-// on Fehler löschen (nav_hold() with HOLD_CANCELLED, at the time of the app).
+// tells whether the latest did. While the level is GUARD_HEAT_OFF nothing on the screen asks for an
+// answer. With every reading behind which the level is GUARD_HEAT_OFF - the one that switches the light off
+// and each one while it stays off -, at the time of the app and as no input:
+// - a question of the browser that waits is refused as by a long press (NAV_DO_ASK_REFUSE: the ticket ends
+//   as refused, what was asked for is dropped, the release goes on)
+// - the clear dialog is left as by "Abbrechen": hold_close(), and nav back to the list with the focus on
+//   Fehler löschen; the dialog of the settings as well: back to the settings, the focus on the row it came
+//   from (nav_cancel()), also while something lies over them
+// - a press of the knob that is under way does nothing more: what the knob reports of it, short or long,
+//   is not passed on to nav, as of a press that began in the dark - also if the screen is lit again by
+//   then. It began on a screen that could be seen and would act on another one. A press is under way
+//   until the knob reports it (knob.h: KNOB_DEBOUNCE readings behind the release of the switch).
+// The update question and an upload stay as they are.
 void app_temperature(app_t *app, int celsius, bool valid);
 
 // What the platform knows about itself, about once a second
@@ -337,11 +359,14 @@ const char *app_host(const app_t *app);
  *                             else settings.brightness; brightness_preview -1; APP_EVENT_STORE_SETTINGS
  *   NAV_DO_NIGHT_TOGGLE       settings.night_mode; APP_EVENT_STORE_SETTINGS
  *   NAV_DO_REVERSE_TOGGLE     settings.reverse, knob_set_reverse(); APP_EVENT_STORE_SETTINGS
- *   NAV_DO_AP_TOGGLE          link_ap_request() with the opposite of link_ap_on()
+ *   NAV_DO_AP_TOGGLE          link_ap_request() with the opposite of link_ap_on(). nav does not return it
+ *                             while the access point is kept on (link_ap_kept(): safe mode, no stored
+ *                             network); link_ap_request() would leave it on then anyway.
  *   NAV_DO_RELEASE_ON / OFF   access_open() / access_close(). Taking the release back refuses a question
  *                             that waits: what the browser asked for is dropped with it. Giving it again
  *                             leaves a question that waits, and what it asks for, as they are.
- *   NAV_DO_ASK_CONFIRM        access_confirm(): WIFI -> the network asked for is stored (net_store(); without
+ *   NAV_DO_ASK_CONFIRM        (nav.h returns it for a short press of the knob alone, never for a tap)
+ *                             access_confirm(): WIFI -> the network asked for is stored (net_store(); without
  *                             a password in the request, with the password stored for that SSID, or as an
  *                             open network if there is none), link_profiles(), app_net(),
  *                             APP_EVENT_STORE_WIFI - nothing of it if no network was asked for or net_store()

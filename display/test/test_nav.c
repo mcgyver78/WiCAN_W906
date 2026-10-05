@@ -213,9 +213,20 @@ static nav_do_t held(hold_event_t event)
 	return nav_hold(&nav, event, &world, now += 100);
 }
 
+static nav_do_t cancel(void)
+{
+	return nav_cancel(&nav, &world, now += 100);
+}
+
 static nav_do_t tick(void)
 {
 	return nav_tick(&nav, &world, now += 100);
+}
+
+// Whether a short press on that row of the screen shown would do something
+static bool acts(int row)
+{
+	return nav_row_acts(&nav, row, &world);
 }
 
 static nav_do_t tick_at(uint64_t at_ms)
@@ -1327,6 +1338,51 @@ static void test_settings(void)
 	before.row = 1;
 	check(tap(1) == NAV_DO_AP_TOGGLE && stays(&before), "settings, a tap on Hotspot: the access point is toggled");
 
+	// An access point that stays on whatever is asked (link.h: safe mode, or no stored network) has nothing to
+	// switch: the row does nothing, as Vorherige Version without a firmware
+	open_settings(1);
+	world.ap_kept = true;
+	before = nav;
+	check(press() == NAV_DO_NOTHING && stays(&before), "settings, short press on Hotspot while the access point is kept on: nothing, the screen stays");
+	check(nav.last_input_ms == now && nav.clock_ms == now, "settings, a short press on Hotspot that does nothing: an input for the idle time all the same");
+	check(press() == NAV_DO_NOTHING && stays(&before), "settings, a second short press on the kept Hotspot: nothing again");
+	world.ap_kept = false;
+	check(press() == NAV_DO_AP_TOGGLE && stays(&before), "settings, short press on Hotspot when the access point is not kept any more: it is toggled");
+	world.ap_kept = true;
+	check(press() == NAV_DO_NOTHING && stays(&before), "settings, the access point is kept again: the next short press on Hotspot does nothing - the world of the call decides");
+	open_settings(0);
+	world.ap_kept = true;
+	before = nav;
+	before.row = 1;
+	check(tap(1) == NAV_DO_NOTHING && stays(&before), "settings, a tap on Hotspot while the access point is kept on: the focus goes there, nothing else");
+	check(nav.last_input_ms == now && nav.clock_ms == now, "settings, a tap on the kept Hotspot: an input for the idle time all the same");
+	check(tap(1) == NAV_DO_NOTHING && stays(&before), "settings, a tap on the kept Hotspot with the focus on it: nothing either");
+	open_settings(0);
+	world.ap_kept = true;
+	world.previous_firmware = true;
+	before = nav;
+	check(press() == NAV_DO_REVERSE_TOGGLE && stays(&before), "settings, the access point kept on: a short press on Drehrichtung toggles the direction as always");
+	check(tap(2) == NAV_DO_NOTHING && at(NAV_CONFIRM, 0) && nav.confirm == NAV_DO_REBOOT && press() == NAV_DO_NOTHING && at(NAV_SETTINGS, 2),
+	      "settings, the access point kept on: Neustart asks as always");
+	check(tap(3) == NAV_DO_NOTHING && at(NAV_CONFIRM, 0) && nav.confirm == NAV_DO_PREVIOUS_FIRMWARE && press() == NAV_DO_NOTHING && at(NAV_SETTINGS, 3),
+	      "settings, the access point kept on: Vorherige Version asks as always");
+	check(tap(4) == NAV_DO_NOTHING && at(NAV_CONFIRM, 0) && nav.confirm == NAV_DO_FACTORY_RESET && press() == NAV_DO_NOTHING && at(NAV_SETTINGS, 4),
+	      "settings, the access point kept on: Werkseinstellungen asks as always");
+	check(turn(-3) == NAV_DO_NOTHING && at(NAV_SETTINGS, 1) && turn(1) == NAV_DO_NOTHING && at(NAV_SETTINGS, 2) && turn(-2) == NAV_DO_NOTHING && at(NAV_SETTINGS, 0),
+	      "settings, the access point kept on: the focus moves onto Hotspot and over it as over every row");
+	check(tap(5) == NAV_DO_NOTHING && at(NAV_MENU, 5), "settings, the access point kept on: Zurück leads to the menu as always");
+	open_settings(1);
+	world.ap_kept = true;
+	check(long_press() == NAV_DO_NOTHING && at(NAV_MENU, 5), "settings, long press on the kept Hotspot: the menu, as from every row");
+	// Only the settings have a row for the access point
+	open_menu(1);
+	world.ap_kept = true;
+	check(press() == NAV_DO_NOTHING && at(NAV_BRIGHTNESS, 0), "menu, the access point kept on: row 1 there is Helligkeit and opens as always");
+	open_web(1);
+	world.ap_kept = true;
+	check(tap(0) == NAV_DO_RELEASE_ON && at(NAV_WEB, 0) && press() == NAV_DO_RELEASE_ON && tap(1) == NAV_DO_NOTHING && at(NAV_MENU, 3),
+	      "web access, the access point kept on: Freigabe and Zurück do what they always do");
+
 	// The dialog for each of the three, opened with row 2, 3 and 4
 	for(int row = 2; row <= 4; row++)
 	{
@@ -1433,6 +1489,25 @@ static void test_settings(void)
 		if(press() != NAV_DO_REVERSE_TOGGLE || turn(1) != NAV_DO_NOTHING || press() != NAV_DO_AP_TOGGLE || !at(NAV_SETTINGS, 1) || tap(5) != NAV_DO_NOTHING || !at(NAV_MENU, 5)) wrong++;
 	}
 	check(wrong == 0, "settings in every phase of the flow: Drehrichtung, Hotspot and Zurück do what they always do");
+	wrong = 0;
+	for(int i = 0; i <= PHASES; i++)
+	{
+		for(int by_tap = 0; by_tap < 2; by_tap++)
+		{
+			nav_do_t action;
+
+			open_settings(by_tap ? 0 : 1);
+			world.flow = phases[i];
+			world.ap_kept = true;
+			action = by_tap ? tap(1) : press();
+			if(action != NAV_DO_NOTHING || !at(NAV_SETTINGS, 1) || nav.confirm != NAV_DO_NOTHING || nav.page != 2 || nav.last_input_ms != now)
+			{
+				printf("  flow %s, %s: action %d, screen %d row %d\n", phase_names[i], by_tap ? "tap" : "short press", (int)action, (int)nav.screen, nav.row);
+				wrong++;
+			}
+		}
+	}
+	check(wrong == 0, "settings, a short press and a tap on Hotspot while the access point is kept on, in every phase of the flow: nothing but the focus and the idle time");
 	open_ask(3);
 	world.previous_firmware = false;
 	check(turn(1) == NAV_DO_NOTHING && press() == NAV_DO_PREVIOUS_FIRMWARE && page_is(2),
@@ -1531,8 +1606,9 @@ static void test_under_overlays(void)
 	      under_overlay(NAV_OVER_ASK, turn_none, NAV_DO_NOTHING) == 0, "question over every screen: turning does nothing, the screen below stays");
 	check(under_overlay(NAV_OVER_ASK, press, NAV_DO_ASK_CONFIRM) == 0, "question over every screen: a short press confirms it, the screen below stays");
 	check(under_overlay(NAV_OVER_ASK, long_press, NAV_DO_ASK_REFUSE) == 0, "question over every screen: a long press refuses it, the screen below stays");
-	check(under_overlay(NAV_OVER_ASK, tap_first, NAV_DO_ASK_CONFIRM) + under_overlay(NAV_OVER_ASK, tap_second, NAV_DO_ASK_CONFIRM) +
-	      under_overlay(NAV_OVER_ASK, tap_nowhere, NAV_DO_ASK_CONFIRM) == 0, "question over every screen: a tap confirms it, whatever row it names, and moves no focus");
+	check(under_overlay(NAV_OVER_ASK, tap_first, NAV_DO_NOTHING) + under_overlay(NAV_OVER_ASK, tap_second, NAV_DO_NOTHING) +
+	      under_overlay(NAV_OVER_ASK, tap_nowhere, NAV_DO_NOTHING) == 0,
+	      "question over every screen: a tap does nothing, whatever row it names - it neither confirms nor refuses, moves no focus, and is an input for the idle time");
 	check(under_overlay(NAV_OVER_ASK, swipe_on, NAV_DO_NOTHING) + under_overlay(NAV_OVER_ASK, swipe_back, NAV_DO_NOTHING) == 0,
 	      "question over every screen: a swipe does nothing");
 
@@ -1540,8 +1616,9 @@ static void test_under_overlays(void)
 	      under_overlay(NAV_OVER_UPDATE, turn_none, NAV_DO_NOTHING) == 0, "update question over every screen: turning is ignored, the screen below stays");
 	check(under_overlay(NAV_OVER_UPDATE, press, NAV_DO_UPDATE_OK) == 0, "update question over every screen: a short press says yes, the screen below stays");
 	check(under_overlay(NAV_OVER_UPDATE, long_press, NAV_DO_NOTHING) == 0, "update question over every screen: a long press is ignored");
-	check(under_overlay(NAV_OVER_UPDATE, tap_first, NAV_DO_UPDATE_OK) + under_overlay(NAV_OVER_UPDATE, tap_second, NAV_DO_UPDATE_OK) +
-	      under_overlay(NAV_OVER_UPDATE, tap_nowhere, NAV_DO_UPDATE_OK) == 0, "update question over every screen: a tap says yes, whatever row it names");
+	check(under_overlay(NAV_OVER_UPDATE, tap_first, NAV_DO_NOTHING) + under_overlay(NAV_OVER_UPDATE, tap_second, NAV_DO_NOTHING) +
+	      under_overlay(NAV_OVER_UPDATE, tap_nowhere, NAV_DO_NOTHING) == 0,
+	      "update question over every screen: a tap is ignored, whatever row it names - the knob alone says yes");
 	check(under_overlay(NAV_OVER_UPDATE, swipe_on, NAV_DO_NOTHING) + under_overlay(NAV_OVER_UPDATE, swipe_back, NAV_DO_NOTHING) == 0,
 	      "update question over every screen: a swipe is ignored");
 
@@ -1556,16 +1633,218 @@ static void test_under_overlays(void)
 	reach(NAV_MENU, false);
 	world.asking = ACCESS_ASK_WIFI;
 	world.update_pending = true;
-	check(press() == NAV_DO_ASK_CONFIRM && long_press() == NAV_DO_ASK_REFUSE && tap(0) == NAV_DO_ASK_CONFIRM && at(NAV_MENU, 2),
-	      "question and update question at once: the inputs answer the question of the browser");
+	check(press() == NAV_DO_ASK_CONFIRM && long_press() == NAV_DO_ASK_REFUSE && tap(0) == NAV_DO_NOTHING && at(NAV_MENU, 2),
+	      "question and update question at once: the knob answers the question of the browser, a tap answers neither of the two");
 	world.uploading = true;
 	check(press() == NAV_DO_NOTHING && long_press() == NAV_DO_NOTHING && tap(0) == NAV_DO_NOTHING && at(NAV_MENU, 2),
 	      "upload, question and update question at once: every input is ignored");
 	world.uploading = false;
 	world.asking = ACCESS_ASK_NONE;
-	check(long_press() == NAV_DO_NOTHING && press() == NAV_DO_UPDATE_OK && at(NAV_MENU, 2), "the question gone, the update question left: a short press says yes");
+	check(long_press() == NAV_DO_NOTHING && tap(2) == NAV_DO_NOTHING && press() == NAV_DO_UPDATE_OK && at(NAV_MENU, 2),
+	      "the question gone, the update question left: a long press and a tap on the focused row do nothing, a short press says yes");
 	world.update_pending = false;
 	check(press() == NAV_DO_NIGHT_TOGGLE && at(NAV_MENU, 2) && long_press() == NAV_DO_NOTHING && page_is(2), "nothing lies over the screen any more: the inputs reach it again");
+}
+
+// No question of the display is confirmed by a tap, on whatever row: one check for each of them
+static void test_no_tap_confirms(void)
+{
+	static const int rows[] = {INT_MIN, -2, -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, INT_MAX};
+	static const struct
+	{
+		access_ask_t question;
+		const char *rule;
+	} asked[] = {
+		{ACCESS_ASK_WIFI, "the question of the browser to store WiFi data, over every screen: no tap on any row confirms it, refuses it or changes the screen below"},
+		{ACCESS_ASK_FIRMWARE, "the question of the browser to install the uploaded firmware, over every screen: no tap on any row confirms it, refuses it or changes the screen below"},
+		{ACCESS_ASK_RESET, "the question of the browser for the factory reset, over every screen: no tap on any row confirms it, refuses it or changes the screen below"},
+		{(access_ask_t)9, "a question that is no member of the enum, over every screen: no tap on any row confirms it either"},
+	};
+	static const struct
+	{
+		int row;
+		const char *rule;
+	} dialogs[] = {
+		{2, "the dialog of the restart with the focus on either answer: no tap on any row restarts - one on Abbrechen leaves the dialog, every other one changes nothing"},
+		{3, "the dialog of the previous version with the focus on either answer: no tap on any row starts it - one on Abbrechen leaves the dialog, every other one changes nothing"},
+		{4, "the dialog of the factory reset with the focus on either answer: no tap on any row resets - one on Abbrechen leaves the dialog, every other one changes nothing"},
+	};
+	nav_t before;
+	nav_do_t action;
+	int wrong;
+
+	// What the browser asks for
+	for(size_t i = 0; i < sizeof(asked) / sizeof(asked[0]); i++)
+	{
+		wrong = 0;
+		for(int screen = 0; screen < SCREENS; screen++)
+		{
+			for(size_t r = 0; r < 2 * sizeof(rows) / sizeof(rows[0]); r++)
+			{
+				reach((nav_screen_t)screen, r % 2 != 0);
+				world.asking = asked[i].question;
+				before = nav;
+				action = tap(rows[r / 2]);
+				if(action != NAV_DO_NOTHING || !stays(&before))
+				{
+					printf("  question %d over %s, tap on row %d: action %d, screen %d row %d\n", (int)asked[i].question, screen_names[screen], rows[r / 2], (int)action, (int)nav.screen, nav.row);
+					wrong++;
+				}
+			}
+		}
+		check(wrong == 0, asked[i].rule);
+	}
+
+	// "Update in Ordnung?"
+	wrong = 0;
+	for(int screen = 0; screen < SCREENS; screen++)
+	{
+		for(size_t r = 0; r < 2 * sizeof(rows) / sizeof(rows[0]); r++)
+		{
+			reach((nav_screen_t)screen, r % 2 != 0);
+			world.update_pending = true;
+			before = nav;
+			action = tap(rows[r / 2]);
+			if(action != NAV_DO_NOTHING || !stays(&before))
+			{
+				printf("  update question over %s, tap on row %d: action %d, screen %d row %d\n", screen_names[screen], rows[r / 2], (int)action, (int)nav.screen, nav.row);
+				wrong++;
+			}
+		}
+	}
+	check(wrong == 0, "the update question over every screen: no tap on any row says that the update is in order, or changes the screen below");
+
+	// The clear of the fault memory
+	wrong = 0;
+	for(size_t r = 0; r < 2 * sizeof(rows) / sizeof(rows[0]); r++)
+	{
+		int row = rows[r / 2];
+
+		open_clear_dialog(3);
+		turn((int)(r % 2));
+		before = nav;
+		action = tap(row);
+		if(row == 0 ? (action != NAV_DO_HOLD_CLOSE || !at(NAV_DTC_LIST, 4)) : (action != NAV_DO_NOTHING || !stays(&before)))
+		{
+			printf("  clear dialog with the focus on %d, tap on row %d: action %d, screen %d row %d\n", before.row, row, (int)action, (int)nav.screen, nav.row);
+			wrong++;
+		}
+	}
+	check(wrong == 0, "the clear dialog with the focus on either answer: no tap on any row clears or moves the focus - one on Abbrechen leaves the dialog, every other one changes nothing");
+
+	// Restart, previous version and factory reset of the settings
+	for(size_t i = 0; i < sizeof(dialogs) / sizeof(dialogs[0]); i++)
+	{
+		wrong = 0;
+		for(size_t r = 0; r < 2 * sizeof(rows) / sizeof(rows[0]); r++)
+		{
+			int row = rows[r / 2];
+
+			open_ask(dialogs[i].row);
+			turn((int)(r % 2));
+			before = nav;
+			action = tap(row);
+			if(row == 0 ? (action != NAV_DO_NOTHING || !at(NAV_SETTINGS, dialogs[i].row)) : (action != NAV_DO_NOTHING || !stays(&before)))
+			{
+				printf("  dialog of the settings row %d with the focus on %d, tap on row %d: action %d, screen %d row %d\n", dialogs[i].row, before.row, row, (int)action, (int)nav.screen, nav.row);
+				wrong++;
+			}
+		}
+		check(wrong == 0, dialogs[i].rule);
+	}
+}
+
+// A dialog nobody can see is left without its answer
+static void test_cancel(void)
+{
+	static const nav_overlay_t overlays[3] = {NAV_OVER_UPLOAD, NAV_OVER_ASK, NAV_OVER_UPDATE};
+	static const char *const settings[3][2] =
+	{
+		{"the dialog of the restart, the focus on Abbrechen, is cancelled: the settings with the focus on Neustart, nothing to carry out, nothing waits any more",
+		 "the dialog of the restart, the focus on Ausführen, is cancelled: the settings with the focus on Neustart - no restart"},
+		{"the dialog of the previous version, the focus on Abbrechen, is cancelled: the settings with the focus on Vorherige Version, nothing to carry out",
+		 "the dialog of the previous version, the focus on Ausführen, is cancelled: the settings with the focus on Vorherige Version - nothing is started"},
+		{"the dialog of the factory reset, the focus on Abbrechen, is cancelled: the settings with the focus on Werkseinstellungen, nothing to carry out",
+		 "the dialog of the factory reset, the focus on Ausführen, is cancelled: the settings with the focus on Werkseinstellungen - no reset"},
+	};
+	static const char *const under[3] =
+	{
+		"both dialogs are cancelled under an upload as well: the list and the hold to close, the settings",
+		"both dialogs are cancelled under a question of the browser as well: the list and the hold to close, the settings",
+		"both dialogs are cancelled under the update question as well: the list and the hold to close, the settings",
+	};
+	nav_t before;
+	uint64_t input;
+	int wrong = 0;
+	bool same;
+
+	// The clear dialog
+	open_clear_dialog(3);
+	turn(1);
+	input = nav.last_input_ms;
+	check(at(NAV_DTC_CONFIRM, 1) && cancel() == NAV_DO_HOLD_CLOSE && at(NAV_DTC_LIST, 4),
+	      "the clear dialog, the focus on Löschen, is cancelled: back to the list with the focus on Fehler löschen, the hold dialog is to be closed");
+	check(nav.last_input_ms == input && nav.clock_ms == now, "a dialog that is cancelled: no input for the idle time, and the time is taken over");
+	open_clear_dialog(3);
+	check(at(NAV_DTC_CONFIRM, 0) && cancel() == NAV_DO_HOLD_CLOSE && at(NAV_DTC_LIST, 4), "the clear dialog, the focus on Abbrechen, is cancelled: back to the list as well");
+	open_clear_dialog(0);
+	check(cancel() == NAV_DO_HOLD_CLOSE && at(NAV_DTC_LIST, 1), "the clear dialog over a list without lines is cancelled: the focus on Fehler löschen, row 1");
+
+	// The dialog of the settings, for each of its three questions
+	for(int row = 2; row <= 4; row++)
+	{
+		for(int focus = 0; focus < 2; focus++)
+		{
+			open_ask(row);
+			turn(focus);
+			input = nav.last_input_ms;
+			check(at(NAV_CONFIRM, focus) && cancel() == NAV_DO_NOTHING && at(NAV_SETTINGS, row) && nav.confirm == NAV_DO_NOTHING && nav.last_input_ms == input && nav.clock_ms == now,
+			      settings[row - 2][focus]);
+		}
+	}
+	open_ask(4);
+	turn(1);
+	cancel();
+	check(press() == NAV_DO_NOTHING && at(NAV_CONFIRM, 0) && nav.confirm == NAV_DO_FACTORY_RESET,
+	      "a short press behind the cancelled dialog of the factory reset opens it anew, the focus on Abbrechen: what was cancelled is not carried out by the next press");
+
+	// What lies over the dialog does not keep it
+	for(int i = 0; i < 3; i++)
+	{
+		reach(NAV_DTC_CONFIRM, true);
+		set_overlay(overlays[i]);
+		same = cancel() == NAV_DO_HOLD_CLOSE && at(NAV_DTC_LIST, 4);
+		reach(NAV_CONFIRM, true);
+		set_overlay(overlays[i]);
+		check(same && cancel() == NAV_DO_NOTHING && at(NAV_SETTINGS, 4) && nav.confirm == NAV_DO_NOTHING, under[i]);
+	}
+
+	// Every other screen stays
+	for(int screen = 0; screen < SCREENS; screen++)
+	{
+		for(int last = 0; last < 2; last++)
+		{
+			nav_do_t action;
+
+			if(screen == NAV_DTC_CONFIRM || screen == NAV_CONFIRM) continue;
+
+			reach((nav_screen_t)screen, last != 0);
+			before = nav;
+			input = nav.last_input_ms;
+			action = cancel();
+			if(action != NAV_DO_NOTHING || !stays(&before) || nav.last_input_ms != input || nav.clock_ms != now)
+			{
+				printf("  %s: action %d, screen %d row %d page %d\n", screen_names[screen], (int)action, (int)nav.screen, nav.row, nav.page);
+				wrong++;
+			}
+		}
+	}
+	check(wrong == 0, "on every screen that is no dialog a cancel changes nothing, asks for nothing, is no input and takes its time over");
+
+	// A time before the latest seen
+	reach(NAV_CONFIRM, true);
+	input = now;
+	check(nav_cancel(&nav, &world, 5) == NAV_DO_NOTHING && at(NAV_SETTINGS, 4) && nav.clock_ms == input, "a cancel with a time before the latest seen: the dialog is left, the time does not step back");
 }
 
 static void test_hold_under_overlays(void)
@@ -1672,6 +1951,18 @@ static void test_idle(void)
 	input = now;
 	nav_short(&nav, &world, now = input + 100000);
 	check(tick_at(input + 219999) == NAV_DO_NOTHING && at(NAV_DTC, 1) && tick_at(input + 220000) == NAV_DO_NOTHING && page_is(2), "a short press that does nothing starts the idle time anew");
+	open_settings(1);
+	world.ap_kept = true;
+	input = now;
+	nav_short(&nav, &world, now = input + 100000);
+	check(tick_at(input + 219999) == NAV_DO_NOTHING && at(NAV_SETTINGS, 1) && tick_at(input + 220000) == NAV_DO_NOTHING && page_is(2),
+	      "a short press on Hotspot while the access point is kept on does nothing and starts the idle time anew");
+	open_settings(0);
+	world.ap_kept = true;
+	input = now;
+	nav_tap(&nav, 1, &world, now = input + 100000);
+	check(tick_at(input + 219999) == NAV_DO_NOTHING && at(NAV_SETTINGS, 1) && tick_at(input + 220000) == NAV_DO_NOTHING && page_is(2),
+	      "a tap on Hotspot while the access point is kept on moves the focus there and starts the idle time anew");
 	reach(NAV_SETTINGS, false);
 	input = now;
 	nav_long(&nav, &world, now = input + 100000);
@@ -2204,6 +2495,7 @@ typedef struct
 	unsigned shown;                 // pages in the rotation of the knob
 	dtc_flow_phase_t flow;
 	bool can_read, can_clear, release_open, previous_firmware;
+	bool ap_kept;                   // the own access point stays on whatever is asked
 	int list, cleared, old, info;   // lines as the header counts them: within 0 and INT_MAX - 3
 	int brightness;
 	nav_overlay_t over;
@@ -2235,6 +2527,7 @@ enum
 typedef enum
 {
 	ALWAYS, CAN_READ, CAN_CLEAR, UNDER_WAY, NOT_UNDER_WAY, HAS_LIST, HAS_CLEARED, HAS_FAILED, HAS_OLD, RELEASED, NOT_RELEASED, PREVIOUS_AND_NOT_UNDER_WAY,
+	AP_NOT_KEPT,
 } when_t;
 
 typedef struct
@@ -2301,7 +2594,7 @@ static const rule_t rules[] =
 	{NAV_INFO,        'l', ANY,        ALWAYS,        NAV_MENU,        4,         NAV_DO_NOTHING,        NAV_DO_NOTHING},
 
 	{NAV_SETTINGS,    's', 0,          ALWAYS,        STAY,            0,         NAV_DO_REVERSE_TOGGLE, NAV_DO_NOTHING},
-	{NAV_SETTINGS,    's', 1,          ALWAYS,        STAY,            0,         NAV_DO_AP_TOGGLE,      NAV_DO_NOTHING},
+	{NAV_SETTINGS,    's', 1,          AP_NOT_KEPT,   STAY,            0,         NAV_DO_AP_TOGGLE,      NAV_DO_NOTHING},
 	{NAV_SETTINGS,    's', 2,          NOT_UNDER_WAY, NAV_CONFIRM,     0,         NAV_DO_NOTHING,        NAV_DO_REBOOT},
 	{NAV_SETTINGS,    's', 3,          PREVIOUS_AND_NOT_UNDER_WAY, NAV_CONFIRM, 0, NAV_DO_NOTHING,       NAV_DO_PREVIOUS_FIRMWARE},
 	{NAV_SETTINGS,    's', 4,          NOT_UNDER_WAY, NAV_CONFIRM,     0,         NAV_DO_NOTHING,        NAV_DO_FACTORY_RESET},
@@ -2334,6 +2627,7 @@ static bool model_when(const seen_t *seen, when_t when)
 		case RELEASED:      return seen->release_open;
 		case NOT_RELEASED:  return !seen->release_open;
 		case PREVIOUS_AND_NOT_UNDER_WAY: return seen->previous_firmware && !model_under_way(seen);
+		case AP_NOT_KEPT:   return !seen->ap_kept;
 	}
 	return false;
 }
@@ -2345,6 +2639,27 @@ static int model_lines(nav_screen_t screen, const seen_t *seen)
 	if(screen == NAV_DTC_OLD) return seen->old;
 	if(screen == NAV_INFO) return seen->info;
 	return 0;
+}
+
+static int model_rows(nav_screen_t screen, const seen_t *seen);
+
+// Whether a short press on that row of the screen does something: a rule of the table fits it. Every rule of
+// a short press leads somewhere or names an action.
+static bool model_acts(nav_screen_t screen, int at_row, const seen_t *seen)
+{
+	int lines = model_lines(screen, seen);
+
+	if(at_row < 0 || at_row >= model_rows(screen, seen)) return false;
+	for(size_t i = 0; i < sizeof(rules) / sizeof(rules[0]); i++)
+	{
+		const rule_t *rule = &rules[i];
+		int row = rule->row <= BEHIND ? lines + (BEHIND - rule->row) : rule->row;
+
+		if(rule->screen != screen || rule->input != 's') continue;
+		if(rule->row != ANY && row != at_row) continue;
+		if(model_when(seen, rule->when)) return true;
+	}
+	return false;
 }
 
 static int model_rows(nav_screen_t screen, const seen_t *seen)
@@ -2507,7 +2822,10 @@ static int model_touchable(nav_screen_t screen, const seen_t *seen)
 
 static nav_do_t model_tap(model_t *model, const seen_t *seen, int row)
 {
-	if(seen->over == NAV_OVER_NONE && model->screen != NAV_DTC_FAILED)
+	// The knob alone answers what lies over the screen
+	if(seen->over != NAV_OVER_NONE) return NAV_DO_NOTHING;
+
+	if(model->screen != NAV_DTC_FAILED)
 	{
 		if(row < 0 || row >= model_touchable(model->screen, seen)) return NAV_DO_NOTHING;
 		model->row = row;
@@ -2534,6 +2852,24 @@ static nav_do_t model_hold(model_t *model, const seen_t *seen, hold_event_t even
 	}
 	model->screen = NAV_DTC_LIST;
 	model->row = seen->list + 1;
+	return NAV_DO_NOTHING;
+}
+
+// Nobody can see the screen: a dialog is left as by its first answer, whatever lies over it
+static nav_do_t model_cancel(model_t *model, const seen_t *seen)
+{
+	if(model->screen == NAV_DTC_CONFIRM)
+	{
+		model->screen = NAV_DTC_LIST;
+		model->row = seen->list + 1;
+		return NAV_DO_HOLD_CLOSE;
+	}
+	if(model->screen == NAV_CONFIRM)
+	{
+		model->screen = NAV_SETTINGS;
+		model->row = model->came_from;
+		model->confirm = NAV_DO_NOTHING;
+	}
 	return NAV_DO_NOTHING;
 }
 
@@ -2607,10 +2943,10 @@ static nav_do_t model_tick(model_t *model, const seen_t *seen, int *followed)
 
 typedef enum
 {
-	CALL_TICK, CALL_TURN, CALL_SHORT, CALL_LONG, CALL_TAP, CALL_SWIPE, CALL_HOLD, CALL_INIT, CALLS,
+	CALL_TICK, CALL_TURN, CALL_SHORT, CALL_LONG, CALL_TAP, CALL_SWIPE, CALL_HOLD, CALL_INIT, CALL_CANCEL, CALLS,
 } call_t;
 
-static const char *const call_names[CALLS] = {"tick", "turn", "short", "long", "tap", "swipe", "hold", "init"};
+static const char *const call_names[CALLS] = {"tick", "turn", "short", "long", "tap", "swipe", "hold", "init", "cancel"};
 
 static struct
 {
@@ -2623,10 +2959,22 @@ static struct
 	long under[4];                      // inputs under each overlay (0: none)
 	long steps_back, ends_of_idle, beyond, searches, no_page, huge_lists, strange_phases;
 	// What must not happen
-	long differences, clears, reads, dialogs, dangerous, touched, overlays, rows, values, trapped;
+	long differences, clears, reads, dialogs, dangerous, touched, overlays, rows, values, trapped, switched;
 	// What the walk reached of the rules for the dialogs
 	long taps_ignored[2];               // taps on the second answer of the clear dialog and of the dialog of the settings
+	long taps_under[4];                 // taps under each overlay (0: none)
+	long touch_confirms;                // taps that returned what only the knob may: a confirmed question, update, clear, restart, firmware, reset
+	long cancelled[2];                  // clear dialogs and dialogs of the settings that a cancel left
 	long asks_refused;                  // short presses and taps on a row of the settings that asks first, while a request is under way
+	// Rows asked whether a press on them would do something
+	long acts_wrong;                    // answers other than the table gives
+	long acts_asked[3];                 // rows that act, rows that do not, rows that do not exist
+	long acts_refused;                  // rows of the settings that ask first and do not act because a request is under way
+	// The own access point
+	long ap_toggles[2];                 // short presses and taps on Hotspot that switched it
+	long ap_refused[2];                 // short presses and taps on Hotspot while it is kept on
+	long ap_kept_calls;                 // calls with the access point kept on
+	long acts_kept;                     // times the row Hotspot was asked whether it acts while the access point is kept on
 } walked;
 
 static uint32_t walk_state;
@@ -2651,6 +2999,7 @@ static void see(seen_t *seen)
 	seen->can_clear = world.can_clear;
 	seen->release_open = world.release_open;
 	seen->previous_firmware = world.previous_firmware;
+	seen->ap_kept = world.ap_kept;
 	seen->brightness = world.brightness;
 	seen->over = world.uploading ? NAV_OVER_UPLOAD : world.asking != ACCESS_ASK_NONE ? NAV_OVER_ASK : world.update_pending ? NAV_OVER_UPDATE : NAV_OVER_NONE;
 	for(int i = 0; i < 4; i++)
@@ -2665,7 +3014,7 @@ static void change_world(void)
 	static const int brightness[] = {80, 25, 5, 100, 4, 101, 0, -3, 37, 255, INT_MAX, INT_MIN};
 	int *const counts[4] = {&world.list_lines, &world.cleared_lines, &world.old_lines, &world.info_lines};
 
-	switch(walk_random(20))
+	switch(walk_random(21))
 	{
 		case 0:
 		case 1:
@@ -2717,6 +3066,10 @@ static void change_world(void)
 			break;
 		case 18:
 			world.night_mode = !world.night_mode;
+			break;
+		case 19:
+			// Safe mode begins or ends with a start; the last stored network goes and comes at any time
+			world.ap_kept = !world.ap_kept;
 			break;
 		default:
 			// A list of the kind the display really shows
@@ -2913,6 +3266,8 @@ static void walk(uint32_t seed)
 		if(walk_random(6) == 0) world.update_pending = false;
 		// In the clear dialog the hold reports more often than elsewhere
 		if(nav.screen == NAV_DTC_CONFIRM && what >= 28 && walk_random(3) == 0) what = 95;
+		// ... and in both dialogs somebody finds that nobody can see them
+		if((nav.screen == NAV_DTC_CONFIRM || nav.screen == NAV_CONFIRM) && what >= 28 && walk_random(30) == 0) what = 98;
 		see(&seen);
 		rows = model_rows(model.screen, &seen);
 		before = nav;
@@ -2971,6 +3326,13 @@ static void walk(uint32_t seed)
 			action = nav_swipe(&nav, given, &world, at_ms);
 			expected = model_swipe(&model, &seen, given);
 		}
+		else if(what == 98)
+		{
+			call = CALL_CANCEL;
+			model_time(&model, at_ms, false);
+			action = nav_cancel(&nav, &world, at_ms);
+			expected = model_cancel(&model, &seen);
+		}
 		else if(what < 99 || walk_random(30) != 0)
 		{
 			call = CALL_HOLD;
@@ -3005,6 +3367,29 @@ static void walk(uint32_t seed)
 			return;
 		}
 
+		// Which rows act, by the table: the row in focus, the ends of the screen, the rows around the end of the
+		// lines of a list, and what lies beside the rows
+		{
+			int lines = model_lines(nav.screen, &seen);
+			int all = model_rows(nav.screen, &seen);
+			const int asked[] = {nav.row, 0, 1, 2, 3, 4, 5, 6, lines - 1, lines, lines + 1, lines + 2, all - 1, all, -1};
+
+			for(size_t i = 0; i < sizeof(asked) / sizeof(asked[0]); i++)
+			{
+				bool expected_acts = model_acts(nav.screen, asked[i], &seen);
+
+				if(nav_row_acts(&nav, asked[i], &world) != expected_acts)
+				{
+					if(walked.acts_wrong == 0) printf("  walk %lu, step %ld, screen %s, flow %d: row %d of %d acts %d by the table\n", (unsigned long)seed, step,
+					                                  screen_names[nav.screen], (int)world.flow, asked[i], all, expected_acts);
+					walked.acts_wrong++;
+				}
+				walked.acts_asked[asked[i] < 0 || asked[i] >= all ? 2 : expected_acts ? 0 : 1]++;
+				if(nav.screen == NAV_SETTINGS && asked[i] >= 2 && asked[i] <= 4 && model_under_way(&seen) && (asked[i] != 3 || seen.previous_firmware)) walked.acts_refused++;
+				if(nav.screen == NAV_SETTINGS && asked[i] == 1 && world.ap_kept) walked.acts_kept++;
+			}
+		}
+
 		// What must hold whatever the model says. From here on only the module, the world and the call count.
 		entered = nav.screen == NAV_DTC_CONFIRM && before.screen != NAV_DTC_CONFIRM;
 		left = before.screen == NAV_DTC_CONFIRM && nav.screen != NAV_DTC_CONFIRM;
@@ -3032,6 +3417,13 @@ static void walk(uint32_t seed)
 		if(left && call != CALL_INIT && action != NAV_DO_HOLD_CLOSE &&
 		   !(call == CALL_HOLD && (event == HOLD_CONFIRMED || event == HOLD_CANCELLED || event == HOLD_STUCK))) walked.dialogs++;
 		if(action == NAV_DO_HOLD_CLOSE && !left) walked.dialogs++;
+		// A cancel leaves both dialogs, whatever lies over them, and nothing else
+		if(call == CALL_CANCEL)
+		{
+			if(in_dialog ? nav.screen == before.screen : !stays(&before)) walked.dialogs++;
+			if(nav.last_input_ms != before.last_input_ms) walked.dialogs++;
+			if(in_dialog) walked.cancelled[before.screen == NAV_CONFIRM]++;
+		}
 
 		// Restart, previous firmware and factory reset: only from a short press of the knob on Ausführen of their
 		// dialog, never from a tap; and the dialog only from its row of the settings, while no request is under way
@@ -3051,6 +3443,20 @@ static void walk(uint32_t seed)
 			walked.asks_refused++;
 		}
 
+		// The own access point: switched only by a short press or a tap on Hotspot, with nothing lying over the
+		// settings, and never while it stays on whatever is asked - then the row takes the focus and nothing else
+		if(action == NAV_DO_AP_TOGGLE)
+		{
+			if(before.screen != NAV_SETTINGS || pressed_row != 1 || world.ap_kept || seen.over != NAV_OVER_NONE || !at(NAV_SETTINGS, 1)) walked.switched++;
+			walked.ap_toggles[call == CALL_TAP]++;
+		}
+		if(before.screen == NAV_SETTINGS && pressed_row == 1 && world.ap_kept && seen.over == NAV_OVER_NONE)
+		{
+			if(action != NAV_DO_NOTHING || !at(NAV_SETTINGS, 1) || nav.confirm != NAV_DO_NOTHING || nav.last_input_ms != nav.clock_ms) walked.switched++;
+			walked.ap_refused[call == CALL_TAP]++;
+		}
+		if(world.ap_kept) walked.ap_kept_calls++;
+
 		// The focus of the two dialogs: moved by the knob alone, and a tap on the second answer changes nothing
 		if(in_dialog && nav.screen == before.screen && nav.row != before.row && call != CALL_TURN) walked.touched++;
 		if(in_dialog && call == CALL_TAP && given == 1 && seen.over == NAV_OVER_NONE)
@@ -3064,10 +3470,18 @@ static void walk(uint32_t seed)
 		{
 			nav_do_t allowed = NAV_DO_NOTHING;
 
-			if(seen.over == NAV_OVER_ASK && (call == CALL_SHORT || call == CALL_TAP)) allowed = NAV_DO_ASK_CONFIRM;
+			// The knob alone answers: a tap returns nothing there
+			if(seen.over == NAV_OVER_ASK && call == CALL_SHORT) allowed = NAV_DO_ASK_CONFIRM;
 			if(seen.over == NAV_OVER_ASK && call == CALL_LONG) allowed = NAV_DO_ASK_REFUSE;
-			if(seen.over == NAV_OVER_UPDATE && (call == CALL_SHORT || call == CALL_TAP)) allowed = NAV_DO_UPDATE_OK;
+			if(seen.over == NAV_OVER_UPDATE && call == CALL_SHORT) allowed = NAV_DO_UPDATE_OK;
 			if(action != allowed || !stays(&before)) walked.overlays++;
+		}
+		// No question is confirmed by a touch: not the one of the browser, not the update, not the clear, not
+		// what the dialog of the settings asks
+		if(call == CALL_TAP)
+		{
+			if(action == NAV_DO_ASK_CONFIRM || action == NAV_DO_UPDATE_OK || action == NAV_DO_CLEAR || dangerous) walked.touch_confirms++;
+			walked.taps_under[seen.over]++;
 		}
 		if(seen.over != NAV_OVER_NONE && call == CALL_HOLD && action != NAV_DO_NOTHING) walked.overlays++;
 		if(seen.over != NAV_OVER_NONE && call == CALL_TICK && action != NAV_DO_NOTHING && action != NAV_DO_HOLD_CLOSE) walked.overlays++;
@@ -3134,6 +3548,13 @@ static void test_walk(void)
 	       walked.steps_back, walked.ends_of_idle, walked.beyond, walked.searches, walked.no_page, walked.huge_lists, walked.strange_phases);
 	printf("  taps on the second answer: clear dialog %ld, dialog of the settings %ld; rows of the settings that ask first, pressed while a request is under way: %ld\n",
 	       walked.taps_ignored[0], walked.taps_ignored[1], walked.asks_refused);
+	printf("  taps under: nothing %ld, upload %ld, question %ld, update question %ld; dialogs left by a cancel: clear dialog %ld, dialog of the settings %ld\n",
+	       walked.taps_under[0], walked.taps_under[1], walked.taps_under[2], walked.taps_under[3], walked.cancelled[0], walked.cancelled[1]);
+	printf("  rows asked whether they act: %ld do, %ld do not, %ld do not exist; rows of the settings that do not because a request is under way: %ld\n",
+	       walked.acts_asked[0], walked.acts_asked[1], walked.acts_asked[2], walked.acts_refused);
+	printf("  the own access point: switched by %ld short presses and %ld taps on Hotspot, kept on under %ld short presses and %ld taps on it; kept on in %ld calls, "
+	       "and the row asked %ld times whether it acts then\n",
+	       walked.ap_toggles[0], walked.ap_toggles[1], walked.ap_refused[0], walked.ap_refused[1], walked.ap_kept_calls, walked.acts_kept);
 
 	for(int i = 0; i < CALLS; i++) reached = reached && walked.calls[i] >= 200;
 	for(int i = 0; i < SCREENS; i++) reached = reached && walked.screens[i] >= 1000;
@@ -3144,23 +3565,199 @@ static void test_walk(void)
 	reached = reached && walked.steps_back >= 50000 && walked.ends_of_idle >= 50000 && walked.beyond >= 90 && walked.no_page >= 100000 &&
 	          walked.huge_lists >= 2500 && walked.strange_phases >= 10000;
 	reached = reached && walked.taps_ignored[0] >= 40 && walked.taps_ignored[1] >= 100 && walked.asks_refused >= 100;
+	for(int i = 0; i < 4; i++) reached = reached && walked.taps_under[i] >= 500;
+	reached = reached && walked.cancelled[0] >= 20 && walked.cancelled[1] >= 20;
+	reached = reached && walked.acts_asked[0] >= 100000 && walked.acts_asked[1] >= 100000 && walked.acts_asked[2] >= 100000 && walked.acts_refused >= 1000;
+	reached = reached && walked.ap_toggles[0] >= 200 && walked.ap_toggles[1] >= 100 && walked.ap_refused[0] >= 200 && walked.ap_refused[1] >= 100 &&
+	          walked.ap_kept_calls >= 100000 && walked.acts_kept >= 10000;
 	check(reached, "the walk reaches every screen, every action, every call, every rule of the tick and every pair of them that can apply at once, all overlays, "
 	               "steps back of the time, the end of the idle time, lists that became shorter, no page at all, the largest lists and phases outside the enum, "
-	               "taps on the second answer of both dialogs and the settings while a request is under way, in numbers");
+	               "taps on the second answer of both dialogs, taps under every overlay, both dialogs left by a cancel, the settings while a request is under way, "
+	               "rows that act, do not act and do not exist, and short presses and taps on Hotspot with the access point kept on and not, in numbers");
 
 	check(walked.differences == 0, "48 random walks of 40000 calls: screen, page, row, value, what waits, the times, the rows and the returned action are those of the model after every call");
 	check(walked.clears == 0, "in the walk a clear is asked for only by a confirmed hold in the clear dialog with nothing lying over it, and the progress follows");
 	check(walked.reads == 0, "in the walk a read is asked for only from the fault memory and from its list while reading is allowed, and the progress follows: "
 	                         "no request begins while the dialog of the settings shows");
 	check(walked.dialogs == 0, "in the walk the clear dialog is entered only from the list by a short press or tap on Fehler löschen while clearing is allowed, "
-	                           "and is never left without the hold dialog being closed");
+	                           "and is never left without the hold dialog being closed; a cancel leaves both dialogs under whatever lies over them, no other screen, and is no input");
 	check(walked.dangerous == 0, "in the walk restart, previous firmware and factory reset are returned only from a short press of the knob on Ausführen of their dialog, "
 	                             "which is entered only from their row of the settings and never while a request is under way");
+	check(walked.switched == 0, "in the walk the own access point is switched only by a short press or a tap on Hotspot of the settings with nothing lying over them, "
+	                            "and never while it is kept on: the row then takes the focus, counts as an input and does nothing else");
 	check(walked.touched == 0, "in the walk the focus of the two dialogs is moved by the knob alone, and a tap on their second answer changes nothing");
+	check(walked.touch_confirms == 0, "in the walk no tap ever returns what confirms a question: not the one of the browser, not the update, not the clear, not restart, previous firmware or factory reset");
 	check(walked.overlays == 0, "in the walk an input under an overlay changes nothing below it and returns only what the overlay names; the hold returns nothing there, the tick at most the closing of the hold dialog");
 	check(walked.rows == 0, "in the walk the focus is never negative and lies beyond the last row only while nothing moved it since a list became shorter, never after a tick or a turn");
 	check(walked.values == 0, "in the walk the brightness being set stays within 5 and 100, and a store is asked for only when the brightness screen is left");
 	check(walked.trapped == 0, "in the walk every screen has a way back to the value pages with at most 6 inputs of the knob");
+	check(walked.acts_wrong == 0, "in the walk a row acts exactly when the table of the rules has a short press for it that applies: after every call, for the row in focus, "
+	                              "the ends of the screen, the rows around the end of the lines and the rows beside the screen");
+}
+
+// What scene.h draws as enabled: a row acts exactly when a short press on it does something
+static void test_acts(void)
+{
+	// In the order of `phases`: the own request left something to look at; it is sent or accepted and not ended
+	static const bool outcome[PHASES + 1] = {false, false, false, true, false, false, true, true, true, false};
+	static const bool under_way[PHASES + 1] = {false, true, true, false, true, true, false, false, false, false};
+	nav_t before;
+	int wrong = 0;
+
+	open_menu(6);
+	check(acts(2), "menu, Nachtmodus: a press there returns something to carry out and leads nowhere - the row acts");
+	check(acts(3), "menu, Web-Zugriff: a press there carries nothing out but leads to another screen - the row acts");
+	check(acts(0) && acts(1) && acts(4) && acts(5) && acts(6), "menu: every other row acts as well");
+	before = nav;
+	acts(1);
+	check(stays(&before) && at(NAV_MENU, 6) && nav.last_input_ms == before.last_input_ms && nav.clock_ms == before.clock_ms,
+	      "asking whether Helligkeit acts opens no brightness screen: the menu, its focus and the times are as they were");
+
+	// The row asked for counts, not the one the knob is on
+	open_dtc(3);
+	check(acts(3) && !acts(0), "fault memory, the focus on Zurück, reading not allowed: Zurück acts, Lesen does not - the row that is asked for counts, not the one in focus");
+	world.can_read = true;
+	check(acts(0), "fault memory, reading allowed: Lesen acts");
+	world.can_clear = true;
+	world.can_read = false;
+	check(!acts(0), "fault memory, clearing allowed but reading not: Lesen does not act");
+	open_dtc(0);
+	world.can_read = true;
+	check(acts(0) && !acts(1) && !acts(2), "fault memory, the focus on Lesen, nothing read and nothing stored: Lesen acts, the two rows that lead to a list do not");
+	for(int i = 0; i <= PHASES; i++)
+	{
+		open_dtc(0);
+		world.flow = phases[i];
+		if(acts(1) != outcome[i] || acts(2) || !acts(3)) wrong++;
+		world.old_lines = 1;
+		if(acts(1) != outcome[i] || !acts(2)) wrong++;
+		world.old_lines = -1;
+		if(acts(2)) wrong++;
+	}
+	check(wrong == 0, "fault memory in every phase of the flow: Liste ansehen acts while the request left a list, an outcome or a failure, "
+	                  "Liste vor dem Löschen while a list is stored, Zurück always");
+
+	open_list(3, 0);
+	check(!acts(0) && !acts(1) && !acts(2), "list of three lines: a press on a line does nothing - no line acts");
+	check(!acts(3) && !acts(4) && acts(5), "list, neither reading nor clearing allowed: Erneut lesen and Fehler löschen do not act, Zurück does");
+	world.can_read = true;
+	check(acts(3) && !acts(4), "list, reading allowed: Erneut lesen acts, Fehler löschen does not");
+	world.can_read = false;
+	world.can_clear = true;
+	check(!acts(3) && acts(4), "list, clearing allowed: Fehler löschen acts, Erneut lesen does not");
+	open_list(0, 0);
+	world.can_read = true;
+	check(acts(0) && !acts(1) && acts(2) && !acts(3), "list without lines: the rows are the three choices, Erneut lesen the first, and there is no fourth");
+
+	open_cleared(2, 0);
+	check(!acts(0) && !acts(1) && acts(2), "outcome of a clear with two lines: the lines do not act, Fertig does");
+	open_old(2, 0);
+	check(!acts(0) && !acts(1) && acts(2), "list before the last clear with two lines: the lines do not act, Zurück does");
+	open_web(1);
+	check(acts(0) && acts(1), "web access: the release acts whether it is given or not, and so does Zurück");
+	world.release_open = true;
+	check(acts(0), "web access with the release given: the row takes it back - it acts");
+	open_info(4, 0);
+	check(acts(0) && acts(3), "info: a press on any line leads back to the menu - every line acts");
+
+	// A row that does not exist
+	open_web(0);
+	check(!acts(-1), "web access, row -1: no such row - it does not act, although a press with the focus anywhere but on the release leads back");
+	check(!acts(2), "web access, row 2: no such row behind the two - it does not act");
+	open_info(4, 0);
+	check(!acts(4) && !acts(-1) && !acts(INT_MAX) && !acts(INT_MIN), "info of four lines: the rows 4, -1, the largest and the smallest number do not exist and do not act");
+	start();
+	turn(1);
+	check(!acts(0), "value pages: a press opens the menu, but the pages have no rows - row 0 does not act");
+	open_failed(DTC_FLOW_FAILED);
+	check(!acts(0), "failure: a press acknowledges it, but the screen has no rows - row 0 does not act");
+	open_brightness(60);
+	check(!acts(0), "brightness: a press stores, but the screen has no rows - row 0 does not act");
+	open_busy();
+	check(!acts(0), "progress: no rows, and a press does nothing - row 0 does not act");
+
+	// The two dialogs
+	open_clear_dialog(3);
+	check(acts(0) && !acts(1), "clear dialog: Abbrechen acts, Löschen does not - a press there is the beginning of the hold at most");
+	open_ask(2);
+	check(acts(0) && acts(1), "dialog of the settings: Abbrechen leads back, Ausführen returns the restart - both act");
+
+	// The settings: what ends in a restart is not offered while the own request is under way
+	wrong = 0;
+	for(int i = 0; i <= PHASES; i++)
+	{
+		open_settings(0);
+		world.flow = phases[i];
+		if(!acts(0) || !acts(1) || !acts(5)) wrong++;
+		if(acts(2) != !under_way[i] || acts(4) != !under_way[i] || acts(3)) wrong++;
+		world.previous_firmware = true;
+		if(acts(2) != !under_way[i] || acts(3) != !under_way[i] || acts(4) != !under_way[i]) wrong++;
+		if(wrong != 0) printf("  flow %s: rows 2 to 4 act %d %d %d\n", phase_names[i], acts(2), acts(3), acts(4));
+	}
+	check(wrong == 0, "settings in every phase of the flow: Drehrichtung, Hotspot (its access point not kept on) and Zurück always act; Neustart and Werkseinstellungen "
+	                  "unless the own request is under way (four phases); Vorherige Version unless it is, and only with a firmware in the other slot");
+	open_settings(2);
+	world.flow = DTC_FLOW_READING;
+	before = nav;
+	check(!acts(2) && press() == NAV_DO_NOTHING && stays(&before), "settings, Neustart while the own read runs: the row does not act, and the press on it does nothing");
+	world.flow = DTC_FLOW_LIST;
+	check(acts(2) && press() == NAV_DO_NOTHING && at(NAV_CONFIRM, 0), "settings, Neustart when the read has ended: the row acts, and the press on it opens the dialog");
+
+	// The settings: an access point that stays on whatever is asked is not offered to be switched
+	open_settings(1);
+	world.ap_kept = true;
+	before = nav;
+	check(!acts(1) && press() == NAV_DO_NOTHING && stays(&before), "settings, Hotspot while the access point is kept on: the row does not act, and the press on it does nothing");
+	world.ap_kept = false;
+	check(acts(1) && press() == NAV_DO_AP_TOGGLE && stays(&before), "settings, Hotspot when the access point is not kept: the row acts, and the press on it toggles the access point");
+	open_settings(5);
+	world.ap_kept = true;
+	check(!acts(1) && acts(0) && acts(2) && !acts(3) && acts(4) && acts(5),
+	      "settings, the access point kept on, the focus on Zurück: of the rows that act otherwise Hotspot alone does not");
+	wrong = 0;
+	for(int i = 0; i <= PHASES; i++)
+	{
+		open_settings(0);
+		world.flow = phases[i];
+		world.ap_kept = true;
+		world.previous_firmware = true;
+		if(acts(1) || !acts(0) || !acts(5)) wrong++;
+		if(acts(2) != !under_way[i] || acts(3) != !under_way[i] || acts(4) != !under_way[i]) wrong++;
+		world.ap_kept = false;
+		if(!acts(1)) wrong++;
+	}
+	check(wrong == 0, "settings in every phase of the flow: Hotspot does not act while the access point is kept on and acts when it is not, "
+	                  "and the other rows act as without that");
+	open_menu(0);
+	world.ap_kept = true;
+	check(acts(1), "menu, the access point kept on: row 1 there is Helligkeit and acts");
+	open_web(0);
+	world.ap_kept = true;
+	check(acts(0) && acts(1), "web access, the access point kept on: both rows act - the release is not the access point");
+
+	// What lies over the screen is not looked at: the screen below is drawn as without it
+	for(int over = NAV_OVER_UPLOAD; over <= NAV_OVER_UPDATE; over++)
+	{
+		static const char *const texts[] = {
+			"",
+			"settings below an upload: the rows act as without it - Hotspot does, Vorherige Version without a firmware does not",
+			"settings below a question of the browser: the rows act as without it",
+			"settings below the update question: the rows act as without it",
+		};
+
+		open_settings(0);
+		set_overlay((nav_overlay_t)over);
+		check(nav_overlay(&world) == (nav_overlay_t)over && acts(1) && acts(2) && !acts(3) && acts(5), texts[over]);
+	}
+	wrong = 0;
+	for(int over = NAV_OVER_UPLOAD; over <= NAV_OVER_UPDATE; over++)
+	{
+		open_settings(0);
+		set_overlay((nav_overlay_t)over);
+		world.ap_kept = true;
+		if(nav_overlay(&world) != (nav_overlay_t)over || acts(1) || !acts(0) || !acts(2)) wrong++;
+	}
+	check(wrong == 0, "settings below an upload, a question and the update question, the access point kept on: Hotspot does not act, as without what lies over it");
 }
 
 // Runs a group of checks in a child process. The checks print as always; the parent learns whether one of
@@ -3207,11 +3804,14 @@ static void examples_of_the_screens(void)
 	test_web();
 	test_info();
 	test_settings();
+	test_acts();
 }
 
 static void examples_of_overlays_and_time(void)
 {
 	test_under_overlays();
+	test_no_tap_confirms();
+	test_cancel();
 	test_hold_under_overlays();
 	test_idle();
 	test_clock();

@@ -2,8 +2,8 @@
 """Shows that the simulations of the platform really guard what they claim to guard.
 
 The sibling of display/test/redproof.py, for display/main: every mutation removes or weakens one rule in
-main.c, net.c or web.c; the simulation named with it (main_sim, net_sim, web_sim) must then FAIL in at
-least one check. The run is red when
+main.c, net.c, web.c or screen.c; the simulation named with it (main_sim, net_sim, web_sim, screen_sim) must
+then FAIL in at least one check. The run is red when
 
   - an unchanged simulation does not pass,
   - a mutation no longer applies (the text is not found exactly once) or does not compile,
@@ -47,6 +47,7 @@ COPIED = [
     "display/components/core",
     "display/components/board/board.h",
     "display/components/store/store.h",
+    "display/components/ui/ui.h",
     "display/layouts",
     "display/host/platform",
     "display/test/fixtures/catalog_stored.json",

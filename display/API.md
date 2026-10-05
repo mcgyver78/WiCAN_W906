@@ -23,11 +23,14 @@ device only and has not run anywhere yet.
   `{"error":"locked","hint":"Am Display: Menü > Web-Zugriff freigeben"}`.
   "Accepted" means that the request found the release open: a request that is then refused for another
   reason (a body that cannot be read, `busy`, an unknown network, a refused firmware file) has renewed it as
-  well. Only a question to the knob that is not asked (`busy`, `asking`, `body`) renews nothing.
+  well. Only a question to the knob that is not asked (`busy`, `asking`, `hot`, `body`) renews nothing.
 - Three changes also need a **press of the knob**, because they can lock the owner out or replace the
   firmware: storing a WiFi network, installing firmware, factory reset. The request is answered with
   `202 {"ticket":17,"hint":"Am Display bestätigen: Knopf drücken"}`, the display shows the question for 60
-  seconds, and `GET /api/ticket?id=17` tells what became of it.
+  seconds, and `GET /api/ticket?id=17` tells what became of it. The knob alone answers: a short press
+  says yes, a long press no. A touch on the screen does nothing to the question, wherever and whenever
+  it lands - as for every question the display asks (clearing the fault memory, restart, previous
+  version, factory reset, "Update in Ordnung?"): none of them is confirmed by a touch.
 - Every request that is not a `GET` has to carry the header `X-Display: 1`. A web page of another origin
   cannot send it (the browser asks first, and that question is never answered). The display never sends an
   `Access-Control-Allow-*` header.
@@ -61,6 +64,21 @@ device only and has not run anywhere yet.
 
 Paths are exact: no trailing slash, no upper case. A query string is only allowed where the table shows one.
 
+One request at a time: the server of the display has a single task. What follows from that, on the device
+(`main/web.c`; the mock in `tools/` does not model it):
+
+- A body has to arrive whole within 15 seconds of its first byte, a firmware as long as the upload runs
+  (30 seconds without a block end it). A body that takes longer gets no answer; the connection is closed.
+- A `Content-Length` of 15 characters or more counts as the largest length there is, whatever its value: the
+  request is refused (`413` where nothing else refuses it first) and the connection is closed. No client
+  sends leading zeros.
+- The page is sent with `X-Frame-Options: DENY` and `Content-Security-Policy: frame-ancestors 'none'`: it
+  cannot be shown inside the page of another site. No other answer carries a header beyond status, type and
+  length, and none an `Access-Control-Allow-*` header.
+- Before a request is served, everything the requests before it asked to store is stored. A request that
+  arrives after one that restarts the display (`POST /api/reboot`, a confirmed reset or installation) gets no
+  answer any more: the display is gone half a second after it has answered that one.
+
 ## Refusals
 
 Checked in this order; the first that applies is the answer. The body is `{"error":"<word>"}`; `locked`
@@ -76,8 +94,9 @@ comes with the hint shown above, the `body` of the settings with the name of the
 | 400 | `query` | query string too long (63 bytes), `mode` or `id` missing, doubled or malformed, or a query where none belongs |
 | 411 | `length` | not a `GET` and no `Content-Length` |
 | 413 | `too_large` | body above 16384 bytes (layout), above the app slot (firmware), above 512 bytes (everything else); an empty firmware |
-| 409 | `busy` | upload, restart or factory reset while the display reads or clears the fault memory, shows the clear dialog, or receives a firmware; a question to the knob while a firmware is received |
+| 409 | `busy` | upload, restart or factory reset while the display reads or clears the fault memory, shows the clear dialog, or receives a firmware; a question to the knob while a firmware is received; storing or forgetting a WiFi network while the display reads or clears the fault memory |
 | 409 | `asking` | a question to the knob, or the begin of a firmware upload, while a question still waits |
+| 409 | `hot` | a question to the knob, or the begin of a firmware upload, while the heat keeps the backlight of the display off (`heat` is `off` in `GET /api/info`): nobody could see the question |
 | 400 | `body` | the body is not what the request expects; for settings with `"member":"<name>"` (empty if the body is no JSON object) |
 | 404 | `not_found` | `POST /api/wifi/forget` for a network that is not stored |
 | 422 | see below | the firmware file is refused |
@@ -85,7 +104,15 @@ comes with the hint shown above, the `body` of the settings with the name of the
 | 500 | `upload` | the firmware upload broke, or the display had ended it |
 
 Between the first checks and the request itself the release can end and the display can become busy: `403
-locked` and `409 busy` are then answered by the request, in the order `locked`, `busy`, `asking`, the rest.
+locked` and `409 busy` are then answered by the request, in the order `locked`, `busy`, `asking`, `hot`, the
+rest.
+
+"Reads or clears the fault memory" means: a request of the display has been sent to the adapter or accepted
+by it and has not ended. For as long, nothing takes the adapter away from under it: at the knob the rows
+Neustart, Vorherige Version and Werkseinstellungen of the settings do nothing, and the web interface answers
+`409 busy` to everything that restarts the display or makes it leave its network - restart, factory reset,
+firmware upload, storing a network, forgetting one. A read would be left without its list, a clear without
+its outcome.
 
 ## Bodies
 
@@ -109,7 +136,9 @@ Numbers, texts and their order are fixed; texts are UTF-8.
   `foreign`, `no_api`, `autopid_off`, `starting`, `scan`, `ecu_offline`.
 - `layout.source`: `stored`, `builtin`, `generated` (made from the catalogue for a vehicle nobody wrote
   views for) or `preview` (applied but not stored).
-- `heat`: `normal`, `dim`, `off` (backlight limited by the chip temperature).
+- `heat`: `normal`, `dim`, `off` (backlight limited by the chip temperature). While it is `off` nobody can
+  see the screen: a question that waits is refused, the display asks none and begins no firmware upload
+  (`409 hot`).
 - `up`: seconds since the start. `temp_c`: the last reading that succeeded, 0 before the first.
 - `release.left_s`: seconds until the release ends, rounded up, 0 if it is closed.
 - `wican.fw` is empty until the adapter has answered. The password of the own access point is not part of
@@ -149,12 +178,15 @@ At most 12 pages with 1 to 6 values each, 16384 bytes. The answer to a `PUT`:
 Status 200 if the layout is taken, 400 if not. `unknown` lists the keys that are not in the catalogue
 (they are shown as "n. v."); it is empty while no catalogue is loaded. `mode=check` needs no release.
 
-`mode=apply` shows the layout at once, from its first page, without storing it (`layout.source` is
+`mode=apply` shows the layout at once without storing it (`layout.source` is
 `preview`): a restart, a reset or a save ends the preview, and the page in the browser keeps the text it
-loaded if it wants to go back. `mode=save` stores it. `POST /api/layout/reset` removes the stored layout and
+loaded if it wants to go back. `mode=save` stores it. With both the display keeps the page it shows if the
+new layout shows a page at the same position (not hidden, and with a value of the catalogue), whatever
+that page holds now; without one there it starts at the first page the new layout shows.
+`POST /api/layout/reset` removes the stored layout and
 answers the report of the views the display then uses by itself (the built-in ones, or views made from the
-catalogue of another vehicle); its body is not looked at. `GET /api/layout` answers the text of the views
-in use: for views the browser sent, the text that was sent, byte for byte.
+catalogue of another vehicle), shown from their first page; its body is not looked at. `GET /api/layout`
+answers the text of the views in use: for views the browser sent, the text that was sent, byte for byte.
 
 ### `GET /api/dtc/last` — `web_dtc_last.json`
 
@@ -182,10 +214,14 @@ the order is the priority.
   display finds the adapter itself (the gateway in the access point of a WiCAN, else the service
   `_wican._tcp`). Without `password` the stored password of that SSID is kept; for a new SSID it means an
   open network - judged by what is stored when the knob is pressed. A password has 8 to 64 bytes. Answer:
-  `202` with a ticket; the display shows the SSID with its question.
+  `202` with a ticket; the display shows the SSID with its question. With the press of the knob the display
+  leaves the network it is in and looks for one anew.
 - `POST /api/wifi/forget` with `{"ssid":".."}`: `200 {"ok":true}`, `404` if no such network is stored.
   Without any stored network the display opens its own access point. With every network that is forgotten
   the display leaves the network it is in and looks for one anew, also when another one was named.
+- Both are answered `409 busy` while the display reads or clears the fault memory: it would lose the
+  adapter in the middle of it. (While the clear dialog only shows, a network can be stored or forgotten:
+  nothing has been sent yet, and the dialog closes when the adapter is gone.)
 
 ### `POST /api/settings` — `settings_*.json`
 
@@ -203,11 +239,12 @@ now in use.
 {"ticket":17,"state":"waiting","left_s":42}
 ```
 
-`state`: `waiting`, `confirmed`, `refused` (at the display, or the release ended), `expired` (nobody
-pressed the knob), `unknown`. The numbers start again at 1 after a restart of the display. After a
-confirmed firmware installation or factory reset the display restarts and cannot answer any more.
-A press in the first 1.5 seconds after the question does not count. Known are the last ticket and the one
-before it.
+`state`: `waiting`, `confirmed`, `refused` (at the display by a long press, or the release ended, or the
+heat switched the screen off while the question waited), `expired` (nobody pressed the knob), `unknown`.
+The numbers start again at 1 after a restart of the display. After a confirmed firmware installation or
+factory reset the display restarts and cannot answer any more.
+A press in the first 1.5 seconds after the question does not count, and a touch on the screen never does.
+Known are the last ticket and the one before it.
 
 ### `POST /api/ota`
 
@@ -217,13 +254,18 @@ bytes are checked before anything is erased; a refused file is answered with `42
 WiCAN), `too_large`. A broken upload ends with `500 {"error":"upload"}`; an upload that brings nothing for
 30 seconds is ended by the display. A complete upload is answered with `202` and a ticket: the display
 shows the version of the file and asks for the knob. Only the press starts the new firmware. After its
-first start it asks "Update in Ordnung?" on the screen; without an answer within 5 minutes, or after any
+first start it asks "Update in Ordnung?" on the screen, and the knob alone says yes (a firmware whose knob
+does not work is not kept because its touch screen does); without an answer within 5 minutes, or after any
 restart before that, the version before it runs again.
 
 An upload begins only while the release lasts another 5 minutes. The upload itself renews it, so `403
 locked` is answered only in the last 5 minutes of the 30 after which somebody has to give the release
 again at the display. While a question waits no upload begins (`409 asking`), while one runs no second
 one (`409 busy`), and none while the running firmware still waits for "Update in Ordnung?" (`409 busy`:
-the other slot holds the version the display goes back to if nobody confirms). If the release has ended
-when the upload is complete, the answer is `403 locked` and the file is not asked for. From the begin of
-an upload on the display no longer offers "Vorherige Version": the other slot is being overwritten.
+the other slot holds the version the display goes back to if nobody confirms), and none while the heat
+keeps the screen dark (`409 hot`: nobody could see the question at its end). If the release has ended
+when the upload is complete, the answer is `403 locked` and the file is not asked for; if the heat has
+switched the screen off by then, it is `409 hot`, and the file is not asked for either. From the begin of
+an upload on the display no longer offers "Vorherige Version": the other slot is being overwritten. It
+does not offer it either for an update that was started and not confirmed: the version the display went
+back from is never the "previous" one.

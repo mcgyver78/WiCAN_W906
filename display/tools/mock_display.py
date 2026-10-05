@@ -12,6 +12,8 @@ test_page.py holds it against the examples of display/API.md.
   http://127.0.0.1:8907/mock    the same page under a strip with what one does at the device:
                                 release on and off, press the knob, press it long (refuse), and the
                                 situations around it. The page itself knows nothing of /mock.
+                                The strip has no button for a touch on the screen: no question of
+                                the display is answered by one (nav.h).
 
 The mock listens on 127.0.0.1 and nowhere else: it has no login, like the display, and it is no
 display. Open it by that address, not as "localhost": the display answers only to an IPv4 address
@@ -27,7 +29,7 @@ In a test:
 Taken from the sources, read and written a second time here:
   - which request is what and what is refused before a handler runs (components/core/web_route.c),
     in that order; what each request does and answers (app_web.c), with the order locked, busy,
-    asking, the rest; the bodies (web_json.c, catalog.c, settings.c), byte for byte
+    asking, hot, the rest; the bodies (web_json.c, catalog.c, settings.c), byte for byte
   - the release and the question to the knob (access.c): 10 minutes after the last accepted change,
     30 minutes at most, 60 seconds for the knob, a press in the first 1.5 seconds does not count,
     known are the last ticket and the one before it
@@ -47,7 +49,8 @@ hand-written reports in display/test/fixtures. Against the C code itself the moc
 2026-10-05, by a program that is not part of the repository: the same random requests (layouts,
 settings and networks damaged at random, the release, the knob and the clock in between) to the mock
 and to components/core, answers compared byte for byte, no difference. Nothing repeats that when
-either side changes.
+either side changes: the refusal "hot" and "busy" for storing and forgetting a network while the
+display reads or clears came later on both sides and were never compared that way.
 
 Invented, because nothing fixes it. The page must not rely on any of this:
   - every number of /api/info, the networks in range, the network the display is in. Three names
@@ -57,7 +60,12 @@ Invented, because nothing fixes it. The page must not rely on any of this:
     the profile (a binary one, and the one with the name above)
   - a restart takes 4 seconds, in which no request is answered (the connection is closed)
   - "busy" is a switch of the strip: it stands for a read or a clear at the display and for the
-    clear dialog
+    clear dialog. The device tells the two apart where a network is stored or forgotten: that is
+    refused while the read or the clear itself is under way, not while the dialog only shows. The
+    mock refuses it whenever the switch is on
+  - "zu heiß" is a switch of the strip as well: the heat keeps the backlight off (heat "off" in
+    /api/info, with a temperature of 88 degrees) until "abgekühlt". The device measures its chip
+    and switches the light off from 85 degrees on, back on below 80 (guard.h)
   - the display stays in its network when another one is stored or forgotten, and it joins a
     network that was stored if it is in none and that network is in range. The device leaves its
     network with every change of the list and looks anew (link.h)
@@ -67,7 +75,7 @@ Invented, because nothing fixes it. The page must not rely on any of this:
 Not modelled:
   - views made from the catalogue (layout_from_catalog): the built-in views always suit the
     catalogue of the mock, POST /api/layout/reset always answers them
-  - the safe mode, the heat, the stored layout "one step back"
+  - the safe mode, the heat that only dims the backlight, the stored layout "one step back"
   - a firmware image is not verified beyond its first 112 bytes; every upload that arrives whole
     counts as good
   - the display ends an upload that brings nothing for 30 seconds from its own clock (app_tick);
@@ -107,6 +115,10 @@ ASK_SHOWN_MS = 1500
 # app.h
 UPDATE_CONFIRM_MS = 300 * 1000
 UPLOAD_IDLE_S = 30
+# Invented: the temperature /api/info names while the heat keeps the backlight off (guard.h switches it
+# off from 85 degrees on), and otherwise
+HOT_C = 88
+COOL_C = 47
 # layout.h and json.h
 LAYOUT_FORMAT = "wican-display-layout"
 LAYOUT_VERSION = 1
@@ -692,7 +704,7 @@ class Display:
         self.rolled_back = False
         self.update_pending = False
         self.previous = None            # version, git and slot the boot loader goes back to
-        self.numbers = {"heap": 182340, "heap_min": 151200, "psram": 7340032, "psram_min": 7100416, "temp_c": 47}
+        self.numbers = {"heap": 182340, "heap_min": 151200, "psram": 7340032, "psram_min": 7100416, "temp_c": COOL_C}
         self.ip = "192.168.1.77"
         self.rssi = -61
         self.ap_ssid = "WiCAN-Display"
@@ -708,6 +720,7 @@ class Display:
 
         self.access = Access()
         self.reading = False            # stands for a read, a clear and the clear dialog
+        self.hot = False                # the heat keeps the backlight off: nobody can see a question
         self.uploading = False
         self.upload_version = ""
         self.asked_detail = ""          # what the screen shows with the question
@@ -757,8 +770,17 @@ class Display:
         self.asked_network = None
 
     def update_ok(self):
-        """"Update in Ordnung?" was answered at the device"""
+        """"Update in Ordnung?" was answered at the device, with the knob"""
         self.update_pending = False
+
+    def set_hot(self, on):
+        """The heat switches the backlight off, or the board has cooled down (app_temperature()). A
+        question nobody can see is none: one that waits is refused. The update question stays."""
+        self.hot = on
+        self.numbers["temp_c"] = HOT_C if on else COOL_C
+        if on:
+            self.access.refuse(self.now())
+            self.asked_network = None
 
     def restart(self, reason="sw"):
         """The display starts anew: the release is closed, the tickets count from 1 again, a preview is
@@ -833,7 +855,7 @@ class Display:
         release = self.access.is_open(now)
         return ("{\"project\":\"wican-display\",\"version\":%s,\"git\":%s,\"slot\":%s,\"reset\":%s,\"up\":%d,"
                 "\"safe_mode\":false,\"rolled_back\":%s,\"update_pending\":%s,"
-                "\"heap\":%d,\"heap_min\":%d,\"psram\":%d,\"psram_min\":%d,\"temp_c\":%d,\"heat\":\"normal\","
+                "\"heap\":%d,\"heap_min\":%d,\"psram\":%d,\"psram_min\":%d,\"temp_c\":%d,\"heat\":\"%s\","
                 "\"release\":{\"open\":%s,\"left_s\":%d},"
                 "\"wifi\":{\"ssid\":%s,\"ip\":%s,\"rssi\":%d,\"ap\":%s,\"ap_ssid\":%s},"
                 "\"wican\":{\"host\":%s,\"id\":%s,\"fw\":%s,\"view\":%s},"
@@ -842,7 +864,7 @@ class Display:
                 % (quote(self.version), quote(self.git), quote(self.slot), quote(self.reset_reason), now // 1000,
                    boolean(self.rolled_back), boolean(self.update_pending),
                    self.numbers["heap"], self.numbers["heap_min"], self.numbers["psram"], self.numbers["psram_min"],
-                   self.numbers["temp_c"], boolean(release), self.access.seconds_left(now),
+                   self.numbers["temp_c"], "off" if self.hot else "normal", boolean(release), self.access.seconds_left(now),
                    quote(self.current), quote(self.ip if self.current else ""), self.rssi if self.current else 0,
                    boolean(not self.profiles), quote(self.ap_ssid),
                    quote(self.wican_host), quote(self.wican_id), quote(self.wican_fw), quote(self.view()),
@@ -1055,6 +1077,9 @@ class Display:
             return 409, error_body("busy")
         if self.access.waiting(now) is not None:
             return 409, error_body("asking")
+        # Nobody could see the question on a screen the heat keeps dark
+        if self.hot:
+            return 409, error_body("hot")
         return None
 
     def _ask(self, question, detail, now):
@@ -1067,8 +1092,9 @@ class Display:
         if route == "layout_check":
             return self._layout(route, data)
         if route == "wifi_store":
-            # Under an upload the screen takes no input: the question would wait unseen
-            refused = self._ask_refused(self.uploading, now)
+            # Under an upload the screen takes no input: the question would wait unseen. And with the new
+            # network the display leaves the one it is in: not while it reads or clears the fault memory
+            refused = self._ask_refused(self.uploading or self.reading, now)
             if refused is not None:
                 return refused
             request = read_wifi_request(data, False)
@@ -1088,6 +1114,10 @@ class Display:
         if route in ("layout_apply", "layout_save", "layout_reset"):
             return self._layout(route, data)
         if route == "wifi_forget":
+            # The display leaves its network with every network that is forgotten: a read would be left
+            # without its list, a clear without its outcome
+            if self.reading:
+                return 409, error_body("busy")
             request = read_wifi_request(data, True)
             if request is None:
                 return 400, error_body("body")
@@ -1152,6 +1182,9 @@ class Display:
             return 409, error_body("busy")
         if self.access.waiting(now) is not None:
             return 409, error_body("asking")
+        # The question at the end of the upload could not be seen
+        if self.hot:
+            return 409, error_body("hot")
         word, version = ota_check(first, file_size, SLOT_SIZE)
         if word is not None:
             return 422, error_body(word)
@@ -1208,6 +1241,7 @@ class Display:
                 "/mock/press": self.press,
                 "/mock/refuse": self.press_long,
                 "/mock/busy": lambda: setattr(self, "reading", query == "on"),
+                "/mock/hot": lambda: self.set_hot(query == "on"),
                 "/mock/adapter": lambda: self.set_adapter(query == "on"),
                 "/mock/away": lambda: setattr(self, "away", query == "on"),
                 "/mock/lists": lambda: self.set_lists(query),
@@ -1234,7 +1268,7 @@ class Display:
             "down": self.clock.now_ms() < self.down_until_ms, "away": self.away,
             "release": self.access.seconds_left(now), "question": question,
             "detail": self.asked_detail if question else "", "left": self.access.ask_seconds_left(now),
-            "busy": self.reading, "uploading": self.uploading, "adapter": self.adapter,
+            "busy": self.reading, "hot": self.hot, "uploading": self.uploading, "adapter": self.adapter,
             "update_pending": self.update_pending, "version": self.version, "source": self.source,
         }, ensure_ascii=False)
 
@@ -1283,6 +1317,7 @@ const BUTTONS = [
 	["Knopf drücken", "press"], ["Knopf lang (nein)", "refuse"],
 	["+1 min", "skip?60"], ["+9 min", "skip?540"],
 	["beschäftigt", "busy?on"], ["frei", "busy?off"],
+	["zu heiß", "hot?on"], ["abgekühlt", "hot?off"],
 	["Adapter weg", "adapter?off"], ["Adapter da", "adapter?on"],
 	["Listen: keine", "lists?none"], ["gelesen", "lists?read"], ["gelöscht", "lists?cleared"], ["beide", "lists?both"],
 	["Neustart", "restart"], ["Update in Ordnung", "update_ok"],
@@ -1295,8 +1330,9 @@ function show(state)
 	parts.push(state.away ? "Display nicht erreichbar" : state.down ? "Display startet neu …" : "Display " + state.version);
 	parts.push(state.release > 0 ? "Web-Zugriff frei, noch " + state.release + " s" : "Web-Zugriff gesperrt");
 	if(state.question) parts.push("Bildschirm: " + state.question + " " + state.detail + " · Drücken = ja · lang = nein (" + state.left + " s)");
-	if(state.update_pending) parts.push("Bildschirm: Update in Ordnung?");
+	if(state.update_pending) parts.push("Bildschirm: Update in Ordnung? Knopf drücken");
 	if(state.busy) parts.push("liest den Fehlerspeicher");
+	if(state.hot) parts.push("zu heiß: Bildschirm aus");
 	if(state.uploading) parts.push("empfängt Firmware");
 	if(!state.adapter) parts.push("Adapter antwortet nicht");
 	parts.push("Ansichten: " + state.source);

@@ -37,7 +37,7 @@ jobs:
       - name: Red proof counter-check (a change without effect is reported)
         run: python redproof.py --selftest
         working-directory: display/test
-      - name: Platform simulations (main.c, net.c and web.c against the core, with stand-ins for ESP-IDF)
+      - name: Platform simulations (main.c, screen.c, net.c and web.c against the core, with stand-ins for ESP-IDF)
         # Twice: as a PC has char, and as the ESP32 has it. The mutations of the platform files
         # (display/host/platform/redproof.py) are not run here.
         run: |

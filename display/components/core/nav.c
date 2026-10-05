@@ -291,7 +291,9 @@ static nav_do_t press_settings(nav_t *nav, const nav_world_t *world)
 		case SETTINGS_REVERSE:
 			return NAV_DO_REVERSE_TOGGLE;
 		case SETTINGS_AP:
-			return NAV_DO_AP_TOGGLE;
+			// An access point that stays on whatever is asked (link.h) has nothing to switch
+			if(!world->ap_kept) return NAV_DO_AP_TOGGLE;
+			break;
 		case SETTINGS_REBOOT:
 			ask(nav, NAV_DO_REBOOT, world);
 			break;
@@ -357,7 +359,7 @@ static nav_do_t press(nav_t *nav, const nav_world_t *world)
 	return NAV_DO_NOTHING;
 }
 
-// A short press or a tap on what lies over the screen
+// A short press on what lies over the screen. The knob alone answers there: nav_tap() never comes here.
 static nav_do_t press_overlay(nav_overlay_t overlay)
 {
 	if(overlay == NAV_OVER_ASK) return NAV_DO_ASK_CONFIRM;
@@ -403,6 +405,17 @@ int nav_rows(const nav_t *nav, const nav_world_t *world)
 	}
 }
 
+bool nav_row_acts(const nav_t *nav, int row, const nav_world_t *world)
+{
+	// The rules of a press are asked themselves: a list of them kept for this question could say something else
+	nav_t tried = *nav;
+
+	if(row < 0 || row >= nav_rows(nav, world)) return false;
+
+	tried.row = row;
+	return press(&tried, world) != NAV_DO_NOTHING || tried.screen != nav->screen;
+}
+
 nav_do_t nav_turn(nav_t *nav, int detents, const nav_world_t *world, uint64_t now_ms)
 {
 	note_input(nav, now_ms);
@@ -444,10 +457,10 @@ nav_do_t nav_long(nav_t *nav, const nav_world_t *world, uint64_t now_ms)
 
 nav_do_t nav_tap(nav_t *nav, int row, const nav_world_t *world, uint64_t now_ms)
 {
-	nav_overlay_t overlay = nav_overlay(world);
-
 	note_input(nav, now_ms);
-	if(overlay != NAV_OVER_NONE) return press_overlay(overlay);
+	// What lies over the screen is answered with the knob alone, the questions as well: a touch happens too
+	// easily for what they ask, and none of them has a row a finger could mean
+	if(nav_overlay(world) != NAV_OVER_NONE) return NAV_DO_NOTHING;
 
 	// The failure has no rows, and a touch anywhere acknowledges it
 	if(nav->screen != NAV_DTC_FAILED)
@@ -485,6 +498,20 @@ nav_do_t nav_hold(nav_t *nav, hold_event_t event, const nav_world_t *world, uint
 	}
 	// The dialog of hold.h is closed after each of these
 	if(event == HOLD_CONFIRMED || event == HOLD_CANCELLED || event == HOLD_STUCK) close_dialog(nav, world);
+	return NAV_DO_NOTHING;
+}
+
+nav_do_t nav_cancel(nav_t *nav, const nav_world_t *world, uint64_t now_ms)
+{
+	// No input: nobody is at a screen that cannot be seen
+	advance(nav, now_ms);
+
+	if(nav->screen == NAV_DTC_CONFIRM)
+	{
+		close_dialog(nav, world);
+		return NAV_DO_HOLD_CLOSE;
+	}
+	if(nav->screen == NAV_CONFIRM) return back(nav, world);
 	return NAV_DO_NOTHING;
 }
 

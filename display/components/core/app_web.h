@@ -39,15 +39,30 @@
  * request is refused afterwards for another reason. A route that needs the knob asks access_may_ask()
  * instead and answers 403 "locked" or 409 "asking" by what it says, else access_ask() and 202 with
  * web_asked_json(). Where several refusals apply, the order is: 403 "locked", then 409 "busy", then 409
- * "asking", then the rest. While a firmware upload runs no question is asked (409 "busy"): the screen
- * shows the upload and takes no input, a question would wait unseen. A new question replaces what an
- * earlier one left behind (the network asked for, ask_detail) at once, also when it has no detail of its own.
+ * "asking", then 409 "hot", then the rest. While a firmware upload runs no question is asked (409 "busy"):
+ * the screen shows the upload and takes no input, a question would wait unseen. While the heat keeps the
+ * backlight off (app.h: the level is GUARD_HEAT_OFF) no question is asked and no upload begins (409 "hot"):
+ * nobody could see the question, and one that waited when the light went off was refused by
+ * app_temperature(). A question that is asked is confirmed by the knob alone, never by a tap (nav.h).
+ * A new question replaces what an earlier one left behind (the network asked for, ask_detail) at once, also
+ * when it has no detail of its own.
+ *
+ * While a fault memory request of the display is under way - the flow is READ_SENT, READING, CLEAR_SENT or
+ * CLEARING: sent or accepted, and not ended - nothing takes the adapter away from under it: every request
+ * that would restart the display or make it leave its network is answered 409 "busy". That is the restart,
+ * the factory reset and the upload (app_busy(), which also holds while the clear dialog shows and an upload
+ * runs), and storing and forgetting a network. The settings at the knob offer no restart, previous version
+ * or factory reset in the same phases (nav.h): a read would be left without its list, a clear without its
+ * outcome.
  * A request that is refused leaves everything as it was, but for the release and the time named above - and
  * but for a running upload, which app_web_upload_end() ends whatever it answers.
  *
  * The events these functions raise name what is in the app at the moment they are carried out
  * (APP_EVENT_STORE_LAYOUT stores app->layout_text as it is then): the platform takes them and what they
  * name with app_take_events() before it gives the lock back, and stores before the next request is served.
+ * APP_EVENT_STORE_LAYOUT and APP_EVENT_ERASE_LAYOUT never wait to be taken together (app.h): a SAVE takes a
+ * reset back that still waits, a RESET a save - the later of the two alone counts. Every other event that
+ * waits stays.
  *
  * The page itself (WEB_ROUTE_PAGE) is an embedded file of the platform, not of this module. The platform
  * never sends an Access-Control-Allow header: the protection by WEB_HEADER_NAME rests on that.
@@ -98,32 +113,44 @@ void app_web_seen(app_t *app, const web_seen_t *seen, int count);
  *   APPLY   as CHECK; a layout that is taken becomes the layout in use, source PREVIEW. It is not stored: a
  *           restart, a reset or a save of something else ends it.
  *   SAVE    as CHECK; a layout that is taken becomes the layout in use and the stored one, source STORED;
- *           APP_EVENT_STORE_LAYOUT.
+ *           APP_EVENT_STORE_LAYOUT, and an APP_EVENT_ERASE_LAYOUT that still waits to be taken is taken back.
+ *           A layout that is refused raises nothing and takes nothing back.
  *   RESET   the stored layout is forgotten: the choice of app_init() is made anew (built-in or generated,
- *           app_choose_layout()); APP_EVENT_ERASE_LAYOUT. Answers 200 with the report of the layout then in
- *           use, without warnings.
+ *           app_choose_layout()); APP_EVENT_ERASE_LAYOUT, and an APP_EVENT_STORE_LAYOUT that still waits is
+ *           taken back. Answers 200 with the report of the layout then in use, without warnings.
  * APPLY, SAVE and RESET call access_write() before they look at the body. The text of a layout that is taken
  * becomes app->layout_text byte for byte.
- * After a layout changed the value pages start at its first page: this function sets app->nav.page to
- * layout_first_page() of the new layout (nav_tick() only leaves a page that is not shown any more), with
- * every APPLY and SAVE that is taken and every RESET, also when the views are the same as before.
+ * The page shown (app->nav.page, also while another screen lies over the value pages):
+ *   APPLY, SAVE   it stays if the new layout shows a page at the same position (layout_page_shown() for
+ *                 app->nav.page: the position exists, the page there is not hidden and has a value of the
+ *                 catalogue) - whoever tries views in the browser keeps the page he is working on in front
+ *                 of him, whatever the page at that position holds now. Else the value pages start at the
+ *                 first page the new layout shows (layout_first_page(), -1 if it shows none): a layout with
+ *                 fewer pages, a page there that is hidden now, or no page shown before.
+ *   RESET         always the first page of the views the display then chooses, also when they are the same
+ *                 as before.
+ * Nothing else of nav changes: the screen, its focus and the idle time stay.
  */
 int app_web_layout(app_t *app, web_route_t route, const char *body, size_t body_length, char *out,
                    size_t *length, uint64_t now_ms);
 
 /*
- * POST /api/wifi: 403 "locked"; 409 "busy" while a firmware upload runs (a fault memory request of the
- * display does not keep the question away: it is the knob that decides); 409 "asking"; then web_wifi_parse(),
- * 400 "body" if it refuses. A request without a password for an SSID that is stored keeps the stored
- * password; for an SSID that is not stored it means an open network - judged by what is stored when the knob
- * confirms, not when the browser asks.
+ * POST /api/wifi: 403 "locked"; 409 "busy" while a firmware upload runs, and while a fault memory request of
+ * the display is under way (see above: with the answer of the knob the display leaves its network, and the
+ * question lies over the screen that shows the progress of the request). The clear dialog alone does not
+ * keep the question away: nothing is sent yet, the question lies over the dialog, and no hold counts under
+ * it. Then 409 "asking"; 409 "hot"; then web_wifi_parse(), 400 "body" if it refuses. A request without a
+ * password for an SSID that is stored keeps the stored password; for an SSID that is not stored it means an
+ * open network - judged by what is stored when the knob confirms, not when the browser asks.
  * access_ask(ACCESS_ASK_WIFI): the request is kept until the knob confirms it (app_do(), NAV_DO_ASK_CONFIRM)
  * and dropped when the question ends otherwise. ask_detail is the SSID.
- * POST /api/wifi/forget: web_forget_parse(); 400 "body" if it refuses; 404 "not_found" if no such network
- * is stored; else net_forget(), link_profiles(), app_net(), APP_EVENT_STORE_WIFI, 200 {"ok":true}. No knob:
- * forgetting a network locks nobody out for good - without any network the display opens its own access point.
- * The display leaves the network it is in with every network that is forgotten (link.h), also when another
- * one was named: a fault memory request of the display that is under way ends as lost (poll.h).
+ * POST /api/wifi/forget: 403 "locked"; 409 "busy" while a fault memory request of the display is under way,
+ * whatever the body is: the display leaves the network it is in with every network that is forgotten
+ * (link.h), also when another one was named, and the request would end as lost (poll.h). Then
+ * web_forget_parse(); 400 "body" if it refuses; 404 "not_found" if no such network is stored; else
+ * net_forget(), link_profiles(), app_net(), APP_EVENT_STORE_WIFI, 200 {"ok":true}. No knob: forgetting a
+ * network locks nobody out for good - without any network the display opens its own access point. So the
+ * heat does not keep it away either, and neither do the clear dialog or an upload.
  */
 int app_web_wifi(app_t *app, web_route_t route, const char *body, size_t body_length, char *out,
                  size_t *length, uint64_t now_ms);
@@ -137,8 +164,9 @@ int app_web_settings(app_t *app, const char *body, size_t body_length, char *out
 
 // POST /api/reboot: 403 "locked" without the release; 409 "busy" if app_busy(); else APP_EVENT_REBOOT
 // (app_do()) and 200 {"ok":true}. A question that waits does not keep the restart away: it is lost with it.
-// POST /api/reset: 403 "locked"; 409 "busy" if app_busy(); 409 "asking" if another question waits; else
-// access_ask(ACCESS_ASK_RESET), with an empty ask_detail; 202 with web_asked_json().
+// POST /api/reset: 403 "locked"; 409 "busy" if app_busy(); 409 "asking" if another question waits; 409 "hot"
+// while the heat keeps the backlight off; else access_ask(ACCESS_ASK_RESET), with an empty ask_detail; 202
+// with web_asked_json().
 int app_web_action(app_t *app, web_route_t route, char *out, size_t *length, uint64_t now_ms);
 
 /*
@@ -157,6 +185,8 @@ int app_web_action(app_t *app, web_route_t route, char *out, size_t *length, uin
  *             whole of its time);
  *             409 "asking" while a question waits (a firmware question of an earlier upload must not be
  *             confirmed for a slot that is being rewritten);
+ *             409 "hot" while the heat keeps the backlight off: the question at the end of the upload could
+ *             not be seen, and nobody should send megabytes to be told so afterwards;
  *             422 {"error":"<word>"} if ota_check() refuses, with the words "too_short", "no_image",
  *             "wrong_chip", "no_description", "wrong_project", "too_large" - NOTHING has been erased then,
  *             and nothing of the app has changed but the release and the time.
@@ -165,7 +195,10 @@ int app_web_action(app_t *app, web_route_t route, char *out, size_t *length, uin
  *             no longer holds the version before this one: previous_firmware becomes false, so that
  *             "Vorherige Version" can never start an upload nobody confirmed. It stays false however the
  *             upload ends; the platform has to see to it that it is false after a restart as well, until an
- *             installed firmware was started.
+ *             installed firmware was started. The platform keeps it false as well for an update that was
+ *             started and not confirmed: the boot loader marks the slot of an update it took back, and a
+ *             slot with that mark is never the previous version, until the next upload was installed and
+ *             started.
  *   progress  bytes written so far, for the percent on the screen (written * 100 / file_size rounded down,
  *             at most 100, 0 for a file_size of 0); it renews the time APP_UPLOAD_IDLE_MS counts from. A
  *             call while no upload runs is ignored: one that app_tick() ended does not come back with bytes
@@ -175,9 +208,9 @@ int app_web_action(app_t *app, web_route_t route, char *out, size_t *length, uin
  *             runs, whatever ok says: it was ended by app_tick(), or never began, and what lies in the slot
  *             is not asked for. ok true: access_ask(ACCESS_ASK_FIRMWARE) with the version of the image as
  *             ask_detail; 202 with web_asked_json(). 403 "locked" if the release has ended meanwhile (409
- *             "asking" if a question waits, which cannot happen through this interface): nothing is asked
- *             then. The knob then raises APP_EVENT_INSTALL_FIRMWARE; without it the uploaded firmware is
- *             never started.
+ *             "asking" if a question waits, which cannot happen through this interface), 409 "hot" if the
+ *             heat has switched the backlight off meanwhile: nothing is asked then. The knob then raises
+ *             APP_EVENT_INSTALL_FIRMWARE; without it the uploaded firmware is never started.
  *
  * The platform runs one upload at a time, calls end exactly once for every begin that returned 0, and stops
  * writing when it finds `uploading` false before the end (it looks under the lock, with every progress).

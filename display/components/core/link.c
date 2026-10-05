@@ -138,7 +138,7 @@ link_do_t link_next(link_t *link, uint64_t now_ms)
 	// Before everything else, so that the end of the attempt does not depend on what this call hands out
 	if(link->phase == LINK_JOINING && link->busy && link->clock_ms - link->action_since_ms >= LINK_JOIN_TIMEOUT_MS) join_failed(link);
 
-	if(link->ap_on && !link->ap_forced && link->profile_count > 0 && link->ap_clients == 0 &&
+	if(link->ap_on && !link_ap_kept(link) && link->ap_clients == 0 &&
 	   link->clock_ms - link->ap_idle_since_ms >= LINK_AP_IDLE_MS)
 	{
 		link->ap_wanted = false;
@@ -293,10 +293,17 @@ void link_profiles(link_t *link, const net_profile_t *profiles, int profile_coun
 	else if(link->phase != LINK_LEAVING) start_over(link);
 }
 
+bool link_ap_kept(const link_t *link)
+{
+	// The one place for this rule: link_ap_request() and the idle close of link_next() ask here, and so does
+	// the caller who wants to know whether switching the access point would do anything
+	return link->ap_forced || link->profile_count == 0;
+}
+
 void link_ap_request(link_t *link, bool on, uint64_t now_ms)
 {
 	advance(link, now_ms);
-	link->ap_wanted = on || link->ap_forced || link->profile_count == 0;
+	link->ap_wanted = on || link_ap_kept(link);
 }
 
 void link_ap_clients(link_t *link, int clients, uint64_t now_ms)

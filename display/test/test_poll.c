@@ -717,6 +717,7 @@ static void test_init(void)
 	scene();
 	poll_init(&poll, NULL);
 	check(poll.bound_id[0] == '\0' && poll.conn.bound_id[0] == '\0' && poll.values.count == 0 && poll.catalog.count == 1 && !poll.wifi, "init without an id (NULL): not bound");
+	check(POLL_START_UNKNOWN == 0 && poll.start == POLL_START_UNKNOWN, "after init nothing is known of the start of an adapter, whatever answered before it");
 	scene();
 	poll_init(&poll, "");
 	check(poll.bound_id[0] == '\0' && poll.conn.bound_id[0] == '\0', "init with an empty id: not bound");
@@ -995,15 +996,16 @@ static void test_wifi(void)
 	check(sent("SRCV") && poll.flow.phase == DTC_FLOW_LIST && shows_list(read_text, 2) && poll.list.code_count == 2 && poll_take_events(&poll) == 0,
 	      "the network comes back and the adapter did not restart: the list stays, although its result is fetched once more");
 
-	// The adapter restarted while the network was gone. conn starts over and names no restart.
+	// The adapter restarted while the network was gone. conn starts over and names no restart; the start the
+	// catalogue came from is another one all the same (test_restart_unseen()).
 	scene_list();
 	poll_wifi(&poll, false, now);
 	adapter_restart(&wican, BOOT + 1, 42, 106500);
 	now = 107000;
 	poll_wifi(&poll, true, now);
 	exchange();
-	check(sent("SCV") && poll.flow.phase == DTC_FLOW_IDLE && !poll.has_list && poll_take_events(&poll) == POLL_EVENT_LISTS,
-	      "the network comes back and the adapter has restarted: the list is dropped");
+	check(sent("SCV") && poll.flow.phase == DTC_FLOW_IDLE && !poll.has_list && poll_take_events(&poll) == (POLL_EVENT_FORGET | POLL_EVENT_LISTS),
+	      "the network comes back and the adapter has restarted: the list is dropped, and what came from the start before is forgotten");
 }
 
 static void test_requests(void)
@@ -2300,6 +2302,210 @@ static void test_restart(void)
 	check(poll.catalog_complete && poll.catalog.count == 4 && catalog_find(&poll.catalog, "OIL_TEMP_OLD") < 0, "the profile of that connection replaces the stored catalogue");
 }
 
+// The start of the adapter the catalogue came from is kept over a pause of the network: conn.h knows the
+// adapter only since the network was joined
+static void test_restart_unseen(void)
+{
+	uint32_t events;
+
+	// The adapter restarts with another profile while the display is out of the network
+	scene();
+	check(catalog_find(&poll.catalog, "ENGINE_RPM") == 1 && poll.catalog.entries[1].delivered && poll.catalog.count == 4 && poll.start == POLL_START_API &&
+	      strcmp(poll.start_id, OWN) == 0 && poll.start_boot == BOOT,
+	      "the scene: ENGINE_RPM is in the catalogue and was delivered; the start the catalogue came from is the own adapter with its boot number");
+	poll_wifi(&poll, false, now);
+	wican.has_rpm = false;
+	adapter_restart(&wican, BOOT + 1, 42, now + 500);
+	now += 5000;
+	poll_wifi(&poll, true, now);
+	check(poll.catalog.count == 4 && poll_take_events(&poll) == 0 && poll.start_boot == BOOT, "joining the network again forgets nothing by itself: the adapter has not answered yet");
+	send();
+	answer();
+	check(sent("S") && poll.catalog.count == 1 && !poll.catalog_complete && poll.values.count == 1 && value("@BATT_V") != NULL &&
+	      poll_take_events(&poll) == (POLL_EVENT_FORGET | POLL_EVENT_LISTS),
+	      "the first state after the pause shows another boot number than the start the catalogue came from: the adapter restarted unseen - the catalogue is started anew, "
+	      "the voltage of that state stays, POLL_EVENT_FORGET and POLL_EVENT_LISTS");
+	check(poll.start == POLL_START_API && poll.start_boot == BOOT + 1 && strcmp(poll.start_id, OWN) == 0, "the start is from then on the one that answered");
+	exchange();
+	check(sent("CV") && poll.catalog_complete && poll.catalog.count == 3 && catalog_find(&poll.catalog, "ENGINE_RPM") < 0 && strcmp(poll.catalog.entries[1].name, "COOLANT_TMP") == 0,
+	      "the profile of the restarted adapter is fetched and is the catalogue: the entry delivered before the pause is gone");
+	second();
+	check(sent("SV") && poll_take_events(&poll) == 0 && poll.catalog.count == 3, "the next state shows the same boot number: nothing more is forgotten");
+
+	// The same pause without a restart: what was delivered stays, as within a connection
+	scene();
+	poll_wifi(&poll, false, now);
+	wican.has_rpm = false;
+	now += 5000;
+	poll_wifi(&poll, true, now);
+	exchange();
+	events = poll_take_events(&poll);
+	check(sent("SCV") && (events & POLL_EVENT_FORGET) == 0 && poll.catalog.count == 4 && catalog_find(&poll.catalog, "ENGINE_RPM") == 1 && poll.catalog.entries[1].delivered &&
+	      !poll.catalog.entries[1].in_profile,
+	      "the network comes back and the adapter is the same start: nothing is forgotten - the profile is fetched again, and an entry that was delivered stays "
+	      "although the profile does not name it any more");
+
+	// Over several pauses the start is the one that answered last
+	scene();
+	poll_wifi(&poll, false, now);
+	adapter_restart(&wican, BOOT + 1, 42, now + 500);
+	now += 5000;
+	poll_wifi(&poll, true, now);
+	exchange();
+	poll_take_events(&poll);
+	poll_wifi(&poll, false, now);
+	now += 5000;
+	poll_wifi(&poll, true, now);
+	exchange();
+	check((poll_take_events(&poll) & POLL_EVENT_FORGET) == 0 && poll.catalog_complete && poll.start_boot == BOOT + 1, "a second pause behind which the same start answers: nothing is forgotten");
+	poll_wifi(&poll, false, now);
+	adapter_restart(&wican, BOOT, 42, now + 500);
+	now += 5000;
+	poll_wifi(&poll, true, now);
+	send();
+	answer();
+	check(poll_take_events(&poll) == (POLL_EVENT_FORGET | POLL_EVENT_LISTS) && poll.catalog.count == 1 && poll.start_boot == BOOT,
+	      "a third pause behind which the boot number of the first start answers: it is another one than the last - forgotten");
+
+	// The uptime does not count, as for conn.h
+	scene();
+	poll_wifi(&poll, false, now);
+	wican.boot_ms = now;
+	now += 5000;
+	poll_wifi(&poll, true, now);
+	exchange();
+	check(conn_state(&poll.conn) != NULL && conn_state(&poll.conn)->up_s == 5 && (poll_take_events(&poll) & POLL_EVENT_FORGET) == 0 && poll.catalog.count == 4 && poll.catalog.entries[1].delivered,
+	      "the same boot number after the pause with an uptime of 5 s where it was 102 s: the same start - nothing is forgotten");
+
+	// An answer that is neither a state nor a 404 says nothing about the start
+	scene();
+	poll_wifi(&poll, false, now);
+	adapter_restart(&wican, BOOT + 1, 42, now + 500);
+	now += 5000;
+	poll_wifi(&poll, true, now);
+	send();
+	reply(500, "", NULL);
+	check(poll.start == POLL_START_API && poll.start_boot == BOOT && poll.catalog.count == 4 && poll_take_events(&poll) == 0, "a 500 for the state after the pause: no start is known from it, nothing is forgotten");
+	send();
+	reply(200, "{\"api\":1", NULL);
+	check(poll.start == POLL_START_API && poll.start_boot == BOOT && poll.catalog.count == 4 && poll_take_events(&poll) == 0, "a state that cannot be read: no start is known from it either");
+	seconds(3);
+	check(poll.start_boot == BOOT + 1 && poll.catalog_complete && poll_take_events(&poll) == (POLL_EVENT_FORGET | POLL_EVENT_LISTS),
+	      "the first state that is taken shows the other boot number: forgotten then");
+
+	// A foreign adapter is no start the catalogue could come from
+	scene();
+	poll_wifi(&poll, false, now);
+	strcpy(wican.id, OTHER);
+	wican.boot = BOOT + 5;
+	now += 5000;
+	poll_wifi(&poll, true, now);
+	exchange();
+	second();
+	check(view() == CONN_VIEW_FOREIGN && sent("S S") && poll_take_events(&poll) == 0 && poll.catalog.count == 4 && poll.catalog.entries[1].delivered,
+	      "a foreign adapter answers after the pause, with another boot number: nothing is fetched from it and nothing is forgotten for it");
+	check(poll.start == POLL_START_API && strcmp(poll.start_id, OWN) == 0 && poll.start_boot == BOOT, "the start the catalogue came from stays the own adapter");
+	poll_wifi(&poll, false, now);
+	strcpy(wican.id, OWN);
+	wican.boot = BOOT;
+	now += 5000;
+	poll_wifi(&poll, true, now);
+	exchange();
+	events = poll_take_events(&poll);
+	check(view() == CONN_VIEW_LIVE && (events & POLL_EVENT_FORGET) == 0 && poll.catalog.count == 4 && poll.catalog.entries[1].delivered,
+	      "back in the network of the own adapter, which did not restart meanwhile: the same start - nothing is forgotten");
+	poll_wifi(&poll, false, now);
+	strcpy(wican.id, OTHER);
+	wican.boot = BOOT + 5;
+	now += 5000;
+	poll_wifi(&poll, true, now);
+	exchange();
+	poll_wifi(&poll, false, now);
+	strcpy(wican.id, OWN);
+	adapter_restart(&wican, BOOT + 1, 42, now + 500);
+	now += 5000;
+	poll_wifi(&poll, true, now);
+	send();
+	answer();
+	check(poll_take_events(&poll) == (POLL_EVENT_FORGET | POLL_EVENT_LISTS) && poll.catalog.count == 1 && poll.start_boot == BOOT + 1,
+	      "back in the network of the own adapter, which did restart while the foreign one answered: forgotten");
+
+	// A firmware without the API has no boot number: it is another firmware than one with the API
+	scene();
+	poll_wifi(&poll, false, now);
+	wican.api = false;
+	now += 5000;
+	poll_wifi(&poll, true, now);
+	send();
+	answer();
+	check(view() == CONN_VIEW_NO_API && poll.start == POLL_START_NO_API && poll.catalog.count == 1 && poll_take_events(&poll) == (POLL_EVENT_FORGET | POLL_EVENT_LISTS),
+	      "404 for the state after the pause, where a firmware with the API answered before it: another firmware - the catalogue is started anew");
+	exchange();
+	check(sent("SCV") && poll.catalog_complete && poll.catalog.count == 4 && poll_take_events(&poll) == 0, "the firmware without the API is asked for its profile and its values");
+	poll_wifi(&poll, false, now);
+	wican.has_rpm = false;
+	now += 5000;
+	poll_wifi(&poll, true, now);
+	exchange();
+	events = poll_take_events(&poll);
+	check(view() == CONN_VIEW_NO_API && (events & POLL_EVENT_FORGET) == 0 && poll.catalog.count == 4 && catalog_find(&poll.catalog, "ENGINE_RPM") == 1,
+	      "a firmware without the API behind the next pause as well: nothing tells two of them apart - nothing is forgotten");
+	poll_wifi(&poll, false, now);
+	wican.api = true;
+	now += 5000;
+	poll_wifi(&poll, true, now);
+	send();
+	answer();
+	check(view() != CONN_VIEW_NO_API && poll.start == POLL_START_API && poll.start_boot == BOOT && poll.catalog.count == 1 &&
+	      poll_take_events(&poll) == (POLL_EVENT_FORGET | POLL_EVENT_LISTS),
+	      "a state after the pause, where a firmware without the API answered before it: another firmware - forgotten, also with the boot number of the scene");
+
+	// Before anything answered since the display started nothing is another start: the stored catalogue serves
+	adapter_init(&wican, 0);
+	wican.api = false;
+	join(OWN, 100000);
+	poll_stored(&poll, stored_catalog, strlen(stored_catalog), NULL, 0, work, POLL_TOKENS);
+	send();
+	answer();
+	check(poll.start == POLL_START_NO_API && poll.catalog.count == 3 && catalog_find(&poll.catalog, "OIL_TEMP_OLD") == 2 && (poll_take_events(&poll) & POLL_EVENT_FORGET) == 0,
+	      "a 404 as the first answer since the display started is no other start: the stored catalogue still serves");
+	adapter_init(&wican, 0);
+	wican.boot = 7;
+	join(OWN, 100000);
+	poll_stored(&poll, stored_catalog, strlen(stored_catalog), NULL, 0, work, POLL_TOKENS);
+	send();
+	answer();
+	check(poll.start == POLL_START_API && poll.start_boot == 7 && poll.catalog.count == 3 && catalog_find(&poll.catalog, "OIL_TEMP_OLD") == 2 &&
+	      (poll_take_events(&poll) & POLL_EVENT_FORGET) == 0,
+	      "a state as the first answer since the display started is no other start, whatever its boot number: the stored catalogue still serves, and the start is known from now on");
+	scene();
+	poll_init(&poll, OWN);
+	wican.boot = BOOT + 1;
+	poll_wifi(&poll, true, now);
+	send();
+	answer();
+	check((poll_take_events(&poll) & POLL_EVENT_FORGET) == 0 && poll.start_boot == BOOT + 1, "after a new init the start of before is not known any more: the first state is no other start");
+
+	// Another id with the same boot number is another adapter: a display that is not bound, an adapter without an id
+	adapter_init(&wican, 0);
+	wican.id[0] = '\0';
+	join(NULL, 100000);
+	exchange();
+	seconds(2);
+	check(conn_state(&poll.conn) != NULL && poll.bound_id[0] == '\0' && !poll.conn.foreign && poll.start == POLL_START_API && poll.start_id[0] == '\0' && poll.catalog.count == 4,
+	      "the scene: an adapter without an id answers a display that is not bound - not foreign, and the start the catalogue came from");
+	poll_take_events(&poll);
+	poll_wifi(&poll, false, now);
+	strcpy(wican.id, OWN);
+	now += 5000;
+	poll_wifi(&poll, true, now);
+	send();
+	answer();
+	check(strcmp(poll.bound_id, OWN) == 0 && strcmp(poll.start_id, OWN) == 0 && poll.catalog.count == 1 &&
+	      poll_take_events(&poll) == (POLL_EVENT_BOUND | POLL_EVENT_FORGET | POLL_EVENT_LISTS),
+	      "behind the pause an adapter with an id answers, with the same boot number: another adapter - the display is bound to it, what came from the one before is forgotten");
+}
+
 static void test_foreign(void)
 {
 	scene_list();
@@ -3307,6 +3513,9 @@ typedef struct
 	char list_text[POLL_TEXT_SIZE], old_text[POLL_TEXT_SIZE];
 	dtc_result_t list, cleared, old;
 	char bound[33];
+	// The start of the adapter the catalogue came from, as one text: empty before the first answer, "no api", or
+	// id and boot number. 32 bytes of an id, a slash, 10 digits.
+	char origin[64];
 	uint32_t events;
 	uint32_t answered, unanswered;
 } model_t;
@@ -3474,6 +3683,7 @@ static bool model_prepare(model_t *m, uint64_t now_ms, poll_request_t *expected)
 static void model_state(model_t *m, int status, const answer_t *a, uint64_t now_ms)
 {
 	bool taken = status == 200 && a->is_state;
+	bool restarted;
 
 	if(taken)
 	{
@@ -3486,7 +3696,18 @@ static void model_state(model_t *m, int status, const answer_t *a, uint64_t now_
 	}
 
 	if(conn_take_bind(&m->conn, m->bound, sizeof(m->bound))) m->events |= POLL_EVENT_BOUND;
-	if(conn_take_restarted(&m->conn))
+	restarted = conn_take_restarted(&m->conn);
+	// What conn forgot with the network: whoever answers now is compared with whoever answered last. A foreign
+	// adapter is not written down, and an answer that is neither a state nor a 404 names nobody.
+	if(taken ? !m->conn.foreign : status == 404)
+	{
+		char origin[sizeof(m->origin)] = "no api";
+
+		if(taken) snprintf(origin, sizeof(origin), "%s/%" PRIu32, a->state.id, a->state.boot);
+		if(m->origin[0] != '\0' && strcmp(origin, m->origin) != 0) restarted = true;
+		strcpy(m->origin, origin);
+	}
+	if(restarted)
 	{
 		values_clear(&m->values);
 		catalog_init(&m->catalog);
@@ -3702,6 +3923,16 @@ static bool same_result(const dtc_result_t *a, const dtc_result_t *b)
 }
 
 // Where the module differs from the model, NULL if nowhere
+// The start the module keeps, written as the model writes it
+static bool same_start(const model_t *m)
+{
+	char origin[sizeof(m->origin)] = "";
+
+	if(poll.start == POLL_START_NO_API) strcpy(origin, "no api");
+	if(poll.start == POLL_START_API) snprintf(origin, sizeof(origin), "%s/%" PRIu32, poll.start_id, poll.start_boot);
+	return strcmp(origin, m->origin) == 0;
+}
+
 static const char *differs(const model_t *m)
 {
 	const guard_catalog_t *g = &poll.catalog_guard;
@@ -3720,6 +3951,7 @@ static const char *differs(const model_t *m)
 	if(poll.has_old != m->has_old) return "has_old";
 	if(poll.has_old && (strcmp(poll.old_text, m->old_text) != 0 || !same_result(&poll.old, &m->old))) return "the old list";
 	if(strcmp(poll.bound_id, m->bound) != 0) return "bound_id";
+	if(!same_start(m)) return "the start the catalogue came from";
 	if(poll.wifi != m->joined) return "wifi";
 	if(poll.asking != m->waits || (poll.asking && poll.asked != m->kind)) return "the request under way";
 	if(poll.asking && poll.asked == POLL_RESULT && (poll.asked_result_seq != m->result_number || poll.asked_age_s != m->result_age)) return "the result asked for";
@@ -3765,6 +3997,8 @@ typedef struct
 	long views[CONN_VIEW_LIVE + 1];
 	long raised[5];             // by bit
 	long lists, outcomes, unknown, failures, back_to_list, late_clears, old_lists, clears_out, clears_without_old, catalogs_anew;
+	long unseen_restarts;       // catalogues started anew for an adapter that restarted, or was replaced, behind a pause of the network
+	long unseen_same;           // pauses of the network behind which the start that answered before answered again
 	long ignored, stale, steps_back, starts, stored, faults, no_room, at_limit, heals, healed_under_way;
 } walk_result_t;
 
@@ -4075,6 +4309,11 @@ static bool walk(uint32_t seed, walk_result_t *result)
 	int known = 0;                              // what answered GET /api/state last on this connection: 0 nothing, 1 a state, 2 a 404
 	uint32_t known_boot = 0;
 	char known_id[33] = "";
+	// The same for the adapter the catalogue came from: a foreign one is left out, and joining a network does
+	// not forget it
+	int came = 0;
+	uint32_t came_boot = 0;
+	char came_id[33] = "";
 	const char *what = "start";
 	const char *wrong;
 	uint64_t now_ms = world;
@@ -4157,7 +4396,22 @@ static bool walk(uint32_t seed, walk_result_t *result)
 
 				if(asked.kind == POLL_STATE && state_taken)
 				{
+					// A display that is bound takes every other id for a foreign adapter
+					bool foreign = bound_before[0] != '\0' && strcmp(pending.state.id, bound_before) != 0;
+
 					expect_forget = known == 2 || (known == 1 && (pending.state.boot != known_boot || strcmp(pending.state.id, known_id) != 0));
+					if(!foreign)
+					{
+						bool other = came == 2 || (came == 1 && (pending.state.boot != came_boot || strcmp(pending.state.id, came_id) != 0));
+
+						// Nothing was known of the adapter on this connection: the restart happened behind a pause
+						if(other && known == 0) result->unseen_restarts++;
+						if(!other && known == 0 && came != 0) result->unseen_same++;
+						if(other) expect_forget = true;
+						came = 1;
+						came_boot = pending.state.boot;
+						strcpy(came_id, pending.state.id);
+					}
 					known = 1;
 					known_boot = pending.state.boot;
 					strcpy(known_id, pending.state.id);
@@ -4165,6 +4419,10 @@ static bool walk(uint32_t seed, walk_result_t *result)
 				else if(asked.kind == POLL_STATE && pending.status == 404)
 				{
 					expect_forget = known == 1;
+					if(came == 1 && known == 0) result->unseen_restarts++;
+					if(came == 2 && known == 0) result->unseen_same++;
+					if(came == 1) expect_forget = true;
+					came = 2;
 					known = 2;
 				}
 				walk_deliver(&asked, &pending, now_ms, result);
@@ -4293,6 +4551,7 @@ static bool walk(uint32_t seed, walk_result_t *result)
 			confirmed = false;
 			list_number = 0;
 			known = 0;
+			came = 0;
 			fresh_start = true;
 			what = "init";
 		}
@@ -4478,11 +4737,12 @@ static void test_walk(void)
 	}
 	printf("\n  walk: %ld lists, %ld outcomes of a clear, %ld unknown, %ld failures, %ld clears that did not arrive, %ld that waited too long to be handed out, "
 	       "%ld clears handed out, %ld old lists made, %ld clears that ended without one; %ld answers ignored, %ld late after the network was lost, %ld steps back, "
-	       "%ld starts, %ld with stored texts, %ld answers with a fault, %ld without room, %ld results at the limit, %ld catalogues started anew, %ld walks healed, "
+	       "%ld starts, %ld with stored texts, %ld answers with a fault, %ld without room, %ld results at the limit, %ld catalogues started anew, "
+	       "%ld of them for a restart behind a pause of the network, %ld pauses behind which the same start answered, %ld walks healed, "
 	       "%ld of them with a request under way\n",
 	       result.lists, result.outcomes, result.unknown, result.failures, result.back_to_list, result.late_clears, result.clears_out, result.old_lists,
 	       result.clears_without_old, result.ignored, result.stale, result.steps_back, result.starts, result.stored, result.faults, result.no_room, result.at_limit,
-	       result.catalogs_anew, result.heals, result.healed_under_way);
+	       result.catalogs_anew, result.unseen_restarts, result.unseen_same, result.heals, result.healed_under_way);
 
 	check(complete && status != -1 && WIFEXITED(status) && WEXITSTATUS(status) == 0, "160 random conversations of 2500 calls each: no crash and no hang");
 	check(complete && result.different == 0 && result.calls == (long)WALKS * (WALK_CALLS + 1), "160 random conversations: module and model agree after every call");
@@ -4493,6 +4753,8 @@ static void test_walk(void)
 	      "in every conversation: the old list changes exactly when the flow leaves CLEAR_SENT with the clear accepted or its outcome unknown, and is then the list that was shown");
 	check(complete && result.broken[PROMISE_SHOWN] == 0, "in every conversation: has_list and has_cleared follow the flow after every call");
 	check(complete && result.broken[PROMISE_EVENTS] == 0 && every_event, "in every conversation: each event is raised when its cause happens, and only then");
+	check(complete && result.unseen_restarts > 100 && result.unseen_same > 100,
+	      "the conversations reach adapters that restarted or were replaced behind a pause of the network, and pauses behind which the same start answered, in numbers");
 	check(complete && result.broken[PROMISE_STUCK] == 0 && result.heals == WALKS && result.healed_under_way > 10,
 	      "after every conversation a healthy adapter and 150 s lead back to renewed values and a read that is allowed");
 	check(complete && every_kind && every_phase && every_view, "the conversations hand out every kind of request and reach every phase of the flow and every view in numbers");
@@ -4521,6 +4783,7 @@ int main(void)
 	test_catalog();
 	test_values();
 	test_restart();
+	test_restart_unseen();
 	test_foreign();
 	test_no_api();
 	test_other_scan();

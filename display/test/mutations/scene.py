@@ -2,6 +2,9 @@
 
 F = "components/core/scene.c"
 H = "components/core/scene.h"
+# What a press on a row does is decided in nav.c, and the scene asks it there: a rule about an enabled row is
+# removed in that file, and the examples of the scene have to notice
+N = "components/core/nav.c"
 T = "test_scene"
 
 # append() and the numbers
@@ -35,7 +38,7 @@ MADE_LABEL = "\telse if(!fmt_label(item->key, out->label, sizeof(out->label))) m
 WIDGET = "\tif(item->widget == LAYOUT_WIDGET_ARC || item->widget == LAYOUT_WIDGET_BAR || item->widget == LAYOUT_WIDGET_STATE) out->widget = item->widget;"
 NOT_SHOWN = "\t\tappend(out->text, sizeof(out->text), state == LAYOUT_ITEM_UNAVAILABLE ? SCENE_UNAVAILABLE : SCENE_DASH);\n\t\treturn;"
 IF_NOT_SHOWN = "\tif(!shown)\n\t{\n"
-MISSED = "\t\tif(state != LAYOUT_ITEM_UNAVAILABLE) *old = true;\n"
+MISSED = "\t\tif(value != NULL && state != LAYOUT_ITEM_UNAVAILABLE) *old = true;\n"
 LEVEL = "\tif(item_level > *level) *level = item_level;\n"
 OLD = "\tif(state == LAYOUT_ITEM_OLD) *old = true;\n"
 LIVE_TONE = "\tif(state == LAYOUT_ITEM_LIVE)\n\t{"
@@ -67,13 +70,12 @@ LINE_HEAD = "\t\t\tif(lines[index].kind == DTC_LINE_HEAD) row->kind = SCENE_ROW_
 LINE_CODE = "\t\t\tif(lines[index].kind == DTC_LINE_CODE) row->kind = SCENE_ROW_SUB;\n"
 
 # The menu and the fault memory
-MENU_NIGHT = "\t\t{\"Nachtmodus\", world->night_mode ? \"an\" : \"aus\", true},\n"
-MENU_WEB = "\t\t{\"Web-Zugriff\", world->release_open ? \"frei\" : \"gesperrt\", true},\n"
-OUTCOME = "\tbool outcome = world->flow == DTC_FLOW_LIST || world->flow == DTC_FLOW_CLEARED || world->flow == DTC_FLOW_FAILED || world->flow == DTC_FLOW_UNKNOWN;"
-DTC_READ = "\t\t{\"Lesen\", \"\", world->can_read},\n"
-DTC_VIEW = "\t\t{\"Liste ansehen\", \"\", outcome},\n"
+MENU_NIGHT = "\t\t{\"Nachtmodus\", world->night_mode ? \"an\" : \"aus\"},\n"
+MENU_WEB = "\t\t{\"Web-Zugriff\", world->release_open ? \"frei\" : \"gesperrt\"},\n"
+DTC_READ = "\t\t{\"Lesen\", \"\"},\n"
+DTC_VIEW = "\t\t{\"Liste ansehen\", \"\"},\n"
 DTC_OLD_WHY = "\t\t// Not \"gelöscht\": the adapter can accept a clear and refuse it afterwards, at its own engine check\n"
-DTC_OLD = "\t\t{\"Liste vor dem Löschen\", \"\", world->old_lines > 0},\n"
+DTC_OLD = "\t\t{\"Liste vor dem Löschen\", \"\"},\n"
 
 # The progress
 ACCEPTED = "\tbool accepted = flow->phase == DTC_FLOW_READING || flow->phase == DTC_FLOW_CLEARING;"
@@ -86,9 +88,9 @@ STEP_PERMILLE = "\t\tif(dtc->total != 0) scene->permille = dtc->step >= dtc->tot
 HINT = "\tadd_text(scene, \"ca. 35 s – Live-Werte pausieren\");\n"
 
 # The list
-LIST_READ = "\t\t{\"Erneut lesen\", \"\", world->can_read},\n"
-LIST_CLEAR = "\t\t{\"Fehler löschen\", \"\", world->can_clear},\n"
-LIST_NOTE = "\tif(world->can_clear)\n\t{\n\t\tset_note(scene, \"Löschen möglich: \");"
+LIST_READ = "\t\t{\"Erneut lesen\", \"\"},\n"
+LIST_CLEAR = "\t\t{\"Fehler löschen\", \"\"},\n"
+LIST_NOTE = "\tif(input->world->can_clear)\n\t{\n\t\tset_note(scene, \"Löschen möglich: \");"
 LIST_TIME = "\t\tappend_time(scene->note, sizeof(scene->note), dtc_flow_seconds_left(input->flow, input->now_ms));\n"
 LIST_BLOCK = "\t\tset_note(scene, text_block(input->clear_block));"
 
@@ -137,9 +139,9 @@ NO_NETWORK = "\telse if(!input->ap_on) add_text(scene, \"Kein WLAN\");\n"
 AP = "\tif(input->ap_on)\n\t{\n"
 AP_NAME = "\t\tappend(line, SCENE_TEXT_SIZE, \"WLAN: \");\n\t\tappend(line, SCENE_TEXT_SIZE, input->ap_ssid);\n"
 AP_PASSWORD = "\t\tappend(line, SCENE_TEXT_SIZE, \"Passwort: \");\n\t\tappend(line, SCENE_TEXT_SIZE, input->ap_password);\n"
-SET_REVERSE = "\t\t{\"Drehrichtung\", input->reverse ? \"umgekehrt\" : \"normal\", true},\n"
-SET_AP = "\t\t{\"Hotspot\", input->ap_on ? \"an\" : \"aus\", true},\n"
-SET_PREVIOUS = "\t\t{\"Vorherige Version\", \"\", input->world->previous_firmware},\n"
+SET_REVERSE = "\t\t{\"Drehrichtung\", input->reverse ? \"umgekehrt\" : \"normal\"},\n"
+SET_AP = "\t\t{\"Hotspot\", input->ap_on ? \"an\" : \"aus\"},\n"
+SET_PREVIOUS = "\t\t{\"Vorherige Version\", \"\"},\n"
 ASK_REBOOT = "\t\tcase NAV_DO_REBOOT:\n\t\t\tset_title(scene, \"Neu starten?\");\n\t\t\tbreak;\n"
 ASK_PREVIOUS = "\t\tcase NAV_DO_PREVIOUS_FIRMWARE:\n\t\t\tset_title(scene, \"Vorherige Version starten?\");\n\t\t\tbreak;\n"
 ASK_RESET_ERASED = "\t\t\tadd_text(scene, \"WLAN, Kopplung und Einstellungen werden gelöscht.\");\n"
@@ -157,7 +159,7 @@ DETAIL = "\t\t\tif(input->ask_detail != NULL && input->ask_detail[0] != '\\0') a
 ANSWER = "\t\t\tappend(line, SCENE_TEXT_SIZE, \"Drücken = ja · lang = nein (\");\n"
 ASK_LEFT = "\t\t\tappend_number(line, SCENE_TEXT_SIZE, access_ask_seconds_left(input->access, input->now_ms));\n"
 UPDATE_1 = "\t\t\tadd_over_text(scene, \"Update in Ordnung?\");\n"
-UPDATE_2 = "\t\t\tadd_over_text(scene, \"Knopf drücken oder Bildschirm berühren\");\n"
+UPDATE_2 = "\t\t\tadd_over_text(scene, \"Knopf drücken\");\n"
 UPDATE_LEFT = "\t\t\tappend_time(line, SCENE_TEXT_SIZE, input->update_left_s);\n"
 
 # scene_build()
@@ -200,6 +202,20 @@ END = "\tout[writer.length] = '\\0';\n\treturn (int)writer.length;"
 def text(name, old, new):
     """A text of the screen that reads differently"""
     return (name, T, F, old, new)
+
+
+# A choice is enabled by what a press on it does (nav_row_acts())
+ASKED = "nav_row_acts(nav, index - line_count + (nav_rows(nav, input->world) - choice_count), input->world)"
+ENABLED = "\t\t\trow->enabled = " + ASKED + ";"
+# The rule that keeps the own access point from being switched while it stays on whatever is asked
+NAV_SET_AP = "\t\t\tif(!world->ap_kept) return NAV_DO_AP_TOGGLE;\n\t\t\tbreak;"
+# The rule that keeps restart, previous version and factory reset away while the own request is under way
+NAV_UNDER_WAY = "\treturn flow == DTC_FLOW_READ_SENT || flow == DTC_FLOW_READING || flow == DTC_FLOW_CLEAR_SENT || flow == DTC_FLOW_CLEARING;"
+
+
+def instead(name, screen, choice, expression):
+    """The choice `choice` of a screen is enabled by a rule of the scene instead of by what a press on it does"""
+    return (name, T, F, ENABLED, "\t\t\trow->enabled = nav->screen == %s && index - line_count == %d ? %s : %s;" % (screen, choice, expression, ASKED))
 
 
 MUTATIONS = [
@@ -321,22 +337,34 @@ MUTATIONS = [
     ("scene_item_dash_is_not_missed", T, F, MISSED, ""),
     ("scene_item_unavailable_is_missed", T, F, MISSED, "\t\t*old = true;\n"),
     ("scene_item_missed_swapped", T, F, MISSED, "\t\tif(state == LAYOUT_ITEM_UNAVAILABLE) *old = true;\n"),
-    ("scene_item_no_text_is_not_missed", T, F, MISSED, "\t\tif(state == LAYOUT_ITEM_NO_VALUE) *old = true;\n"),
+    ("scene_item_no_text_is_not_missed", T, F, MISSED, "\t\tif(value != NULL && state == LAYOUT_ITEM_NO_VALUE) *old = true;\n"),
     ("scene_item_gone_is_not_missed", T, F, MISSED, "\t\tif(state == LAYOUT_ITEM_LIVE || state == LAYOUT_ITEM_OLD) *old = true;\n"),
-    ("scene_item_fresh_without_text_is_not_missed", T, F, MISSED, "\t\tif(state != LAYOUT_ITEM_UNAVAILABLE && state != LAYOUT_ITEM_LIVE) *old = true;\n"),
-    ("scene_item_never_seen_is_not_missed", T, F, MISSED, "\t\tif(state != LAYOUT_ITEM_UNAVAILABLE && value != NULL) *old = true;\n"),
+    ("scene_item_fresh_without_text_is_not_missed", T, F, MISSED, "\t\tif(value != NULL && state != LAYOUT_ITEM_UNAVAILABLE && state != LAYOUT_ITEM_LIVE) *old = true;\n"),
+    # a value the adapter never delivered on this connection is a dash that nobody misses: the rule taken back
+    ("scene_item_never_delivered_is_missed", T, F, MISSED, "\t\tif(state != LAYOUT_ITEM_UNAVAILABLE) *old = true;\n"),
+    ("scene_item_never_delivered_is_missed_with_profile", T, F,
+     MISSED, "\t\tif((value != NULL || catalog_find(catalog, item->key) >= 0) && state != LAYOUT_ITEM_UNAVAILABLE) *old = true;\n"),
+    ("scene_item_never_delivered_is_missed_without_profile", T, F,
+     MISSED, "\t\tif((value != NULL || catalog_find(catalog, item->key) < 0) && state != LAYOUT_ITEM_UNAVAILABLE) *old = true;\n"),
+    # delivered is what the display holds of this connection, not the mark of the catalogue, which outlasts it
+    ("scene_item_delivered_by_mark_of_catalogue", T, F,
+     MISSED, "\t\tif(catalog_find(catalog, item->key) >= 0 && catalog->entries[catalog_find(catalog, item->key)].delivered && "
+     "state != LAYOUT_ITEM_UNAVAILABLE) *old = true;\n"),
+    ("scene_item_delivered_by_mark_of_catalogue_too", T, F,
+     MISSED, "\t\tif((value != NULL || (catalog_find(catalog, item->key) >= 0 && catalog->entries[catalog_find(catalog, item->key)].delivered)) && "
+     "state != LAYOUT_ITEM_UNAVAILABLE) *old = true;\n"),
     ("scene_item_missed_only_with_profile", T, F,
-     MISSED, "\t\tif(state != LAYOUT_ITEM_UNAVAILABLE && catalog_find(catalog, item->key) >= 0) *old = true;\n"),
-    ("scene_item_missed_of_last_value", T, F, MISSED, "\t\t*old = state != LAYOUT_ITEM_UNAVAILABLE;\n"),
-    ("scene_item_missed_only_with_label", T, F, MISSED, "\t\tif(state != LAYOUT_ITEM_UNAVAILABLE && item->label[0] != '\\0') *old = true;\n"),
-    ("scene_item_missed_raises_level", T, F, MISSED, MISSED + "\t\tif(state != LAYOUT_ITEM_UNAVAILABLE && *level < 2) *level = 2;\n"),
-    ("scene_item_missed_only_during_scan", T, F, MISSED, "\t\tif(state != LAYOUT_ITEM_UNAVAILABLE && view == CONN_VIEW_SCAN) *old = true;\n"),
-    ("scene_item_missed_only_for_numbers", T, F, MISSED, "\t\tif(state != LAYOUT_ITEM_UNAVAILABLE && out->widget == LAYOUT_WIDGET_NUMBER) *old = true;\n"),
-    ("scene_item_missed_not_for_a_state", T, F, MISSED, "\t\tif(state != LAYOUT_ITEM_UNAVAILABLE && item->widget != LAYOUT_WIDGET_STATE) *old = true;\n"),
-    ("scene_item_missed_not_in_safe_mode", T, F, MISSED, "\t\tif(state != LAYOUT_ITEM_UNAVAILABLE && !input->safe_mode) *old = true;\n"),
-    ("scene_item_missed_not_when_hot", T, F, MISSED, "\t\tif(state != LAYOUT_ITEM_UNAVAILABLE && input->heat == GUARD_HEAT_NORMAL) *old = true;\n"),
-    ("scene_item_missed_toggles", T, F, MISSED, "\t\tif(state != LAYOUT_ITEM_UNAVAILABLE) *old = !*old;\n"),
-    ("scene_item_unavailable_is_missed_once_seen", T, F, MISSED, "\t\tif(state == LAYOUT_ITEM_NO_VALUE || value != NULL) *old = true;\n"),
+     MISSED, "\t\tif(value != NULL && state != LAYOUT_ITEM_UNAVAILABLE && catalog_find(catalog, item->key) >= 0) *old = true;\n"),
+    ("scene_item_missed_of_last_value", T, F, MISSED, "\t\t*old = value != NULL && state != LAYOUT_ITEM_UNAVAILABLE;\n"),
+    ("scene_item_missed_only_with_label", T, F, MISSED, "\t\tif(value != NULL && state != LAYOUT_ITEM_UNAVAILABLE && item->label[0] != '\\0') *old = true;\n"),
+    ("scene_item_missed_raises_level", T, F, MISSED, MISSED + "\t\tif(value != NULL && state != LAYOUT_ITEM_UNAVAILABLE && *level < 2) *level = 2;\n"),
+    ("scene_item_missed_only_during_scan", T, F, MISSED, "\t\tif(value != NULL && state != LAYOUT_ITEM_UNAVAILABLE && view == CONN_VIEW_SCAN) *old = true;\n"),
+    ("scene_item_missed_only_for_numbers", T, F, MISSED, "\t\tif(value != NULL && state != LAYOUT_ITEM_UNAVAILABLE && out->widget == LAYOUT_WIDGET_NUMBER) *old = true;\n"),
+    ("scene_item_missed_not_for_a_state", T, F, MISSED, "\t\tif(value != NULL && state != LAYOUT_ITEM_UNAVAILABLE && item->widget != LAYOUT_WIDGET_STATE) *old = true;\n"),
+    ("scene_item_missed_not_in_safe_mode", T, F, MISSED, "\t\tif(value != NULL && state != LAYOUT_ITEM_UNAVAILABLE && !input->safe_mode) *old = true;\n"),
+    ("scene_item_missed_not_when_hot", T, F, MISSED, "\t\tif(value != NULL && state != LAYOUT_ITEM_UNAVAILABLE && input->heat == GUARD_HEAT_NORMAL) *old = true;\n"),
+    ("scene_item_missed_toggles", T, F, MISSED, "\t\tif(value != NULL && state != LAYOUT_ITEM_UNAVAILABLE) *old = !*old;\n"),
+    ("scene_item_unavailable_is_missed_once_seen", T, F, MISSED, "\t\tif(value != NULL) *old = true;\n"),
     ("scene_item_level_not_told", T, F, LEVEL, "\t(void)level;\n"),
     ("scene_item_level_of_last_value", T, F, LEVEL, "\t*level = item_level;\n"),
     ("scene_item_level_of_first_value", T, F, LEVEL, "\tif(*level == 0) *level = item_level;\n"),
@@ -533,8 +561,22 @@ MUTATIONS = [
      IS_CHOICE + "\n\t\t{\n\t\t\tconst choice_t *choice = &choices[index - line_count];", "\t\tif(index >= line_count - 1 && choice_count > 0)\n\t\t{\n"
      "\t\t\tconst choice_t *choice = &choices[index >= line_count ? index - line_count : 0];"),
     ("scene_rows_choice_is_a_line", T, F, "\t\t\trow->kind = SCENE_ROW_ACTION;\n", ""),
-    ("scene_rows_choice_always_enabled", T, F, "\t\t\trow->enabled = choice->enabled;\n", ""),
-    ("scene_rows_choice_never_enabled", T, F, "\t\t\trow->enabled = choice->enabled;", "\t\t\trow->enabled = false;"),
+    ("scene_rows_choice_always_enabled", T, F, ENABLED + "\n", ""),
+    ("scene_rows_choice_never_enabled", T, F, ENABLED, "\t\t\trow->enabled = false;"),
+    # the row that is asked for is the one nav.h counts: behind the lines the world names, also without their texts
+    ("scene_rows_choice_asked_by_position", T, F, ENABLED, "\t\t\trow->enabled = nav_row_acts(nav, index, input->world);"),
+    ("scene_rows_choice_asked_for_the_focus", T, F, ENABLED, "\t\t\trow->enabled = nav_row_acts(nav, nav->row, input->world);"),
+    ("scene_rows_choice_asked_one_row_late", T, F, ENABLED, ENABLED.replace("index - line_count", "index - line_count + 1")),
+    ("scene_rows_choice_enabled_in_focus", T, F, ENABLED, "\t\t\trow->enabled = row->focus || " + ASKED + ";"),
+    # what lies over the screen is not asked: the rows below are those without it
+    ("scene_rows_choice_disabled_under_an_overlay", T, F, ENABLED, "\t\t\trow->enabled = nav_overlay(input->world) == NAV_OVER_NONE && " + ASKED + ";"),
+    ("scene_rows_acts_not_under_an_overlay", T, N,
+     "\tif(row < 0 || row >= nav_rows(nav, world)) return false;", "\tif(nav_overlay(world) != NAV_OVER_NONE || row < 0 || row >= nav_rows(nav, world)) return false;"),
+    # a press that only leads to another screen, and one that only returns something to carry out, both act
+    ("scene_rows_acts_only_by_action", T, N,
+     "\treturn press(&tried, world) != NAV_DO_NOTHING || tried.screen != nav->screen;", "\treturn press(&tried, world) != NAV_DO_NOTHING;"),
+    ("scene_rows_acts_only_by_screen", T, N,
+     "\treturn press(&tried, world) != NAV_DO_NOTHING || tried.screen != nav->screen;", "\tpress(&tried, world);\n\treturn tried.screen != nav->screen;"),
     ("scene_rows_choice_without_text", T, F, "\t\t\tappend(row->text, sizeof(row->text), choice->text);\n", ""),
     ("scene_rows_choice_without_detail", T, F, "\t\t\tappend(row->detail, sizeof(row->detail), choice->detail);\n", ""),
     ("scene_rows_choices_all_the_first", T, F, "\t\t\tconst choice_t *choice = &choices[index - line_count];", "\t\t\tconst choice_t *choice = &choices[0];"),
@@ -561,83 +603,92 @@ MUTATIONS = [
 
     # the menu
     text("scene_text_menu_title", "\tset_title(scene, \"Menü\");", "\tset_title(scene, \"Menu\");"),
-    text("scene_text_menu_dtc", "\t\t{\"Fehlerspeicher\", \"\", true},", "\t\t{\"Fehler\", \"\", true},"),
-    text("scene_text_menu_brightness", "\t\t{\"Helligkeit\", brightness, true},", "\t\t{\"Hell\", brightness, true},"),
+    text("scene_text_menu_dtc", "\t\t{\"Fehlerspeicher\", \"\"},", "\t\t{\"Fehler\", \"\"},"),
+    text("scene_text_menu_brightness", "\t\t{\"Helligkeit\", brightness},", "\t\t{\"Hell\", brightness},"),
     text("scene_text_menu_night", "{\"Nachtmodus\", world->night_mode", "{\"Nacht\", world->night_mode"),
     text("scene_text_menu_web", "{\"Web-Zugriff\", world->release_open", "{\"Web\", world->release_open"),
-    text("scene_text_menu_info", "\t\t{\"Info\", \"\", true},", "\t\t{\"Infos\", \"\", true},"),
-    text("scene_text_menu_settings", "\t\t{\"Einstellungen\", \"\", true},\n\t\t{\"Zurück\", \"\", true},\n\t};\n\n\tappend_percent",
-         "\t\t{\"Einstellung\", \"\", true},\n\t\t{\"Zurück\", \"\", true},\n\t};\n\n\tappend_percent"),
-    text("scene_text_menu_back", "\t\t{\"Einstellungen\", \"\", true},\n\t\t{\"Zurück\", \"\", true},\n\t};\n\n\tappend_percent",
-         "\t\t{\"Einstellungen\", \"\", true},\n\t\t{\"Zurueck\", \"\", true},\n\t};\n\n\tappend_percent"),
+    text("scene_text_menu_info", "\t\t{\"Info\", \"\"},", "\t\t{\"Infos\", \"\"},"),
+    text("scene_text_menu_settings", "\t\t{\"Einstellungen\", \"\"},\n\t\t{\"Zurück\", \"\"},\n\t};\n\n\tappend_percent",
+         "\t\t{\"Einstellung\", \"\"},\n\t\t{\"Zurück\", \"\"},\n\t};\n\n\tappend_percent"),
+    text("scene_text_menu_back", "\t\t{\"Einstellungen\", \"\"},\n\t\t{\"Zurück\", \"\"},\n\t};\n\n\tappend_percent",
+         "\t\t{\"Einstellungen\", \"\"},\n\t\t{\"Zurueck\", \"\"},\n\t};\n\n\tappend_percent"),
     ("scene_menu_brightness_without_number", T, F, "\tappend_percent(brightness, sizeof(brightness), world->brightness);\n", ""),
     ("scene_menu_brightness_of_the_knob", T, F,
      "\tappend_percent(brightness, sizeof(brightness), world->brightness);", "\tappend_percent(brightness, sizeof(brightness), input->nav->value);"),
     ("scene_menu_brightness_clamped", T, F,
      "\tappend_percent(brightness, sizeof(brightness), world->brightness);",
      "\tappend_percent(brightness, sizeof(brightness), world->brightness < 0 ? 0 : world->brightness > 100 ? 100 : world->brightness);"),
-    ("scene_menu_night_swapped", T, F, MENU_NIGHT, "\t\t{\"Nachtmodus\", world->night_mode ? \"aus\" : \"an\", true},\n"),
-    ("scene_menu_night_always_off", T, F, MENU_NIGHT, "\t\t{\"Nachtmodus\", \"aus\", true},\n"),
-    ("scene_menu_night_by_release", T, F, MENU_NIGHT, "\t\t{\"Nachtmodus\", world->release_open ? \"an\" : \"aus\", true},\n"),
-    ("scene_menu_release_swapped", T, F, MENU_WEB, "\t\t{\"Web-Zugriff\", world->release_open ? \"gesperrt\" : \"frei\", true},\n"),
-    ("scene_menu_release_always_locked", T, F, MENU_WEB, "\t\t{\"Web-Zugriff\", \"gesperrt\", true},\n"),
+    ("scene_menu_night_swapped", T, F, MENU_NIGHT, "\t\t{\"Nachtmodus\", world->night_mode ? \"aus\" : \"an\"},\n"),
+    ("scene_menu_night_always_off", T, F, MENU_NIGHT, "\t\t{\"Nachtmodus\", \"aus\"},\n"),
+    ("scene_menu_night_by_release", T, F, MENU_NIGHT, "\t\t{\"Nachtmodus\", world->release_open ? \"an\" : \"aus\"},\n"),
+    ("scene_menu_release_swapped", T, F, MENU_WEB, "\t\t{\"Web-Zugriff\", world->release_open ? \"gesperrt\" : \"frei\"},\n"),
+    ("scene_menu_release_always_locked", T, F, MENU_WEB, "\t\t{\"Web-Zugriff\", \"gesperrt\"},\n"),
     ("scene_menu_release_by_access", T, F,
-     MENU_WEB, "\t\t{\"Web-Zugriff\", access_is_open(input->access, input->now_ms) ? \"frei\" : \"gesperrt\", true},\n"),
-    ("scene_menu_dtc_only_when_it_may_be_read", T, F,
-     "\t\t{\"Fehlerspeicher\", \"\", true},", "\t\t{\"Fehlerspeicher\", \"\", world->can_read || world->flow != DTC_FLOW_IDLE},"),
-    ("scene_menu_night_only_with_brightness", T, F, MENU_NIGHT, "\t\t{\"Nachtmodus\", world->night_mode ? \"an\" : \"aus\", world->brightness > 0},\n"),
+     MENU_WEB, "\t\t{\"Web-Zugriff\", access_is_open(input->access, input->now_ms) ? \"frei\" : \"gesperrt\"},\n"),
+    instead("scene_menu_dtc_only_when_it_may_be_read", "NAV_MENU", 0, "(input->world->can_read || input->world->flow != DTC_FLOW_IDLE)"),
+    instead("scene_menu_night_only_with_brightness", "NAV_MENU", 2, "input->world->brightness > 0"),
     ("scene_menu_rows_swapped", T, F,
      MENU_NIGHT + MENU_WEB, MENU_WEB + MENU_NIGHT),
     ("scene_menu_first_rows_swapped", T, F,
-     "\t\t{\"Fehlerspeicher\", \"\", true},\n\t\t{\"Helligkeit\", brightness, true},\n", "\t\t{\"Helligkeit\", brightness, true},\n\t\t{\"Fehlerspeicher\", \"\", true},\n"),
+     "\t\t{\"Fehlerspeicher\", \"\"},\n\t\t{\"Helligkeit\", brightness},\n", "\t\t{\"Helligkeit\", brightness},\n\t\t{\"Fehlerspeicher\", \"\"},\n"),
     ("scene_menu_last_rows_swapped", T, F,
-     "\t\t{\"Info\", \"\", true},\n\t\t{\"Einstellungen\", \"\", true},\n", "\t\t{\"Einstellungen\", \"\", true},\n\t\t{\"Info\", \"\", true},\n"),
+     "\t\t{\"Info\", \"\"},\n\t\t{\"Einstellungen\", \"\"},\n", "\t\t{\"Einstellungen\", \"\"},\n\t\t{\"Info\", \"\"},\n"),
 
     # the fault memory
     text("scene_text_dtc_title", "\tset_title(scene, \"Fehlerspeicher\");\n\tset_note(scene, text_block(input->read_block));",
          "\tset_title(scene, \"Fehler\");\n\tset_note(scene, text_block(input->read_block));"),
-    text("scene_text_dtc_read", "{\"Lesen\", \"\", world->can_read}", "{\"Lesen …\", \"\", world->can_read}"),
-    text("scene_text_dtc_view", "{\"Liste ansehen\", \"\", outcome}", "{\"Liste\", \"\", outcome}"),
-    text("scene_text_dtc_old", "{\"Liste vor dem Löschen\", \"\", world->old_lines > 0}", "{\"Liste vor dem Loeschen\", \"\", world->old_lines > 0}"),
+    text("scene_text_dtc_read", "{\"Lesen\", \"\"}", "{\"Lesen …\", \"\"}"),
+    text("scene_text_dtc_view", "{\"Liste ansehen\", \"\"}", "{\"Liste\", \"\"}"),
+    text("scene_text_dtc_old", "{\"Liste vor dem Löschen\", \"\"}", "{\"Liste vor dem Loeschen\", \"\"}"),
     # the list from before a clear is not always one that was cleared: the words must not say so
-    text("scene_text_dtc_old_called_cleared", "{\"Liste vor dem Löschen\", \"\", world->old_lines > 0}", "{\"Zuletzt gelöscht\", \"\", world->old_lines > 0}"),
-    text("scene_text_dtc_old_is_the_title", "{\"Liste vor dem Löschen\", \"\", world->old_lines > 0}", "{\"Vor dem Löschen\", \"\", world->old_lines > 0}"),
-    text("scene_text_dtc_back", DTC_OLD + "\t\t{\"Zurück\", \"\", true},", DTC_OLD + "\t\t{\"Zurueck\", \"\", true},"),
-    ("scene_dtc_read_always_offered", T, F, DTC_READ, "\t\t{\"Lesen\", \"\", true},\n"),
-    ("scene_dtc_read_by_block", T, F, DTC_READ, "\t\t{\"Lesen\", \"\", input->read_block == DTC_FLOW_ALLOWED},\n"),
-    ("scene_dtc_read_by_clear", T, F, DTC_READ, "\t\t{\"Lesen\", \"\", world->can_clear},\n"),
-    ("scene_dtc_view_not_for_list", T, F, OUTCOME, "\tbool outcome = world->flow == DTC_FLOW_CLEARED || world->flow == DTC_FLOW_FAILED || world->flow == DTC_FLOW_UNKNOWN;"),
-    ("scene_dtc_view_not_for_cleared", T, F, OUTCOME, "\tbool outcome = world->flow == DTC_FLOW_LIST || world->flow == DTC_FLOW_FAILED || world->flow == DTC_FLOW_UNKNOWN;"),
-    ("scene_dtc_view_not_for_failed", T, F, OUTCOME, "\tbool outcome = world->flow == DTC_FLOW_LIST || world->flow == DTC_FLOW_CLEARED || world->flow == DTC_FLOW_UNKNOWN;"),
-    ("scene_dtc_view_not_for_unknown", T, F, OUTCOME, "\tbool outcome = world->flow == DTC_FLOW_LIST || world->flow == DTC_FLOW_CLEARED || world->flow == DTC_FLOW_FAILED;"),
-    ("scene_dtc_view_while_reading", T, F,
-     OUTCOME, "\tbool outcome = world->flow == DTC_FLOW_READING || world->flow == DTC_FLOW_LIST || world->flow == DTC_FLOW_CLEARED || "
-     "world->flow == DTC_FLOW_FAILED || world->flow == DTC_FLOW_UNKNOWN;"),
-    ("scene_dtc_view_while_clearing", T, F, OUTCOME, "\tbool outcome = world->flow >= DTC_FLOW_LIST && world->flow <= DTC_FLOW_UNKNOWN;"),
-    ("scene_dtc_view_unless_idle", T, F, OUTCOME, "\tbool outcome = world->flow != DTC_FLOW_IDLE;"),
-    ("scene_dtc_view_by_phase_of_flow", T, F,
-     OUTCOME, "\tbool outcome = input->flow->phase == DTC_FLOW_LIST || input->flow->phase == DTC_FLOW_CLEARED || input->flow->phase == DTC_FLOW_FAILED || "
-     "input->flow->phase == DTC_FLOW_UNKNOWN;"),
-    ("scene_dtc_view_by_low_byte", T, F,
-     OUTCOME, "\tunsigned phase = (unsigned)world->flow & 0xFFu;\n\tbool outcome = phase == DTC_FLOW_LIST || phase == DTC_FLOW_CLEARED || "
-     "phase == DTC_FLOW_FAILED || phase == DTC_FLOW_UNKNOWN;"),
-    ("scene_dtc_view_always", T, F, OUTCOME, "\tbool outcome = true;"),
-    ("scene_dtc_view_by_lines", T, F, OUTCOME, "\tbool outcome = world->list_lines > 0;"),
-    ("scene_dtc_old_always", T, F, DTC_OLD, "\t\t{\"Liste vor dem Löschen\", \"\", true},\n"),
-    ("scene_dtc_old_without_lines", T, F, DTC_OLD, "\t\t{\"Liste vor dem Löschen\", \"\", world->old_lines >= 0},\n"),
-    ("scene_dtc_old_with_negative_lines", T, F, DTC_OLD, "\t\t{\"Liste vor dem Löschen\", \"\", world->old_lines != 0},\n"),
-    ("scene_dtc_old_needs_two_lines", T, F, DTC_OLD, "\t\t{\"Liste vor dem Löschen\", \"\", world->old_lines > 1},\n"),
-    ("scene_dtc_old_needs_the_lines", T, F, DTC_OLD, "\t\t{\"Liste vor dem Löschen\", \"\", world->old_lines > 0 && input->old != NULL},\n"),
-    ("scene_dtc_old_by_lines_of_outcome", T, F, DTC_OLD, "\t\t{\"Liste vor dem Löschen\", \"\", world->cleared_lines > 0},\n"),
-    ("scene_dtc_old_by_lines_of_list", T, F, DTC_OLD, "\t\t{\"Liste vor dem Löschen\", \"\", world->list_lines > 0},\n"),
+    text("scene_text_dtc_old_called_cleared", "{\"Liste vor dem Löschen\", \"\"}", "{\"Zuletzt gelöscht\", \"\"}"),
+    text("scene_text_dtc_old_is_the_title", "{\"Liste vor dem Löschen\", \"\"}", "{\"Vor dem Löschen\", \"\"}"),
+    text("scene_text_dtc_back", DTC_OLD + "\t\t{\"Zurück\", \"\"},", DTC_OLD + "\t\t{\"Zurueck\", \"\"},"),
+    instead("scene_dtc_read_always_offered", "NAV_DTC", 0, "true"),
+    instead("scene_dtc_read_by_block", "NAV_DTC", 0, "input->read_block == DTC_FLOW_ALLOWED"),
+    instead("scene_dtc_read_by_clear", "NAV_DTC", 0, "input->world->can_clear"),
+    instead("scene_dtc_view_not_for_list", "NAV_DTC", 1,
+            "(input->world->flow == DTC_FLOW_CLEARED || input->world->flow == DTC_FLOW_FAILED || input->world->flow == DTC_FLOW_UNKNOWN)"),
+    instead("scene_dtc_view_not_for_cleared", "NAV_DTC", 1,
+            "(input->world->flow == DTC_FLOW_LIST || input->world->flow == DTC_FLOW_FAILED || input->world->flow == DTC_FLOW_UNKNOWN)"),
+    instead("scene_dtc_view_not_for_failed", "NAV_DTC", 1,
+            "(input->world->flow == DTC_FLOW_LIST || input->world->flow == DTC_FLOW_CLEARED || input->world->flow == DTC_FLOW_UNKNOWN)"),
+    instead("scene_dtc_view_not_for_unknown", "NAV_DTC", 1,
+            "(input->world->flow == DTC_FLOW_LIST || input->world->flow == DTC_FLOW_CLEARED || input->world->flow == DTC_FLOW_FAILED)"),
+    instead("scene_dtc_view_while_reading", "NAV_DTC", 1,
+            "(input->world->flow == DTC_FLOW_READING || input->world->flow == DTC_FLOW_LIST || input->world->flow == DTC_FLOW_CLEARED || "
+            "input->world->flow == DTC_FLOW_FAILED || input->world->flow == DTC_FLOW_UNKNOWN)"),
+    instead("scene_dtc_view_while_clearing", "NAV_DTC", 1, "(input->world->flow >= DTC_FLOW_LIST && input->world->flow <= DTC_FLOW_UNKNOWN)"),
+    instead("scene_dtc_view_unless_idle", "NAV_DTC", 1, "input->world->flow != DTC_FLOW_IDLE"),
+    instead("scene_dtc_view_by_phase_of_flow", "NAV_DTC", 1,
+            "(input->flow->phase == DTC_FLOW_LIST || input->flow->phase == DTC_FLOW_CLEARED || input->flow->phase == DTC_FLOW_FAILED || "
+            "input->flow->phase == DTC_FLOW_UNKNOWN)"),
+    instead("scene_dtc_view_by_low_byte", "NAV_DTC", 1,
+            "(((unsigned)input->world->flow & 0xFFu) == DTC_FLOW_LIST || ((unsigned)input->world->flow & 0xFFu) == DTC_FLOW_CLEARED || "
+            "((unsigned)input->world->flow & 0xFFu) == DTC_FLOW_FAILED || ((unsigned)input->world->flow & 0xFFu) == DTC_FLOW_UNKNOWN)"),
+    instead("scene_dtc_view_always", "NAV_DTC", 1, "true"),
+    instead("scene_dtc_view_by_lines", "NAV_DTC", 1, "input->world->list_lines > 0"),
+    instead("scene_dtc_old_always", "NAV_DTC", 2, "true"),
+    instead("scene_dtc_old_without_lines", "NAV_DTC", 2, "input->world->old_lines >= 0"),
+    instead("scene_dtc_old_with_negative_lines", "NAV_DTC", 2, "input->world->old_lines != 0"),
+    instead("scene_dtc_old_needs_two_lines", "NAV_DTC", 2, "input->world->old_lines > 1"),
+    instead("scene_dtc_old_needs_the_lines", "NAV_DTC", 2, "(input->world->old_lines > 0 && input->old != NULL)"),
+    instead("scene_dtc_old_by_lines_of_outcome", "NAV_DTC", 2, "input->world->cleared_lines > 0"),
+    instead("scene_dtc_old_by_lines_of_list", "NAV_DTC", 2, "input->world->list_lines > 0"),
+    # the same rules where they live now: removed in nav.c, the row of the scene is enabled although it must not be
+    ("scene_dtc_read_acts_without_leave", T, N,
+     "\t\tcase DTC_READ:\n\t\t\treturn start_read(nav, world);", "\t\tcase DTC_READ:\n\t\t\tenter(nav, NAV_DTC_BUSY, 0);\n\t\t\treturn NAV_DO_READ;"),
+    ("scene_dtc_view_acts_without_outcome", T, N,
+     "\t\t\tif(outcome != NAV_DTC) enter(nav, outcome, 0);", "\t\t\tenter(nav, outcome != NAV_DTC ? outcome : NAV_DTC_FAILED, 0);"),
+    ("scene_dtc_old_acts_without_list", T, N, "\t\t\tif(world->old_lines > 0) enter(nav, NAV_DTC_OLD, 0);", "\t\t\tenter(nav, NAV_DTC_OLD, 0);"),
     ("scene_dtc_without_note", T, F, "\tset_note(scene, text_block(input->read_block));\n", ""),
     ("scene_dtc_note_of_clear", T, F, "\tset_note(scene, text_block(input->read_block));", "\tset_note(scene, text_block(input->clear_block));"),
     ("scene_dtc_note_only_when_blocked_by_world", T, F,
-     "\tset_note(scene, text_block(input->read_block));", "\tif(!world->can_read) set_note(scene, text_block(input->read_block));"),
+     "\tset_note(scene, text_block(input->read_block));", "\tif(!input->world->can_read) set_note(scene, text_block(input->read_block));"),
     ("scene_dtc_rows_swapped", T, F, DTC_VIEW + DTC_OLD_WHY + DTC_OLD, DTC_OLD_WHY + DTC_OLD + DTC_VIEW),
-    ("scene_dtc_stand_by_world", T, F, STAND, "\tswitch(world->flow)\n"),
+    ("scene_dtc_stand_by_world", T, F, STAND, "\tswitch(input->world->flow)\n"),
     ("scene_dtc_stand_by_low_byte", T, F, STAND, "\tswitch((dtc_flow_phase_t)((unsigned)input->flow->phase & 0xFFu))\n"),
-    ("scene_dtc_stand_only_when_read_allowed", T, F, STAND, "\tif(world->can_read) switch(input->flow->phase)\n"),
+    ("scene_dtc_stand_only_when_read_allowed", T, F, STAND, "\tif(input->world->can_read) switch(input->flow->phase)\n"),
     ("scene_dtc_stand_only_without_note", T, F, STAND, "\tif(scene->note[0] == '\\0') switch(input->flow->phase)\n"),
     ("scene_dtc_stand_summary_in_every_phase", T, F,
      STAND, "\tif(input->summary != NULL) add_summary(scene, input->summary);\n\telse switch(input->flow->phase)\n"),
@@ -693,12 +744,12 @@ MUTATIONS = [
     ("scene_dtc_stand_failed_only_with_reason", T, F,
      STAND_FAILED, "\t\tcase DTC_FLOW_FAILED:\n\t\t\tadd_text(scene, input->flow->reason[0] != '\\0' ? \"Letzter Auftrag fehlgeschlagen\" : \"Noch nicht gelesen\");\n\t\t\tbreak;\n"),
     ("scene_dtc_stand_idle_with_old_list_is_cleared", T, F,
-     STAND_IDLE, "\t\tdefault:\n\t\t\tadd_text(scene, world->old_lines > 0 ? \"Gelöscht\" : \"Noch nicht gelesen\");\n\t\t\tbreak;\n"),
+     STAND_IDLE, "\t\tdefault:\n\t\t\tadd_text(scene, input->world->old_lines > 0 ? \"Gelöscht\" : \"Noch nicht gelesen\");\n\t\t\tbreak;\n"),
     ("scene_dtc_stand_idle_with_numbers_is_list", T, F,
      STAND_IDLE, "\t\tdefault:\n\t\t\tadd_text(scene, input->flow->read_seq != 0 ? \"Liste gelesen\" : \"Noch nicht gelesen\");\n\t\t\tbreak;\n"),
     ("scene_dtc_stand_only_with_focus_on_a_row", T, F, STAND, "\tif(input->nav->row >= 0 && input->nav->row < COUNT(choices)) switch(input->flow->phase)\n"),
     ("scene_dtc_stand_list_only_while_not_clearable", T, F,
-     STAND_SUMMARY, STAND_SUMMARY.replace("else add_text(scene, \"Liste gelesen\");", "else add_text(scene, world->can_clear ? \"\" : \"Liste gelesen\");")),
+     STAND_SUMMARY, STAND_SUMMARY.replace("else add_text(scene, \"Liste gelesen\");", "else add_text(scene, input->world->can_clear ? \"\" : \"Liste gelesen\");")),
     ("scene_dtc_stand_twice", T, F, STAND_END, STAND_END + "\tadd_text(scene, \"\");\n"),
     ("scene_dtc_stand_as_note", T, F,
      STAND_IDLE, "\t\tdefault:\n\t\t\tif(scene->note[0] == '\\0') set_note(scene, \"Noch nicht gelesen\");\n\t\t\tadd_text(scene, \"Noch nicht gelesen\");\n\t\t\tbreak;\n"),
@@ -802,28 +853,31 @@ MUTATIONS = [
     text("scene_text_busy_hint", "\"ca. 35 s – Live-Werte pausieren\"", "\"ca. 35 s - Live-Werte pausieren\""),
 
     # the list of the own read
-    text("scene_text_list_title", "\tset_title(scene, \"Fehlerspeicher\");\n\tif(world->can_clear)", "\tset_title(scene, \"Liste\");\n\tif(world->can_clear)"),
-    text("scene_text_list_read", "{\"Erneut lesen\", \"\", world->can_read}", "{\"Lesen\", \"\", world->can_read}"),
-    text("scene_text_list_clear", "{\"Fehler löschen\", \"\", world->can_clear}", "{\"Löschen\", \"\", world->can_clear}"),
-    text("scene_text_list_back", LIST_CLEAR + "\t\t{\"Zurück\", \"\", true},", LIST_CLEAR + "\t\t{\"Zurueck\", \"\", true},"),
-    ("scene_list_read_always_offered", T, F, LIST_READ, "\t\t{\"Erneut lesen\", \"\", true},\n"),
-    ("scene_list_read_by_clear", T, F, LIST_READ, "\t\t{\"Erneut lesen\", \"\", world->can_clear},\n"),
-    ("scene_list_read_by_block", T, F, LIST_READ, "\t\t{\"Erneut lesen\", \"\", input->read_block == DTC_FLOW_ALLOWED},\n"),
-    ("scene_list_clear_always_offered", T, F, LIST_CLEAR, "\t\t{\"Fehler löschen\", \"\", true},\n"),
-    ("scene_list_clear_by_read", T, F, LIST_CLEAR, "\t\t{\"Fehler löschen\", \"\", world->can_read},\n"),
-    ("scene_list_clear_by_block", T, F, LIST_CLEAR, "\t\t{\"Fehler löschen\", \"\", input->clear_block == DTC_FLOW_ALLOWED},\n"),
-    ("scene_list_clear_only_with_time_left", T, F,
-     LIST_CLEAR, "\t\t{\"Fehler löschen\", \"\", world->can_clear && dtc_flow_seconds_left(input->flow, input->now_ms) > 0},\n"),
+    text("scene_text_list_title", "\tset_title(scene, \"Fehlerspeicher\");\n\tif(input->world->can_clear)", "\tset_title(scene, \"Liste\");\n\tif(input->world->can_clear)"),
+    text("scene_text_list_read", "{\"Erneut lesen\", \"\"}", "{\"Lesen\", \"\"}"),
+    text("scene_text_list_clear", "{\"Fehler löschen\", \"\"}", "{\"Löschen\", \"\"}"),
+    text("scene_text_list_back", LIST_CLEAR + "\t\t{\"Zurück\", \"\"},", LIST_CLEAR + "\t\t{\"Zurueck\", \"\"},"),
+    instead("scene_list_read_always_offered", "NAV_DTC_LIST", 0, "true"),
+    instead("scene_list_read_by_clear", "NAV_DTC_LIST", 0, "input->world->can_clear"),
+    instead("scene_list_read_by_block", "NAV_DTC_LIST", 0, "input->read_block == DTC_FLOW_ALLOWED"),
+    instead("scene_list_clear_always_offered", "NAV_DTC_LIST", 1, "true"),
+    instead("scene_list_clear_by_read", "NAV_DTC_LIST", 1, "input->world->can_read"),
+    instead("scene_list_clear_by_block", "NAV_DTC_LIST", 1, "input->clear_block == DTC_FLOW_ALLOWED"),
+    instead("scene_list_clear_only_with_time_left", "NAV_DTC_LIST", 1, "(input->world->can_clear && dtc_flow_seconds_left(input->flow, input->now_ms) > 0)"),
+    # the same rules where they live now
+    ("scene_list_read_acts_without_leave", T, N,
+     "\t\tcase LIST_READ:\n\t\t\treturn start_read(nav, world);", "\t\tcase LIST_READ:\n\t\t\tenter(nav, NAV_DTC_BUSY, 0);\n\t\t\treturn NAV_DO_READ;"),
+    ("scene_list_clear_acts_without_leave", T, N, "\t\t\tif(!world->can_clear) break;\n", ""),
     ("scene_list_rows_swapped", T, F, LIST_READ + LIST_CLEAR, LIST_CLEAR + LIST_READ),
     ("scene_list_note_by_block", T, F, LIST_NOTE, "\tif(input->clear_block == DTC_FLOW_ALLOWED)\n\t{\n\t\tset_note(scene, \"Löschen möglich: \");"),
     ("scene_list_note_always_time", T, F, LIST_NOTE, "\tif(true)\n\t{\n\t\tset_note(scene, \"Löschen möglich: \");"),
     ("scene_list_note_never_time", T, F, LIST_NOTE, "\tif(false)\n\t{\n\t\tset_note(scene, \"Löschen möglich: \");"),
     ("scene_list_note_needs_a_focus", T, F,
-     LIST_NOTE, "\tif(world->can_clear && input->nav->row >= 0)\n\t{\n\t\tset_note(scene, \"Löschen möglich: \");"),
+     LIST_NOTE, "\tif(input->world->can_clear && input->nav->row >= 0)\n\t{\n\t\tset_note(scene, \"Löschen möglich: \");"),
     ("scene_list_note_time_only_with_codes", T, F,
-     LIST_NOTE, "\tif(world->can_clear && input->flow->list_count > 0)\n\t{\n\t\tset_note(scene, \"Löschen möglich: \");"),
+     LIST_NOTE, "\tif(input->world->can_clear && input->flow->list_count > 0)\n\t{\n\t\tset_note(scene, \"Löschen möglich: \");"),
     ("scene_list_note_by_time_left", T, F,
-     LIST_NOTE, "\tif(world->can_clear && dtc_flow_seconds_left(input->flow, input->now_ms) > 0)\n\t{\n\t\tset_note(scene, \"Löschen möglich: \");"),
+     LIST_NOTE, "\tif(input->world->can_clear && dtc_flow_seconds_left(input->flow, input->now_ms) > 0)\n\t{\n\t\tset_note(scene, \"Löschen möglich: \");"),
     text("scene_text_list_note", "\"Löschen möglich: \"", "\"Löschen möglich:\""),
     ("scene_list_note_without_time", T, F, LIST_TIME, ""),
     ("scene_list_note_time_of_release", T, F,
@@ -918,7 +972,7 @@ MUTATIONS = [
 
     # the failure
     ("scene_failed_is_no_notice", T, F, "\tscene->kind = SCENE_NOTICE;\n\tset_note(scene, \"Knopf drücken\");", "\tset_note(scene, \"Knopf drücken\");"),
-    text("scene_text_failed_note", "\"Knopf drücken\"", "\"Knopf\""),
+    text("scene_text_failed_note", "set_note(scene, \"Knopf drücken\")", "set_note(scene, \"Knopf\")"),
     ("scene_failed_note_only_when_failed", T, F,
      "\tscene->kind = SCENE_NOTICE;\n\tset_note(scene, \"Knopf drücken\");\n", "\tscene->kind = SCENE_NOTICE;\n"
      "\tif(flow->phase == DTC_FLOW_FAILED || flow->phase == DTC_FLOW_UNKNOWN) set_note(scene, \"Knopf drücken\");\n"),
@@ -986,8 +1040,8 @@ MUTATIONS = [
 
     # the web access
     text("scene_text_web_title", "\tset_title(scene, \"Web-Zugriff\");", "\tset_title(scene, \"Web\");"),
-    text("scene_text_web_release", "\t\t{\"Freigabe\", release, true},", "\t\t{\"Freigeben\", release, true},"),
-    text("scene_text_web_back", "\t\t{\"Freigabe\", release, true},\n\t\t{\"Zurück\", \"\", true},", "\t\t{\"Freigabe\", release, true},\n\t\t{\"Zurueck\", \"\", true},"),
+    text("scene_text_web_release", "\t\t{\"Freigabe\", release},", "\t\t{\"Freigeben\", release},"),
+    text("scene_text_web_back", "\t\t{\"Freigabe\", release},\n\t\t{\"Zurück\", \"\"},", "\t\t{\"Freigabe\", release},\n\t\t{\"Zurueck\", \"\"},"),
     text("scene_text_web_off", "\tchar release[SCENE_SHORT_SIZE] = \"aus\";", "\tchar release[SCENE_SHORT_SIZE] = \"zu\";"),
     text("scene_text_web_on", "\"an – noch \"", "\"an - noch \""),
     ("scene_web_release_by_world", T, F, RELEASE_ON, "\tif(input->world->release_open)\n"),
@@ -1052,23 +1106,56 @@ MUTATIONS = [
     text("scene_text_settings_reversed", "\"umgekehrt\"", "\"andersherum\""),
     text("scene_text_settings_normal", "\"umgekehrt\" : \"normal\"", "\"umgekehrt\" : \"üblich\""),
     text("scene_text_settings_ap", "{\"Hotspot\", input->ap_on", "{\"Zugangspunkt\", input->ap_on"),
-    text("scene_text_settings_reboot", "\t\t{\"Neustart\", \"\", true},", "\t\t{\"Neu starten\", \"\", true},"),
-    text("scene_text_settings_previous", "{\"Vorherige Version\", \"\", input->world->previous_firmware}", "{\"Alte Version\", \"\", input->world->previous_firmware}"),
-    text("scene_text_settings_reset", "\t\t{\"Werkseinstellungen\", \"\", true},", "\t\t{\"Zurücksetzen\", \"\", true},"),
-    text("scene_text_settings_back", "\t\t{\"Werkseinstellungen\", \"\", true},\n\t\t{\"Zurück\", \"\", true},", "\t\t{\"Werkseinstellungen\", \"\", true},\n\t\t{\"Zurueck\", \"\", true},"),
-    ("scene_settings_direction_swapped", T, F, SET_REVERSE, "\t\t{\"Drehrichtung\", input->reverse ? \"normal\" : \"umgekehrt\", true},\n"),
-    ("scene_settings_direction_always_normal", T, F, SET_REVERSE, "\t\t{\"Drehrichtung\", \"normal\", true},\n"),
-    ("scene_settings_direction_by_access_point", T, F, SET_REVERSE, "\t\t{\"Drehrichtung\", input->ap_on ? \"umgekehrt\" : \"normal\", true},\n"),
-    ("scene_settings_access_point_swapped", T, F, SET_AP, "\t\t{\"Hotspot\", input->ap_on ? \"aus\" : \"an\", true},\n"),
-    ("scene_settings_access_point_always_off", T, F, SET_AP, "\t\t{\"Hotspot\", \"aus\", true},\n"),
-    ("scene_settings_access_point_by_direction", T, F, SET_AP, "\t\t{\"Hotspot\", input->reverse ? \"an\" : \"aus\", true},\n"),
-    ("scene_settings_access_point_not_in_safe_mode", T, F, SET_AP, "\t\t{\"Hotspot\", input->ap_on ? \"an\" : \"aus\", !input->safe_mode},\n"),
-    ("scene_settings_previous_always_offered", T, F, SET_PREVIOUS, "\t\t{\"Vorherige Version\", \"\", true},\n"),
-    ("scene_settings_previous_never_offered", T, F, SET_PREVIOUS, "\t\t{\"Vorherige Version\", \"\", false},\n"),
-    ("scene_settings_previous_not_during_update", T, F,
-     SET_PREVIOUS, "\t\t{\"Vorherige Version\", \"\", input->world->previous_firmware && !input->world->update_pending},\n"),
+    text("scene_text_settings_reboot", "\t\t{\"Neustart\", \"\"},", "\t\t{\"Neu starten\", \"\"},"),
+    text("scene_text_settings_previous", "{\"Vorherige Version\", \"\"}", "{\"Alte Version\", \"\"}"),
+    text("scene_text_settings_reset", "\t\t{\"Werkseinstellungen\", \"\"},", "\t\t{\"Zurücksetzen\", \"\"},"),
+    text("scene_text_settings_back", "\t\t{\"Werkseinstellungen\", \"\"},\n\t\t{\"Zurück\", \"\"},", "\t\t{\"Werkseinstellungen\", \"\"},\n\t\t{\"Zurueck\", \"\"},"),
+    ("scene_settings_direction_swapped", T, F, SET_REVERSE, "\t\t{\"Drehrichtung\", input->reverse ? \"normal\" : \"umgekehrt\"},\n"),
+    ("scene_settings_direction_always_normal", T, F, SET_REVERSE, "\t\t{\"Drehrichtung\", \"normal\"},\n"),
+    ("scene_settings_direction_by_access_point", T, F, SET_REVERSE, "\t\t{\"Drehrichtung\", input->ap_on ? \"umgekehrt\" : \"normal\"},\n"),
+    ("scene_settings_access_point_swapped", T, F, SET_AP, "\t\t{\"Hotspot\", input->ap_on ? \"aus\" : \"an\"},\n"),
+    ("scene_settings_access_point_always_off", T, F, SET_AP, "\t\t{\"Hotspot\", \"aus\"},\n"),
+    ("scene_settings_access_point_by_direction", T, F, SET_AP, "\t\t{\"Hotspot\", input->reverse ? \"an\" : \"aus\"},\n"),
+    instead("scene_settings_access_point_not_in_safe_mode", "NAV_SETTINGS", 1, "!input->safe_mode"),
+    # the own access point that stays on whatever is asked (world->ap_kept): nav.h ignores the press, and the
+    # scene keeps no rule of its own - not by what it is told of the safe mode, not by whether it is on
+    instead("scene_settings_access_point_enabled_while_kept", "NAV_SETTINGS", 1, "true"),
+    instead("scene_settings_access_point_disabled_while_on", "NAV_SETTINGS", 1, "!input->ap_on"),
+    instead("scene_settings_access_point_kept_only_while_on", "NAV_SETTINGS", 1, "!(input->world->ap_kept && input->ap_on)"),
+    instead("scene_settings_access_point_kept_only_in_safe_mode", "NAV_SETTINGS", 1, "!(input->world->ap_kept && input->safe_mode)"),
+    ("scene_settings_access_point_kept_disables_every_row", T, F,
+     ENABLED, "\t\t\trow->enabled = !(nav->screen == NAV_SETTINGS && input->world->ap_kept) && " + ASKED + ";"),
+    ("scene_settings_access_point_shown_on_while_kept", T, F, SET_AP, "\t\t{\"Hotspot\", (input->ap_on || input->world->ap_kept) ? \"an\" : \"aus\"},\n"),
+    ("scene_settings_access_point_without_detail_while_kept", T, F, SET_AP, "\t\t{\"Hotspot\", input->world->ap_kept ? \"\" : input->ap_on ? \"an\" : \"aus\"},\n"),
+    # the same rule where it lives, removed in nav.c
+    ("scene_settings_access_point_acts_while_kept", T, N, NAV_SET_AP, "\t\t\treturn NAV_DO_AP_TOGGLE;"),
+    instead("scene_settings_previous_always_offered", "NAV_SETTINGS", 3, "true"),
+    instead("scene_settings_previous_never_offered", "NAV_SETTINGS", 3, "false"),
+    instead("scene_settings_previous_not_during_update", "NAV_SETTINGS", 3,
+            "(input->world->previous_firmware && !input->world->update_pending && " + ASKED + ")"),
+    # the scene as it was before a row was enabled by what a press does: restart and factory reset always, the
+    # previous version with a firmware in the other slot - also while the own request is under way
+    ("scene_settings_enabled_whatever_is_under_way", T, F,
+     ENABLED, "\t\t\trow->enabled = nav->screen == NAV_SETTINGS ? index != 3 || input->world->previous_firmware : " + ASKED + ";"),
+    instead("scene_settings_restart_enabled_while_under_way", "NAV_SETTINGS", 2, "true"),
+    instead("scene_settings_reset_enabled_while_under_way", "NAV_SETTINGS", 4, "true"),
+    instead("scene_settings_previous_enabled_while_under_way", "NAV_SETTINGS", 3, "input->world->previous_firmware"),
+    instead("scene_settings_restart_by_phase_of_flow", "NAV_SETTINGS", 2,
+            "!(input->flow->phase == DTC_FLOW_READ_SENT || input->flow->phase == DTC_FLOW_READING || input->flow->phase == DTC_FLOW_CLEAR_SENT || "
+            "input->flow->phase == DTC_FLOW_CLEARING)"),
+    instead("scene_settings_direction_disabled_while_under_way", "NAV_SETTINGS", 0, ASKED + " && nav_row_acts(nav, 2, input->world)"),
+    instead("scene_settings_back_disabled_while_under_way", "NAV_SETTINGS", 5, "nav_row_acts(nav, 2, input->world)"),
+    # the same rule where it lives now, removed in nav.c phase by phase
+    ("scene_settings_asks_while_under_way", T, N, "\tif(under_way(world->flow)) return;\n", "\t(void)world;\n"),
+    ("scene_settings_asks_while_read_sent", T, N, NAV_UNDER_WAY, NAV_UNDER_WAY.replace("flow == DTC_FLOW_READ_SENT || ", "")),
+    ("scene_settings_asks_while_reading", T, N, NAV_UNDER_WAY, NAV_UNDER_WAY.replace("flow == DTC_FLOW_READING || ", "")),
+    ("scene_settings_asks_while_clear_sent", T, N, NAV_UNDER_WAY, NAV_UNDER_WAY.replace("flow == DTC_FLOW_CLEAR_SENT || ", "")),
+    ("scene_settings_asks_while_clearing", T, N, NAV_UNDER_WAY, NAV_UNDER_WAY.replace(" || flow == DTC_FLOW_CLEARING", "")),
+    ("scene_settings_asks_not_after_the_list", T, N, NAV_UNDER_WAY, NAV_UNDER_WAY.replace(";", " || flow == DTC_FLOW_LIST;")),
+    ("scene_settings_previous_acts_without_firmware", T, N,
+     "\t\t\tif(world->previous_firmware) ask(nav, NAV_DO_PREVIOUS_FIRMWARE, world);", "\t\t\task(nav, NAV_DO_PREVIOUS_FIRMWARE, world);"),
     ("scene_settings_rows_swapped", T, F,
-     "\t\t{\"Neustart\", \"\", true},\n" + SET_PREVIOUS, SET_PREVIOUS + "\t\t{\"Neustart\", \"\", true},\n"),
+     "\t\t{\"Neustart\", \"\"},\n" + SET_PREVIOUS, SET_PREVIOUS + "\t\t{\"Neustart\", \"\"},\n"),
     ("scene_settings_first_rows_swapped", T, F, SET_REVERSE + SET_AP, SET_AP + SET_REVERSE),
 
     # what lies over the screen
@@ -1132,7 +1219,9 @@ MUTATIONS = [
     ("scene_update_without_answer", T, F, UPDATE_2, ""),
     ("scene_update_lines_swapped", T, F, UPDATE_1 + UPDATE_2, UPDATE_2 + UPDATE_1),
     text("scene_text_update", "\"Update in Ordnung?\"", "\"Update gut?\""),
-    text("scene_text_update_answer", "\"Knopf drücken oder Bildschirm berühren\"", "\"Knopf drücken\""),
+    # the knob alone answers (nav.h): the screen invites no touch
+    text("scene_text_update_invites_a_touch", "add_over_text(scene, \"Knopf drücken\")", "add_over_text(scene, \"Knopf drücken oder Bildschirm berühren\")"),
+    text("scene_text_update_answer", "add_over_text(scene, \"Knopf drücken\")", "add_over_text(scene, \"Knopf\")"),
     text("scene_text_update_else", "\"sonst alte Version in \"", "\"sonst alte Version in\""),
     ("scene_update_without_time", T, F, UPDATE_LEFT, ""),
     ("scene_update_time_in_seconds", T, F, UPDATE_LEFT, "\t\t\tappend_number(line, SCENE_TEXT_SIZE, input->update_left_s);\n"),
@@ -1223,15 +1312,15 @@ MUTATIONS = [
     ("scene_build_busy_without_state", T, F, "\t\t\tbuild_busy(input, state, scene);", "\t\t\tbuild_busy(input, NULL, scene);"),
     ("scene_build_failed_without_state", T, F, "\t\t\tbuild_failed(input, state, scene);", "\t\t\tbuild_failed(input, NULL, scene);"),
     text("scene_text_cleared_title", "\t\t\tset_title(scene, \"Gelöscht\");", "\t\t\tset_title(scene, \"Geloescht\");"),
-    text("scene_text_cleared_done", "{{\"Fertig\", \"\", true}}", "{{\"OK\", \"\", true}}"),
-    ("scene_cleared_done_disabled", T, F, "{{\"Fertig\", \"\", true}}", "{{\"Fertig\", \"\", false}}"),
+    text("scene_text_cleared_done", "{{\"Fertig\", \"\"}}", "{{\"OK\", \"\"}}"),
+    instead("scene_cleared_done_disabled", "NAV_DTC_CLEARED", 0, "false"),
     ("scene_cleared_lines_of_old_list", T, F, CLEARED, "\t\t\tset_title(scene, \"Gelöscht\");\n\t\t\tbuild_rows(input, input->old, NULL, done, COUNT(done), scene);"),
     ("scene_cleared_lines_of_list", T, F, CLEARED, "\t\t\tset_title(scene, \"Gelöscht\");\n\t\t\tbuild_rows(input, input->list, NULL, done, COUNT(done), scene);"),
     ("scene_cleared_ends_with_back", T, F, CLEARED, "\t\t\t(void)done;\n\t\t\tset_title(scene, \"Gelöscht\");\n\t\t\tbuild_rows(input, input->cleared, NULL, back, COUNT(back), scene);"),
     text("scene_text_old_title", "\t\t\tset_title(scene, \"Vor dem Löschen\");", "\t\t\tset_title(scene, \"Gelöscht\");"),
     text("scene_text_old_title_called_cleared", "\t\t\tset_title(scene, \"Vor dem Löschen\");", "\t\t\tset_title(scene, \"Zuletzt gelöscht\");"),
     text("scene_text_old_title_is_the_row", "\t\t\tset_title(scene, \"Vor dem Löschen\");", "\t\t\tset_title(scene, \"Liste vor dem Löschen\");"),
-    text("scene_text_old_back", "{{\"Zurück\", \"\", true}}", "{{\"Zurueck\", \"\", true}}"),
+    text("scene_text_old_back", "{{\"Zurück\", \"\"}}", "{{\"Zurueck\", \"\"}}"),
     ("scene_old_lines_of_outcome", T, F, OLD_LIST, "\t\t\tset_title(scene, \"Vor dem Löschen\");\n\t\t\tbuild_rows(input, input->cleared, NULL, back, COUNT(back), scene);"),
     ("scene_old_lines_of_list", T, F, OLD_LIST, "\t\t\tset_title(scene, \"Vor dem Löschen\");\n\t\t\tbuild_rows(input, input->list, NULL, back, COUNT(back), scene);"),
     ("scene_old_ends_with_done", T, F, OLD_LIST, "\t\t\t(void)back;\n\t\t\tset_title(scene, \"Vor dem Löschen\");\n\t\t\tbuild_rows(input, input->old, NULL, done, COUNT(done), scene);"),

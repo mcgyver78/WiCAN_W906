@@ -2,7 +2,7 @@
 # and runs it against the real core, with stand-ins for ESP-IDF (idf/, and what the simulation itself says
 # of the driver, the server, the flash, the boot loader and FreeRTOS).
 #
-#   make                    build and run the three simulations; the output of each is build/<name>.log
+#   make                    build and run the four simulations; the output of each is build/<name>.log
 #   make build/net_sim      build one
 #   make clean
 #
@@ -10,7 +10,6 @@
 # For people, not in the CI: "python3 redproof.py" breaks the platform files in one place at a time
 # (mutations/) and expects a check of the simulation to fail; see the head of that script.
 #
-# screen.c has no simulation: what it does is LVGL and the rhythm of two tasks.
 # Needs a C library with strlcpy(), which the platform files use (glibc from 2.38 on, macOS).
 
 CC      ?= cc
@@ -27,11 +26,11 @@ EXTRA   ?=
 MAIN    := ../../main
 CORE    := ../../components/core
 BUILD   := build
-SIMS    := main_sim net_sim web_sim
+SIMS    := main_sim net_sim web_sim screen_sim
 
-# idf/ first: its headers stand for those of ESP-IDF, and its sys/socket.h for that of lwIP. board.h and
-# store.h are the real ones: main.c is run against what they promise.
-INCLUDES := -Iidf -I$(MAIN) -I$(CORE) -I../../components/board -I../../components/store
+# idf/ first: its headers stand for those of ESP-IDF and of LVGL, and its sys/socket.h for that of lwIP.
+# board.h, store.h and ui.h are the real ones: main.c and screen.c are run against what they promise.
+INCLUDES := -Iidf -I$(MAIN) -I$(CORE) -I../../components/board -I../../components/store -I../../components/ui
 
 # What the build of the firmware embeds (EMBED_FILES in $(MAIN)/CMakeLists.txt): the page and the built-in
 # layout, each between the two symbols web.c and main.c ask for, as it is and without a zero behind it
@@ -39,7 +38,8 @@ PAGE    := $(MAIN)/web/index.html
 LAYOUT  := ../../layouts/w906_default.json
 
 SOURCES := $(wildcard $(CORE)/*.c)
-HEADERS := sim.h $(wildcard idf/*.h idf/*/*.h $(CORE)/*.h $(MAIN)/*.h ../../components/board/*.h ../../components/store/*.h)
+HEADERS := sim.h $(wildcard idf/*.h idf/*/*.h $(CORE)/*.h $(MAIN)/*.h ../../components/board/*.h ../../components/store/*.h) \
+           ../../components/ui/ui.h
 
 .PHONY: all clean
 

@@ -31,7 +31,11 @@
  * The value pages are passive: no page in the rotation of the knob has an action.
  * Touch is an addition: a swipe on a value page is a turn of one detent, a tap on a row is focus plus
  * short press. Everything works with the knob alone. In the two dialogs (NAV_DTC_CONFIRM, NAV_CONFIRM) the
- * knob alone moves the focus and confirms: a touch only cancels there.
+ * knob alone moves the focus and confirms: a touch only cancels there. What lies over a screen is answered
+ * with the knob alone as well: a touch does nothing there.
+ * So no question on the screen is confirmed by a touch, on whatever row and at whatever time: not the clear
+ * of the fault memory, not restart, previous firmware and factory reset of the settings, not what the
+ * browser asks for (WiFi data, the uploaded firmware, the factory reset), and not "Update in Ordnung?".
  *
  * Screens and their rows (the focus starts on the row marked *):
  *   NAV_PAGES        the value pages; `page` is the one shown, -1 if the layout has none to show
@@ -53,10 +57,11 @@
  *
  * Something can lie over every screen and takes every input (nav_overlay):
  *   NAV_OVER_UPLOAD  a firmware upload runs: every input is ignored
- *   NAV_OVER_ASK     the browser asks for something that needs the knob (access.h): a short press or a tap
- *                    confirms, a long press refuses, turning and swiping do nothing
+ *   NAV_OVER_ASK     the browser asks for something that needs the knob (access.h): a short press
+ *                    confirms, a long press refuses; turning, swiping and a tap do nothing
  *   NAV_OVER_UPDATE  the firmware started for the first time after an update and asks "Update in
- *                    Ordnung?": a short press or a tap says yes; everything else is ignored
+ *                    Ordnung?": a short press says yes; everything else is ignored, a tap as well (a
+ *                    firmware whose knob does not work must not be kept because its touch does)
  * In this order if several apply.
  */
 
@@ -138,6 +143,7 @@ typedef struct
 	bool update_pending;            // the running firmware waits for "Update in Ordnung?"
 	bool uploading;                 // a firmware upload runs
 	bool previous_firmware;         // the other slot holds a firmware that can be started
+	bool ap_kept;                   // the own access point cannot be switched: link_ap_kept()
 	bool night_mode;
 	int brightness;                 // the one in use: settings.night in night mode, else settings.brightness
 } nav_world_t;
@@ -163,6 +169,18 @@ nav_overlay_t nav_overlay(const nav_world_t *world);
 
 // Rows of the screen shown: the numbers of the table above, with the lines of the world for the lists
 int nav_rows(const nav_t *nav, const nav_world_t *world);
+
+// Whether a short press with the focus on row `row` of the screen shown would do something now: it returns
+// something to carry out, or it leads to another screen. Every effect a press on a row has is one of the two
+// (see the table below). This is not a second list of the rules: the rules of nav_short() are asked
+// themselves, on a copy of *nav, so the answer cannot say anything else than the press does. scene.h reports
+// a choice as enabled by it, and so the screen never draws a row as if it worked while a press on it is
+// ignored (Neustart while the own request is under way, Hotspot while the access point is kept on).
+// false for a row that does not exist - so for every row of a screen without rows - and for a row on which
+// a press does nothing: a line of a fault memory list, "Löschen" of the clear dialog (hold.h confirms there).
+// What lies over the screen is not looked at: it takes every input, and the screen below it is drawn as
+// without it. *nav is not changed, and the call is no input.
+bool nav_row_acts(const nav_t *nav, int row, const nav_world_t *world);
 
 /*
  * The inputs. Each returns what the caller has to carry out and counts as input for the idle time, also
@@ -224,7 +242,10 @@ int nav_rows(const nav_t *nav, const nav_world_t *world);
  * NAV_INFO
  *   short, long   -> NAV_MENU (row 4)
  * NAV_SETTINGS
- *   short on      0 -> NAV_DO_REVERSE_TOGGLE;  1 -> NAV_DO_AP_TOGGLE;
+ *   short on      0 -> NAV_DO_REVERSE_TOGGLE;
+ *                 1: unless ap_kept -> NAV_DO_AP_TOGGLE, else nothing (safe mode and a display without a
+ *                    stored network keep their own access point on whatever is asked, link.h: the press would
+ *                    switch nothing);
  *                 2 -> NAV_CONFIRM for NAV_DO_REBOOT;
  *                 3: if previous_firmware -> NAV_CONFIRM for NAV_DO_PREVIOUS_FIRMWARE, else nothing;
  *                 4 -> NAV_CONFIRM for NAV_DO_FACTORY_RESET;  5 -> NAV_MENU (row 5)
@@ -253,6 +274,8 @@ nav_do_t nav_long(nav_t *nav, const nav_world_t *world, uint64_t now_ms);
 // exist is ignored. On NAV_PAGES and on screens without rows a tap is ignored (row is not looked at),
 // except NAV_DTC_FAILED, where it counts as a short press. In NAV_DTC_CONFIRM and NAV_CONFIRM a tap on row
 // 1 is ignored as well, and moves no focus: a touch happens too easily for what these dialogs ask.
+// Under an overlay every tap is ignored, whatever lies there and whatever row is named: it is no short
+// press there, so it neither confirms what the browser asks for nor says that an update is in order.
 nav_do_t nav_tap(nav_t *nav, int row, const nav_world_t *world, uint64_t now_ms);
 
 // A swipe: on NAV_PAGES a turn of one detent in that direction (positive = next page; 0 is ignored), on
@@ -265,6 +288,13 @@ nav_do_t nav_swipe(nav_t *nav, int direction, const nav_world_t *world, uint64_t
 // nothing. Does not count as input. Under an overlay HOLD_CONFIRMED counts as HOLD_CANCELLED: what the user
 // could not see is not confirmed.
 nav_do_t nav_hold(nav_t *nav, hold_event_t event, const nav_world_t *world, uint64_t now_ms);
+
+// The caller found that nobody can see the screen any more (app.h: the heat switched the backlight off). A
+// dialog that shows is left without its answer, as by "Abbrechen", also while something lies over it:
+// NAV_DTC_CONFIRM -> NAV_DTC_LIST (focus on Fehler löschen) and NAV_DO_HOLD_CLOSE; NAV_CONFIRM ->
+// NAV_SETTINGS (focus on the row it came from), nothing to carry out. Every other screen stays as it is.
+// Does not count as input.
+nav_do_t nav_cancel(nav_t *nav, const nav_world_t *world, uint64_t now_ms);
 
 /*
  * Called about five times a second. Follows what happened without the user, in this order, the first that

@@ -17,6 +17,10 @@ MAY_ASK = "\taccess_refusal_t refusal = access_may_ask(&app->access, question, n
 R_LOCKED = "\tif(refusal == ACCESS_CLOSED) return refuse(403, \"locked\", out, length);\n"
 R_BUSY = "\tif(busy) return refuse(409, \"busy\", out, length);\n"
 R_ASKING = "\tif(refusal != ACCESS_ALLOWED) return refuse(409, \"asking\", out, length);\n"
+R_HOT_WHY = "\t// A question on a dark screen would wait for nobody\n"
+R_HOT = "\tif(screen_unseen(app)) return refuse(409, \"hot\", out, length);\n\treturn 0;"
+UNDER_WAY = "\treturn phase == DTC_FLOW_READ_SENT || phase == DTC_FLOW_READING || phase == DTC_FLOW_CLEAR_SENT || phase == DTC_FLOW_CLEARING;"
+UNSEEN = "\treturn app->heat == GUARD_HEAT_OFF;"
 DETAIL = "\tsnprintf(app->ask_detail, sizeof(app->ask_detail), \"%s\", detail);\n"
 ASK = "\treturn answer(202, web_asked_json(access_ask(&app->access, question, now), out, APP_WEB_OUT_SIZE), out, length);"
 REQ_OPEN = "\trequest->release_open = access_is_open(&app->access, time_at(app, now_ms));\n"
@@ -33,7 +37,9 @@ SEEN_COPY = "\tfor(int i = 0; i < count; i++) app->seen[i] = seen[i];\n\tapp->se
 L_ROUTES = ("\tif(route != WEB_ROUTE_LAYOUT_CHECK && route != WEB_ROUTE_LAYOUT_APPLY && route != WEB_ROUTE_LAYOUT_SAVE && route != WEB_ROUTE_LAYOUT_RESET)\n"
             "\t{\n\t\treturn refuse(404, \"not_found\", out, length);\n\t}\n")
 L_WRITE = "\tif(route != WEB_ROUTE_LAYOUT_CHECK && !access_write(&app->access, advance(app, now_ms))) return refuse(403, \"locked\", out, length);"
-L_RESET = "\t\tapp_choose_layout(app);\n\t\tapp->events |= APP_EVENT_ERASE_LAYOUT;\n"
+L_ERASE = "\t\tapp->events = (app->events & ~APP_EVENT_STORE_LAYOUT) | APP_EVENT_ERASE_LAYOUT;\n"
+L_RESET = ("\t\tapp_choose_layout(app);\n"
+           "\t\t// A save that still waits to be taken is undone by this reset: the later of the two alone counts (app.h)\n" + L_ERASE)
 L_REFUSED = "\t\t\treturn answer(400, web_layout_report_json(false, &report, NULL, NULL, out, APP_WEB_OUT_SIZE), out, length);"
 L_CHECK = ("\t\tif(route == WEB_ROUTE_LAYOUT_CHECK)\n\t\t{\n"
            "\t\t\treturn answer(200, web_layout_report_json(true, &report, &app->checked, catalog, out, APP_WEB_OUT_SIZE), out, length);\n\t\t}\n")
@@ -42,16 +48,27 @@ L_TEXT = "\t\tmemcpy(app->layout_text, body, body_length);\n"
 L_END = "\t\tapp->layout_text[body_length] = '\\0';\n"
 L_LENGTH = "\t\tapp->layout_length = body_length;\n"
 L_PREVIEW = "\t\tapp->source = APP_LAYOUT_PREVIEW;\n"
-L_SAVE = "\t\tif(route == WEB_ROUTE_LAYOUT_SAVE)\n\t\t{\n\t\t\tapp->source = APP_LAYOUT_STORED;\n\t\t\tapp->events |= APP_EVENT_STORE_LAYOUT;\n\t\t}\n"
-L_PAGE = "\tapp->nav.page = layout_first_page(&app->layout, catalog);\n"
+L_STORE = "\t\t\tapp->events = (app->events & ~APP_EVENT_ERASE_LAYOUT) | APP_EVENT_STORE_LAYOUT;\n"
+L_SAVE = ("\t\tif(route == WEB_ROUTE_LAYOUT_SAVE)\n\t\t{\n\t\t\tapp->source = APP_LAYOUT_STORED;\n"
+          "\t\t\t// ... and a reset that still waits by this save: the platform would erase what it has just stored\n" + L_STORE + "\t\t}\n")
+L_BODY = "\t\tbody = body_of(body, &body_length);\n\t\tif(!layout_parse("
+L_PAGE = ("\tif(route == WEB_ROUTE_LAYOUT_RESET || !layout_page_shown(&app->layout, app->nav.page, catalog)) "
+          "app->nav.page = layout_first_page(&app->layout, catalog);\n")
+L_FIRST = "app->nav.page = layout_first_page(&app->layout, catalog);\n"
+L_KEPT = "!layout_page_shown(&app->layout, app->nav.page, catalog)"
 L_REPORT = "\treturn answer(200, web_layout_report_json(true, &report, &app->layout, catalog, out, APP_WEB_OUT_SIZE), out, length);"
 W_ROUTES = "\tif(route != WEB_ROUTE_WIFI_STORE && route != WEB_ROUTE_WIFI_FORGET) return refuse(404, \"not_found\", out, length);\n"
 W_TIME = "\tnow = advance(app, now_ms);\n\tbody = body_of(body, &body_length);\n"
-W_MAY = "\t\tstatus = ask_refused(app, ACCESS_ASK_WIFI, app->uploading, out, length, now);\n\t\tif(status != 0) return status;\n"
+W_BUSY = "app->uploading || request_under_way(app)"
+W_MAY = "\t\tstatus = ask_refused(app, ACCESS_ASK_WIFI, " + W_BUSY + ", out, length, now);\n\t\tif(status != 0) return status;\n"
 W_PARSE = "\t\tif(!web_wifi_parse(body, body_length, &app->wifi_asked, app->work, app->work_count)) return refuse(400, \"body\", out, length);\n"
 W_HAS = "\t\tapp->has_wifi_asked = true;\n"
 W_ASK = "\t\treturn ask(app, ACCESS_ASK_WIFI, app->wifi_asked.ssid, out, length, now);"
-F_WRITE = "\tif(!access_write(&app->access, now)) return refuse(403, \"locked\", out, length);\n\tif(!web_forget_parse"
+F_BUSY_WHY = "\t// The display leaves its network with every network that is forgotten, whichever is named\n"
+F_LOCKED = "\tif(!access_write(&app->access, now)) return refuse(403, \"locked\", out, length);\n"
+F_WRITE = F_LOCKED + F_BUSY_WHY
+F_BUSY = "\tif(request_under_way(app)) return refuse(409, \"busy\", out, length);\n"
+F_FORGET = "\n\tleft = net_forget(app->profiles, app->profile_count, ssid);\n"
 F_PARSE = "\tif(!web_forget_parse(body, body_length, ssid, app->work, app->work_count)) return refuse(400, \"body\", out, length);\n"
 F_FOUND = "\tif(left == app->profile_count) return refuse(404, \"not_found\", out, length);\n"
 F_COUNT = "\tapp->profile_count = left;\n"
@@ -78,6 +95,8 @@ U_BUSY_WHY = "\t// While the running firmware is not confirmed the other slot is
 U_BUSY = "\tif(app_busy(app) || app->update_pending) return refuse(409, \"busy\", out, length);\n"
 U_ASKING_WHY = "\t// A firmware question of an earlier upload must not be confirmed for a slot that is being rewritten\n"
 U_ASKING = "\tif(access_asking(&app->access, now) != ACCESS_ASK_NONE) return refuse(409, \"asking\", out, length);\n"
+U_HOT_WHY = "\t// The question at the end of the upload could not be seen on a dark screen: no megabytes for that either\n"
+U_HOT = "\tif(screen_unseen(app)) return refuse(409, \"hot\", out, length);\n\n\tcheck = "
 U_CHECK = "\tcheck = ota_check(first, first != NULL ? first_length : 0, file_size, slot_size, version, sizeof(version));\n"
 U_REFUSED = "\tif(check != OTA_CHECK_OK) return refuse(422, words[check], out, length);\n"
 U_RUNS = "\tapp->uploading = true;\n\tapp->upload_percent = 0;\n\tapp->upload_ms = now;\n"
@@ -178,6 +197,31 @@ MUTATIONS = [
     ("app_web_ask_asking_not_refused", T, F, R_ASKING, ""),
     ("app_web_ask_asking_is_busy", T, F, R_ASKING, "\tif(refusal != ACCESS_ALLOWED) return refuse(409, \"busy\", out, length);\n"),
     ("app_web_ask_asking_is_locked", T, F, R_ASKING, "\tif(refusal != ACCESS_ALLOWED) return refuse(403, \"locked\", out, length);\n"),
+    # a question nobody can see
+    ("app_web_ask_on_a_dark_screen", T, F, R_HOT, "\treturn 0;"),
+    ("app_web_ask_hot_is_busy", T, F, R_HOT, R_HOT.replace("\"hot\"", "\"busy\"")),
+    ("app_web_ask_hot_is_asking", T, F, R_HOT, R_HOT.replace("\"hot\"", "\"asking\"")),
+    ("app_web_ask_hot_is_503", T, F, R_HOT, R_HOT.replace("refuse(409,", "refuse(503,")),
+    ("app_web_ask_hot_before_asking", T, F, R_ASKING + R_HOT_WHY + R_HOT, R_HOT.replace("\treturn 0;", "") + R_ASKING + "\treturn 0;"),
+    ("app_web_ask_hot_before_busy", T, F, R_BUSY + R_ASKING + R_HOT_WHY + R_HOT, R_HOT.replace("\treturn 0;", "") + R_BUSY + R_ASKING + "\treturn 0;"),
+    ("app_web_ask_hot_before_locked", T, F, R_LOCKED + R_BUSY + R_ASKING + R_HOT_WHY + R_HOT, R_HOT.replace("\treturn 0;", "") + R_LOCKED + R_BUSY + R_ASKING + "\treturn 0;"),
+    ("app_web_ask_network_on_a_dark_screen", T, F, R_HOT, R_HOT.replace("screen_unseen(app)", "screen_unseen(app) && question != ACCESS_ASK_WIFI")),
+    ("app_web_ask_firmware_on_a_dark_screen", T, F, R_HOT, R_HOT.replace("screen_unseen(app)", "screen_unseen(app) && question != ACCESS_ASK_FIRMWARE")),
+    ("app_web_ask_reset_on_a_dark_screen", T, F, R_HOT, R_HOT.replace("screen_unseen(app)", "screen_unseen(app) && question != ACCESS_ASK_RESET")),
+    ("app_web_dark_also_when_dimmed", T, F, UNSEEN, "\treturn app->heat != GUARD_HEAT_NORMAL;"),
+    ("app_web_dark_never", T, F, UNSEEN, "\treturn app->heat == GUARD_HEAT_OFF && app->temp_c < -1000;"),
+    ("app_web_dark_by_the_last_temperature", T, F, UNSEEN, "\treturn app->temp_c >= GUARD_TEMP_OFF_C;"),
+    ("app_web_dark_only_behind_a_reading_that_succeeded", T, F, UNSEEN, "\treturn app->heat == GUARD_HEAT_OFF && app->has_temp;"),
+    # a fault memory request under way
+    ("app_web_under_way_not_while_a_read_waits_for_its_answer", T, F, UNDER_WAY, UNDER_WAY.replace("phase == DTC_FLOW_READ_SENT || ", "")),
+    ("app_web_under_way_not_while_reading", T, F, UNDER_WAY, UNDER_WAY.replace("phase == DTC_FLOW_READING || ", "")),
+    ("app_web_under_way_not_while_a_clear_waits_for_its_answer", T, F, UNDER_WAY, UNDER_WAY.replace("phase == DTC_FLOW_CLEAR_SENT || ", "")),
+    ("app_web_under_way_not_while_clearing", T, F, UNDER_WAY, UNDER_WAY.replace(" || phase == DTC_FLOW_CLEARING", "")),
+    ("app_web_under_way_while_a_list_is_shown", T, F, UNDER_WAY, UNDER_WAY.replace(";", " || phase == DTC_FLOW_LIST;")),
+    ("app_web_under_way_while_an_outcome_is_shown", T, F, UNDER_WAY, UNDER_WAY.replace(";", " || phase == DTC_FLOW_CLEARED;")),
+    ("app_web_under_way_after_a_failure", T, F, UNDER_WAY, UNDER_WAY.replace(";", " || phase == DTC_FLOW_FAILED;")),
+    ("app_web_under_way_with_an_unknown_outcome", T, F, UNDER_WAY, UNDER_WAY.replace(";", " || phase == DTC_FLOW_UNKNOWN;")),
+    ("app_web_under_way_whenever_something_was_read", T, F, UNDER_WAY, "\treturn phase != DTC_FLOW_IDLE;"),
     ("app_web_ask_firmware_over_network_question", T, F, R_ASKING,
      "\tif(refusal != ACCESS_ALLOWED && !(question == ACCESS_ASK_FIRMWARE && access_asking(&app->access, now) == ACCESS_ASK_WIFI)) return refuse(409, \"asking\", out, length);\n"),
     ("app_web_ask_judged_as_no_question", T, F, MAY_ASK, "\taccess_refusal_t refusal = access_may_ask(&app->access, question == ACCESS_ASK_NONE ? question : ACCESS_ASK_NONE, now);"),
@@ -378,15 +422,26 @@ MUTATIONS = [
     ("app_web_layout_time_of_caller", T, F, L_WRITE, L_WRITE.replace("advance(app, now_ms)", "now_ms")),
     ("app_web_layout_locked_is_401", T, F, L_WRITE, L_WRITE.replace("403", "401")),
     ("app_web_layout_locked_other_word", T, F, L_WRITE, L_WRITE.replace("\"locked\"", "\"closed\"")),
-    ("app_web_layout_reset_keeps_views", T, F, L_RESET, "\t\tapp->events |= APP_EVENT_ERASE_LAYOUT;\n"),
-    ("app_web_layout_reset_without_event", T, F, L_RESET, "\t\tapp_choose_layout(app);\n"),
-    ("app_web_layout_reset_event_replaces", T, F, L_RESET, L_RESET.replace("app->events |= APP_EVENT_ERASE_LAYOUT", "app->events = APP_EVENT_ERASE_LAYOUT")),
-    ("app_web_layout_reset_event_after_preview_only", T, F, L_RESET, "\t\tif(app->source != APP_LAYOUT_PREVIEW) app->events |= APP_EVENT_ERASE_LAYOUT;\n\t\tapp_choose_layout(app);\n"),
-    ("app_web_layout_reset_stores", T, F, L_RESET, "\t\tapp_choose_layout(app);\n\t\tapp->events |= APP_EVENT_STORE_LAYOUT;\n"),
-    ("app_web_layout_reset_stores_as_well", T, F, L_RESET, "\t\tapp_choose_layout(app);\n\t\tapp->events |= APP_EVENT_ERASE_LAYOUT | APP_EVENT_STORE_LAYOUT;\n"),
-    ("app_web_layout_reset_event_only_if_stored", T, F, L_RESET, "\t\tif(app->source == APP_LAYOUT_STORED) app->events |= APP_EVENT_ERASE_LAYOUT;\n\t\tapp_choose_layout(app);\n"),
+    ("app_web_layout_reset_keeps_views", T, F, L_RESET, L_RESET.replace("\t\tapp_choose_layout(app);\n", "")),
+    ("app_web_layout_reset_without_event", T, F, L_ERASE, ""),
+    ("app_web_layout_reset_event_replaces", T, F, L_ERASE, "\t\tapp->events = APP_EVENT_ERASE_LAYOUT;\n"),
+    ("app_web_layout_reset_event_after_preview_only", T, F, L_RESET, "\t\tif(app->source != APP_LAYOUT_PREVIEW)\n" + L_ERASE.replace("\t\tapp", "\t\t\tapp") + "\t\tapp_choose_layout(app);\n"),
+    ("app_web_layout_reset_stores", T, F, L_ERASE, "\t\tapp->events = (app->events & ~APP_EVENT_ERASE_LAYOUT) | APP_EVENT_STORE_LAYOUT;\n"),
+    ("app_web_layout_reset_stores_as_well", T, F, L_ERASE, "\t\tapp->events |= APP_EVENT_ERASE_LAYOUT | APP_EVENT_STORE_LAYOUT;\n"),
+    ("app_web_layout_reset_event_only_if_stored", T, F, L_RESET, "\t\tif(app->source == APP_LAYOUT_STORED)\n" + L_ERASE.replace("\t\tapp", "\t\t\tapp") + "\t\tapp_choose_layout(app);\n"),
     ("app_web_layout_reset_always_builtin", T, F, L_RESET,
-     "\t\tapp_choose_layout(app);\n\t\tif(app->has_builtin)\n\t\t{\n\t\t\tapp->layout = app->builtin;\n\t\t\tapp->source = APP_LAYOUT_BUILTIN;\n\t\t}\n\t\tapp->events |= APP_EVENT_ERASE_LAYOUT;\n"),
+     "\t\tapp_choose_layout(app);\n\t\tif(app->has_builtin)\n\t\t{\n\t\t\tapp->layout = app->builtin;\n\t\t\tapp->source = APP_LAYOUT_BUILTIN;\n\t\t}\n" + L_ERASE),
+    # of a save and a reset between two takes the later alone counts
+    ("app_web_layout_reset_leaves_the_save_that_waits", T, F, L_ERASE, "\t\tapp->events |= APP_EVENT_ERASE_LAYOUT;\n"),
+    ("app_web_layout_reset_takes_every_store_back", T, F, L_ERASE, L_ERASE.replace("~APP_EVENT_STORE_LAYOUT", "~(APP_EVENT_STORE_LAYOUT | APP_EVENT_STORE_SETTINGS | APP_EVENT_STORE_BOUND)")),
+    ("app_web_layout_reset_takes_the_restart_back", T, F, L_ERASE, L_ERASE.replace("~APP_EVENT_STORE_LAYOUT", "~(APP_EVENT_STORE_LAYOUT | APP_EVENT_REBOOT)")),
+    ("app_web_layout_reset_behind_a_save_does_nothing", T, F, L_ERASE, "\t\tif(app->events & APP_EVENT_STORE_LAYOUT) app->events &= ~APP_EVENT_STORE_LAYOUT;\n\t\telse app->events |= APP_EVENT_ERASE_LAYOUT;\n"),
+    ("app_web_layout_reset_behind_a_save_is_dropped", T, F, L_ERASE, "\t\tif(!(app->events & APP_EVENT_STORE_LAYOUT)) app->events |= APP_EVENT_ERASE_LAYOUT;\n"),
+    ("app_web_layout_refused_save_takes_the_reset_back", T, F, L_BODY, "\t\tif(route == WEB_ROUTE_LAYOUT_SAVE) app->events &= ~APP_EVENT_ERASE_LAYOUT;\n" + L_BODY),
+    ("app_web_layout_preview_takes_the_reset_back", T, F, L_BODY, "\t\tif(route == WEB_ROUTE_LAYOUT_APPLY) app->events &= ~APP_EVENT_ERASE_LAYOUT;\n" + L_BODY),
+    ("app_web_layout_check_takes_the_reset_back", T, F, L_BODY, "\t\tif(route == WEB_ROUTE_LAYOUT_CHECK) app->events &= ~APP_EVENT_ERASE_LAYOUT;\n" + L_BODY),
+    ("app_web_layout_locked_reset_takes_the_save_back", T, F, L_WRITE, "\tif(route == WEB_ROUTE_LAYOUT_RESET) app->events &= ~APP_EVENT_STORE_LAYOUT;\n" + L_WRITE),
+    ("app_web_layout_locked_save_takes_the_reset_back", T, F, L_WRITE, "\tif(route == WEB_ROUTE_LAYOUT_SAVE) app->events &= ~APP_EVENT_ERASE_LAYOUT;\n" + L_WRITE),
     ("app_web_layout_refused_is_200", T, F, L_REFUSED, L_REFUSED.replace("answer(400,", "answer(200,")),
     ("app_web_layout_refused_is_422", T, F, L_REFUSED, L_REFUSED.replace("answer(400,", "answer(422,")),
     ("app_web_layout_refused_is_word", T, F, L_REFUSED, "\t\t\treturn refuse(400, \"body\", out, length);"),
@@ -408,27 +463,42 @@ MUTATIONS = [
     ("app_web_layout_applied_keeps_source", T, F, L_PREVIEW, ""),
     ("app_web_layout_applied_is_stored", T, F, L_PREVIEW, "\t\tapp->source = APP_LAYOUT_STORED;\n"),
     ("app_web_layout_applied_is_generated", T, F, L_PREVIEW, "\t\tapp->source = APP_LAYOUT_GENERATED;\n"),
-    ("app_web_layout_saved_is_preview", T, F, L_SAVE, "\t\tif(route == WEB_ROUTE_LAYOUT_SAVE)\n\t\t{\n\t\t\tapp->events |= APP_EVENT_STORE_LAYOUT;\n\t\t}\n"),
-    ("app_web_layout_saved_without_event", T, F, L_SAVE, "\t\tif(route == WEB_ROUTE_LAYOUT_SAVE)\n\t\t{\n\t\t\tapp->source = APP_LAYOUT_STORED;\n\t\t}\n"),
-    ("app_web_layout_saved_event_replaces", T, F, L_SAVE, L_SAVE.replace("app->events |= APP_EVENT_STORE_LAYOUT", "app->events = APP_EVENT_STORE_LAYOUT")),
+    ("app_web_layout_saved_is_preview", T, F, L_SAVE, L_SAVE.replace("\t\t\tapp->source = APP_LAYOUT_STORED;\n", "")),
+    ("app_web_layout_saved_without_event", T, F, L_STORE, ""),
+    ("app_web_layout_saved_event_replaces", T, F, L_STORE, "\t\t\tapp->events = APP_EVENT_STORE_LAYOUT;\n"),
     ("app_web_layout_saved_touches_check_sum", T, F, L_SAVE, L_SAVE.replace("\t\t\tapp->source = APP_LAYOUT_STORED;\n", "\t\t\tapp->source = APP_LAYOUT_STORED;\n\t\t\tapp->catalog_sum = 0;\n")),
-    ("app_web_layout_saved_erases", T, F, L_SAVE, L_SAVE.replace("APP_EVENT_STORE_LAYOUT", "APP_EVENT_ERASE_LAYOUT")),
-    ("app_web_layout_saved_erases_as_well", T, F, L_SAVE, L_SAVE.replace("APP_EVENT_STORE_LAYOUT", "APP_EVENT_STORE_LAYOUT | APP_EVENT_ERASE_LAYOUT")),
+    ("app_web_layout_saved_erases", T, F, L_STORE, "\t\t\tapp->events = (app->events & ~APP_EVENT_STORE_LAYOUT) | APP_EVENT_ERASE_LAYOUT;\n"),
+    ("app_web_layout_saved_erases_as_well", T, F, L_STORE, "\t\t\tapp->events |= APP_EVENT_STORE_LAYOUT | APP_EVENT_ERASE_LAYOUT;\n"),
+    ("app_web_layout_saved_leaves_the_reset_that_waits", T, F, L_STORE, "\t\t\tapp->events |= APP_EVENT_STORE_LAYOUT;\n"),
+    ("app_web_layout_saved_takes_every_store_back", T, F, L_STORE, L_STORE.replace("~APP_EVENT_ERASE_LAYOUT", "~(APP_EVENT_ERASE_LAYOUT | APP_EVENT_STORE_SETTINGS | APP_EVENT_STORE_BOUND)")),
+    ("app_web_layout_saved_takes_the_restart_back", T, F, L_STORE, L_STORE.replace("~APP_EVENT_ERASE_LAYOUT", "~(APP_EVENT_ERASE_LAYOUT | APP_EVENT_REBOOT)")),
+    ("app_web_layout_saved_behind_a_reset_does_nothing", T, F, L_STORE, "\t\t\tif(app->events & APP_EVENT_ERASE_LAYOUT) app->events &= ~APP_EVENT_ERASE_LAYOUT;\n\t\t\telse app->events |= APP_EVENT_STORE_LAYOUT;\n"),
+    ("app_web_layout_saved_behind_a_reset_is_dropped", T, F, L_STORE, "\t\t\tif(!(app->events & APP_EVENT_ERASE_LAYOUT)) app->events |= APP_EVENT_STORE_LAYOUT;\n"),
     ("app_web_layout_applied_is_stored_with_event", T, F, L_SAVE, L_SAVE.replace("if(route == WEB_ROUTE_LAYOUT_SAVE)", "if(route != WEB_ROUTE_LAYOUT_CHECK)")),
-    ("app_web_layout_applied_raises_event", T, F, L_SAVE, L_SAVE.replace("\t\t\tapp->events |= APP_EVENT_STORE_LAYOUT;\n\t\t}\n", "\t\t}\n\t\tapp->events |= APP_EVENT_STORE_LAYOUT;\n")),
+    ("app_web_layout_applied_raises_event", T, F, L_SAVE, L_SAVE.replace(L_STORE + "\t\t}\n", "\t\t}\n" + L_STORE[1:])),
     ("app_web_layout_page_stays", T, F, L_PAGE, ""),
-    ("app_web_layout_page_zero", T, F, L_PAGE, "\tapp->nav.page = 0;\n"),
-    ("app_web_layout_page_left_to_tick", T, F, L_PAGE, "\tapp->nav.page = -1;\n"),
-    ("app_web_layout_page_stays_on_reset", T, F, L_PAGE, "\tif(route != WEB_ROUTE_LAYOUT_RESET) " + L_PAGE[1:]),
-    ("app_web_layout_page_stays_when_saved", T, F, L_PAGE, "\tif(route != WEB_ROUTE_LAYOUT_SAVE) " + L_PAGE[1:]),
-    ("app_web_layout_page_stays_when_applied", T, F, L_PAGE, "\tif(route != WEB_ROUTE_LAYOUT_APPLY) " + L_PAGE[1:]),
-    ("app_web_layout_page_stays_if_shown", T, F, L_PAGE, "\tif(!layout_page_shown(&app->layout, app->nav.page, catalog)) " + L_PAGE[1:]),
-    ("app_web_layout_page_of_checked_layout", T, F, L_PAGE, "\tapp->nav.page = layout_first_page(&app->checked, catalog);\n"),
+    ("app_web_layout_page_zero", T, F, L_PAGE, L_PAGE.replace(L_FIRST, "app->nav.page = 0;\n")),
+    ("app_web_layout_page_left_to_tick", T, F, L_PAGE, L_PAGE.replace(L_FIRST, "app->nav.page = -1;\n")),
+    ("app_web_layout_page_stays_on_reset", T, F, L_PAGE, L_PAGE.replace("route == WEB_ROUTE_LAYOUT_RESET || ", "")),
+    # a layout from the browser keeps the page shown where it shows one at that position: the rule taken back
+    ("app_web_layout_first_page_always", T, F, L_PAGE, "\t" + L_FIRST),
+    ("app_web_layout_first_page_when_saved", T, F, L_PAGE, L_PAGE.replace("route == WEB_ROUTE_LAYOUT_RESET", "route != WEB_ROUTE_LAYOUT_APPLY")),
+    ("app_web_layout_first_page_when_applied", T, F, L_PAGE, L_PAGE.replace("route == WEB_ROUTE_LAYOUT_RESET", "route != WEB_ROUTE_LAYOUT_SAVE")),
+    # ... a page that is there but not shown is no page to stay on, and without one the first page is shown, not the nearest
+    ("app_web_layout_page_kept_if_position_exists", T, F, L_PAGE, L_PAGE.replace(L_KEPT, "(app->nav.page < 0 || app->nav.page >= app->layout.page_count)")),
+    ("app_web_layout_page_kept_if_not_hidden", T, F,
+     L_PAGE, L_PAGE.replace(L_KEPT, "(app->nav.page < 0 || app->nav.page >= app->layout.page_count || app->layout.pages[app->nav.page].hidden)")),
+    ("app_web_layout_page_kept_if_next_is_shown", T, F, L_PAGE, L_PAGE.replace("app->nav.page, catalog)", "app->nav.page + 1, catalog)")),
+    ("app_web_layout_page_kept_if_first_is_shown", T, F, L_PAGE, L_PAGE.replace("app->nav.page, catalog)", "0, catalog)")),
+    ("app_web_layout_nearest_page_instead_of_first", T, F, L_PAGE, L_PAGE.replace(L_FIRST, "app->nav.page = layout_step_page(&app->layout, catalog, app->nav.page, 1);\n")),
+    ("app_web_layout_page_of_checked_layout", T, F, L_PAGE, L_PAGE.replace(L_FIRST, "app->nav.page = layout_first_page(&app->checked, catalog);\n")),
     ("app_web_layout_moves_the_focus", T, F, L_PAGE, L_PAGE + "\tapp->nav.row = 0;\n"),
     ("app_web_layout_leaves_the_menu", T, F, L_PAGE, L_PAGE + "\tif(route == WEB_ROUTE_LAYOUT_SAVE) app->nav.screen = NAV_PAGES;\n"),
+    ("app_web_layout_applied_leaves_the_menu", T, F, L_PAGE, L_PAGE + "\tif(route == WEB_ROUTE_LAYOUT_APPLY) app->nav.screen = NAV_PAGES;\n"),
     ("app_web_layout_counts_as_input", T, F, L_PAGE, L_PAGE + "\tapp->last_input_ms = app->clock_ms;\n"),
-    ("app_web_layout_page_only_on_value_pages", T, F, L_PAGE, "\tif(app->nav.screen == NAV_PAGES) " + L_PAGE[1:]),
-    ("app_web_layout_page_ignores_hidden", T, F, L_PAGE, "\tapp->nav.page = app->layout.page_count > 0 ? 0 : -1;\n"),
+    ("app_web_layout_page_only_on_value_pages", T, F, L_PAGE, "\tif(app->nav.screen == NAV_PAGES)\n\t{\n\t" + L_PAGE + "\t}\n"),
+    ("app_web_layout_page_kept_only_on_value_pages", T, F, L_PAGE, L_PAGE.replace(L_KEPT, "(app->nav.screen != NAV_PAGES || " + L_KEPT + ")")),
+    ("app_web_layout_page_ignores_hidden", T, F, L_PAGE, L_PAGE.replace(L_FIRST, "app->nav.page = app->layout.page_count > 0 ? 0 : -1;\n")),
     ("app_web_layout_reports_checked_layout", T, F, L_REPORT, L_REPORT.replace("&app->layout, catalog", "&app->checked, catalog")),
     ("app_web_layout_reports_as_refused", T, F, L_REPORT, L_REPORT.replace("web_layout_report_json(true,", "web_layout_report_json(false,")),
     ("app_web_layout_answers_201", T, F, L_REPORT, L_REPORT.replace("answer(200,", "answer(201,")),
@@ -444,7 +514,9 @@ MUTATIONS = [
     ("app_web_wifi_other_route_takes_time", T, F, W_ROUTES, "\tadvance(app, now_ms);\n" + W_ROUTES),
     ("app_web_wifi_asked_without_looking", T, F, W_MAY, "\t\tstatus = 0;\n\t\tif(status != 0) return status;\n"),
     ("app_web_wifi_asked_during_upload", T, F, W_MAY, W_MAY.replace("app->uploading", "false")),
-    ("app_web_wifi_not_asked_while_busy", T, F, W_MAY, W_MAY.replace("app->uploading", "app_busy(app)")),
+    ("app_web_wifi_not_asked_while_busy", T, F, W_MAY, W_MAY.replace(W_BUSY, "app_busy(app)")),
+    ("app_web_wifi_asked_while_a_request_is_under_way", T, F, W_MAY, W_MAY.replace(W_BUSY, "app->uploading")),
+    ("app_web_wifi_asked_while_a_request_is_under_way_unless_uploading", T, F, W_MAY, W_MAY.replace(W_BUSY, "app->uploading && request_under_way(app)")),
     ("app_web_wifi_not_asked_under_update", T, F, W_MAY, W_MAY.replace("app->uploading", "app->uploading || app->update_pending")),
     ("app_web_wifi_not_asked_during_dialog", T, F, W_MAY, W_MAY.replace("app->uploading", "app->uploading || app->nav.screen == NAV_DTC_CONFIRM")),
     ("app_web_wifi_judged_one_ms_late", T, F, W_MAY, W_MAY.replace("out, length, now);", "out, length, now + 1);")),
@@ -472,11 +544,22 @@ MUTATIONS = [
      "\t\tstatus = ask(app, ACCESS_ASK_WIFI, app->wifi_asked.ssid, out, length, now);\n\t\tapp_do(app, NAV_DO_ASK_CONFIRM, now + ACCESS_ASK_SHOWN_MS);\n\t\treturn status;"),
 
     # POST /api/wifi/forget
-    ("app_web_forget_without_release", T, F, F_WRITE, "\tif(!web_forget_parse"),
+    ("app_web_forget_without_release", T, F, F_WRITE, F_BUSY_WHY),
     ("app_web_forget_release_not_renewed", T, F, F_WRITE, F_WRITE.replace("!access_write(", "!access_is_open(")),
     ("app_web_forget_release_one_ms_late", T, F, F_WRITE, F_WRITE.replace("now))", "now + 1))")),
-    ("app_web_forget_needs_knob", T, F, F_WRITE, "\tstatus = ask_refused(app, ACCESS_ASK_WIFI, false, out, length, now);\n\tif(status != 0) return status;\n\tif(!web_forget_parse"),
-    ("app_web_forget_refused_while_busy", T, F, F_WRITE, F_WRITE.replace("\tif(!web_forget_parse", "\tif(app_busy(app)) return refuse(409, \"busy\", out, length);\n\tif(!web_forget_parse")),
+    ("app_web_forget_needs_knob", T, F, F_WRITE, "\tstatus = ask_refused(app, ACCESS_ASK_WIFI, false, out, length, now);\n\tif(status != 0) return status;\n" + F_BUSY_WHY),
+    ("app_web_forget_refused_while_busy", T, F, F_BUSY, F_BUSY.replace("request_under_way(app)", "app_busy(app)")),
+    # not while a fault memory request of the display is under way
+    ("app_web_forget_while_a_request_is_under_way", T, F, F_BUSY, ""),
+    ("app_web_forget_busy_is_asking", T, F, F_BUSY, F_BUSY.replace("\"busy\"", "\"asking\"")),
+    ("app_web_forget_busy_is_503", T, F, F_BUSY, F_BUSY.replace("refuse(409,", "refuse(503,")),
+    ("app_web_forget_busy_before_locked", T, F, F_WRITE + F_BUSY, F_BUSY + F_LOCKED),
+    ("app_web_forget_body_before_busy", T, F, F_BUSY + F_PARSE, F_PARSE + F_BUSY),
+    ("app_web_forget_not_found_before_busy", T, F, F_BUSY + F_PARSE + F_FORGET + F_FOUND, F_PARSE + F_FORGET + F_FOUND + F_BUSY),
+    ("app_web_forget_refused_in_the_clear_dialog", T, F, F_BUSY, F_BUSY.replace("request_under_way(app)", "request_under_way(app) || app->nav.screen == NAV_DTC_CONFIRM")),
+    ("app_web_forget_refused_during_an_upload", T, F, F_BUSY, F_BUSY.replace("request_under_way(app)", "request_under_way(app) || app->uploading")),
+    ("app_web_forget_refused_on_a_dark_screen", T, F, F_BUSY, F_BUSY.replace("request_under_way(app)", "request_under_way(app) || screen_unseen(app)")),
+    ("app_web_forget_refused_while_a_question_waits", T, F, F_BUSY, F_BUSY.replace("request_under_way(app)", "request_under_way(app) || access_asking(&app->access, now) != ACCESS_ASK_NONE")),
     ("app_web_forget_bad_body_is_404", T, F, F_PARSE, F_PARSE.replace("refuse(400, \"body\"", "refuse(404, \"not_found\"")),
     ("app_web_forget_bad_body_forgets_first", T, F, F_PARSE, F_PARSE.replace("return refuse(400, \"body\", out, length);", "memcpy(ssid, app->profiles[0].ssid, sizeof(ssid));")),
     ("app_web_forget_long_names_refused", T, F, F_PARSE,
@@ -613,7 +696,19 @@ MUTATIONS = [
     ("app_web_upload_asking_not_firmware", T, F, U_ASKING, U_ASKING.replace("access_asking(&app->access, now) != ACCESS_ASK_NONE", "(access_asking(&app->access, now) | 2) == ACCESS_ASK_RESET")),
     ("app_web_upload_asking_judged_one_ms_late", T, F, U_ASKING, U_ASKING.replace("access_asking(&app->access, now)", "access_asking(&app->access, now + 1)")),
     ("app_web_upload_asking_is_busy", T, F, U_ASKING, U_ASKING.replace("\"asking\"", "\"busy\"")),
-    ("app_web_upload_file_before_asking", T, F, U_ASKING + "\n" + U_CHECK + U_REFUSED, U_CHECK + U_REFUSED + "\n" + U_ASKING),
+    ("app_web_upload_file_before_asking", T, F,
+     U_ASKING + U_HOT_WHY + U_HOT + U_CHECK[len("\tcheck = "):] + U_REFUSED, U_CHECK + U_REFUSED + "\n" + U_ASKING + U_HOT.replace("\n\n\tcheck = ", "\n")),
+    # no upload for a question nobody could see
+    ("app_web_upload_begins_on_a_dark_screen", T, F, U_HOT, "\n\tcheck = "),
+    ("app_web_upload_hot_is_busy", T, F, U_HOT, U_HOT.replace("\"hot\"", "\"busy\"")),
+    ("app_web_upload_hot_is_503", T, F, U_HOT, U_HOT.replace("refuse(409,", "refuse(503,")),
+    ("app_web_upload_hot_before_asking", T, F, U_ASKING + U_HOT_WHY + U_HOT, U_HOT.replace("\n\n\tcheck = ", "\n") + U_ASKING + "\n\tcheck = "),
+    ("app_web_upload_hot_before_busy", T, F,
+     U_BUSY + U_ASKING_WHY + U_ASKING + U_HOT_WHY + U_HOT, U_HOT.replace("\n\n\tcheck = ", "\n") + U_BUSY + U_ASKING + "\n\tcheck = "),
+    ("app_web_upload_hot_before_locked", T, F, U_LOCKED, "\tif(screen_unseen(app)) return refuse(409, \"hot\", out, length);\n" + U_LOCKED),
+    ("app_web_upload_file_before_hot", T, F,
+     U_HOT_WHY + U_HOT + U_CHECK[len("\tcheck = "):] + U_REFUSED, "\n" + U_CHECK + U_REFUSED + U_HOT.replace("\n\n\tcheck = ", "\n")),
+    ("app_web_upload_hot_does_not_renew_the_release", T, F, U_LOCKED, "\tif(access_is_open(&app->access, now) && screen_unseen(app)) return refuse(409, \"hot\", out, length);\n" + U_LOCKED),
     ("app_web_upload_sizes_swapped", T, F, U_CHECK, U_CHECK.replace("file_size, slot_size", "slot_size, file_size")),
     ("app_web_upload_size_not_judged", T, F, U_CHECK, U_CHECK.replace("file_size, slot_size", "file_size - file_size + 1, slot_size")),
     ("app_web_upload_always_enough_bytes", T, F, U_CHECK, U_CHECK.replace("first != NULL ? first_length : 0", "first != NULL ? first_length - first_length + OTA_CHECK_BYTES : 0")),

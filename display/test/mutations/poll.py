@@ -1,6 +1,7 @@
 """Mutations of display/components/core/poll.c, see ../redproof.py."""
 
 F = "components/core/poll.c"
+H = "components/core/poll.h"
 FLOW = "components/core/dtc_flow.c"
 FLOW_H = "components/core/dtc_flow.h"
 T = "test_poll"
@@ -60,9 +61,22 @@ S_READ = "\tbool read = status == 200 && wican_state_parse(body, length, &state,
 S_FLOW = "\t\tdtc_flow_state(&poll->flow, &state, now_ms);\n"
 S_GOT = "\t\tconn_got_state(&poll->conn, status == 404 ? CONN_GOT_NOT_FOUND : CONN_GOT_FAILED, NULL, now_ms);"
 S_BIND = "\tif(conn_take_bind(&poll->conn, poll->bound_id, sizeof(poll->bound_id))) poll->events |= POLL_EVENT_BOUND;\n"
-S_RESTART = "\tif(conn_take_restarted(&poll->conn)) forget(poll);\n"
+S_RESTART = "\trestarted = conn_take_restarted(&poll->conn);\n"
+S_FORGET = "\tif(restarted) forget(poll);\n"
+# The start the catalogue came from, kept over a pause of the network
+START_OWN = "\tif(read && !poll->conn.foreign)\n\t{\n"
+START_WAS_NO_API = "\t\tif(poll->start == POLL_START_NO_API) restarted = true;\n"
+START_OTHER = "\t\tif(poll->start == POLL_START_API && (state.boot != poll->start_boot || strcmp(state.id, poll->start_id) != 0)) restarted = true;\n"
+START_KIND = "\t\tpoll->start = POLL_START_API;\n"
+START_ID = "\t\tstrcpy(poll->start_id, state.id);\n"
+START_BOOT = "\t\tpoll->start_boot = state.boot;\n"
+START_404 = "\telse if(status == 404)\n"
+START_WAS_API = "\t\tif(poll->start == POLL_START_API) restarted = true;\n"
+START_NO_API = "\t\tpoll->start = POLL_START_NO_API;\n"
+START_ENUM = "\tPOLL_START_UNKNOWN,     // nothing answered since the display started\n"
+START_ENUM_API = "\tPOLL_START_API,         // a firmware with the API: its id and its boot number name the start\n"
 S_BATTERY = "\tif(read && !poll->conn.foreign && state.batt_mv >= 0) battery(poll, state.batt_mv, now_ms, work, work_count);\n"
-S_AFTER = (S_RESTART + "\t// Behind the forgetting: this voltage is one of the adapter that answers now. That of a foreign adapter\n"
+S_AFTER = (S_FORGET + "\t// Behind the forgetting: this voltage is one of the adapter that answers now. That of a foreign adapter\n"
            "\t// is no value of the vehicle the display belongs to.\n" + S_BATTERY)
 
 R_ROOM = "\tdtc_result_t *room = poll->has_list ? &poll->cleared : &poll->list;"
@@ -347,10 +361,39 @@ MUTATIONS = [
     ("poll_state_bind_event_always", T, F, S_BIND, "\tconn_take_bind(&poll->conn, poll->bound_id, sizeof(poll->bound_id));\n\tpoll->events |= POLL_EVENT_BOUND;\n"),
     ("poll_state_bind_room_too_small", T, F, S_BIND, S_BIND.replace("sizeof(poll->bound_id)))", "12))")),
     ("poll_state_bind_room_one_byte_short", T, F, S_BIND, S_BIND.replace("sizeof(poll->bound_id)))", "sizeof(poll->bound_id) - 1))")),
-    ("poll_state_restart_ignored", T, F, S_RESTART, "\tconn_take_restarted(&poll->conn);\n\tif(poll->conn.restarted) forget(poll);\n"),
-    ("poll_state_restart_not_taken", T, F, S_RESTART, "\tif(poll->conn.restarted) forget(poll);\n"),
-    ("poll_state_forgets_always", T, F, S_RESTART, "\tconn_take_restarted(&poll->conn);\n\tforget(poll);\n"),
-    ("poll_state_battery_before_forgetting", T, F, S_AFTER, S_BATTERY + S_RESTART),
+    ("poll_state_restart_ignored", T, F, S_RESTART, "\tconn_take_restarted(&poll->conn);\n\trestarted = false;\n"),
+    ("poll_state_restart_not_taken", T, F, S_RESTART, "\trestarted = poll->conn.restarted;\n"),
+    ("poll_state_forgets_always", T, F, S_FORGET, "\tif(restarted || poll->wifi) forget(poll);\n"),
+    ("poll_state_forgets_never", T, F, S_FORGET, "\tif(restarted && !poll->wifi) forget(poll);\n"),
+    ("poll_state_battery_before_forgetting", T, F, S_AFTER, S_BATTERY + S_FORGET),
+
+    # the start the catalogue came from: an adapter that restarted behind a pause of the network is seen
+    ("poll_start_restart_behind_a_pause_unseen", T, F, START_OTHER, ""),
+    ("poll_start_boot_not_compared", T, F, START_OTHER, START_OTHER.replace("state.boot != poll->start_boot || ", "")),
+    ("poll_start_id_not_compared", T, F, START_OTHER, START_OTHER.replace(" || strcmp(state.id, poll->start_id) != 0", "")),
+    ("poll_start_unknown_is_another", T, F, START_OTHER, START_OTHER.replace("poll->start == POLL_START_API && ", "poll->start != POLL_START_NO_API && ")),
+    ("poll_start_api_after_no_api_is_the_same", T, F, START_WAS_NO_API, ""),
+    ("poll_start_api_after_unknown_is_another", T, F, START_WAS_NO_API, "\t\tif(poll->start != POLL_START_API) restarted = true;\n"),
+    ("poll_start_no_api_after_api_is_the_same", T, F, START_WAS_API, ""),
+    ("poll_start_no_api_twice_is_another", T, F, START_WAS_API, "\t\tif(poll->start != POLL_START_UNKNOWN) restarted = true;\n"),
+    ("poll_start_every_404_is_another", T, F, START_WAS_API, "\t\trestarted = true;\n"),
+    ("poll_start_kind_not_noted", T, F, START_KIND, ""),
+    ("poll_start_id_not_noted", T, F, START_ID, ""),
+    ("poll_start_boot_not_noted", T, F, START_BOOT, ""),
+    ("poll_start_not_noted", T, F, START_KIND + START_ID + START_BOOT, ""),
+    ("poll_start_noted_before_it_is_compared", T, F,
+     START_WAS_NO_API + START_OTHER + START_KIND + START_ID + START_BOOT, START_KIND + START_ID + START_BOOT + START_WAS_NO_API + START_OTHER),
+    ("poll_start_no_api_not_noted", T, F, START_NO_API, ""),
+    ("poll_start_no_api_noted_as_api", T, F, START_NO_API, "\t\tpoll->start = POLL_START_API;\n"),
+    ("poll_start_of_a_foreign_adapter", T, F, START_OWN, "\tif(read)\n\t{\n"),
+    ("poll_start_only_of_a_foreign_adapter", T, F, START_OWN, "\tif(read && poll->conn.foreign)\n\t{\n"),
+    ("poll_start_500_is_no_api", T, F, START_404, "\telse if(status >= 400)\n"),
+    ("poll_start_unreadable_state_is_no_api", T, F, START_404, "\telse if(status == 404 || (status == 200 && !read))\n"),
+    ("poll_start_no_answer_is_no_api", T, F, START_404, "\telse if(status == 404 || status == 0)\n"),
+    ("poll_start_404_says_nothing", T, F, START_404, "\telse if(status == 404 && poll->start == POLL_START_UNKNOWN)\n"),
+    ("poll_start_forgotten_with_the_network", T, F, WIFI_CONN, WIFI_CONN + "\tpoll->start = POLL_START_UNKNOWN;\n"),
+    ("poll_start_forgotten_when_joining", T, F, WIFI_JOINED, WIFI_JOINED + "\t\tpoll->start = POLL_START_UNKNOWN;\n"),
+    ("poll_start_unknown_is_not_zero", T, H, START_ENUM + START_ENUM_API, START_ENUM_API + START_ENUM),
     ("poll_state_battery_of_foreign_adapter", T, F, S_BATTERY, S_BATTERY.replace("read && !poll->conn.foreign &&", "read &&")),
     ("poll_state_battery_only_of_foreign_adapter", T, F, S_BATTERY, S_BATTERY.replace("!poll->conn.foreign", "poll->conn.foreign")),
     ("poll_state_battery_0_is_none", T, F, S_BATTERY, S_BATTERY.replace("state.batt_mv >= 0", "state.batt_mv > 0")),

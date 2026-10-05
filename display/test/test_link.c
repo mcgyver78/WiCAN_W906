@@ -1324,6 +1324,128 @@ static void test_ap_kept_open(void)
 	check(quiet(3600000, 4300000, 1000) && link_ap_on(&wifi) && shows(LINK_IDLE, -1, ""), "safe mode: it stays on when the profile is removed again and the user switches it off");
 }
 
+// link_ap_kept(): whether the access point stays on whatever is asked - the rule link_ap_request() and the
+// idle close go by, told to the caller, who draws the row that switches it by this
+static void test_ap_kept(void)
+{
+	static const struct
+	{
+		const net_profile_t *profiles;
+		int count;
+		bool safe;
+		bool kept;
+		const char *rule;
+	} cases[] = {
+		{HOME, 1, false, false, "one profile, no safe mode: not kept - a request to switch the access point off closes it"},
+		{ALL, 4, false, false, "four profiles, no safe mode: not kept - a request to switch the access point off closes it"},
+		{HOME, 0, false, true, "no profile, no safe mode: kept - a request to switch the access point off leaves it on"},
+		{HOME, 1, true, true, "one profile, safe mode: kept - a request to switch the access point off leaves it on"},
+		{ALL, 4, true, true, "four profiles, safe mode: kept - a request to switch the access point off leaves it on"},
+		{HOME, 0, true, true, "no profile, safe mode: kept - a request to switch the access point off leaves it on"},
+		{ALL, 5, false, true, "a count of five is no list, no safe mode: kept as without a profile"},
+		{ALL, -1, false, true, "a count of -1 is no list, no safe mode: kept as without a profile"},
+	};
+
+	// Safe mode
+	link_init(&wifi, HOME, 1, true, 0);
+	check(link_ap_kept(&wifi) && !link_ap_on(&wifi), "safe mode with a profile, before the first link_next: the access point is kept, although it is not ordered on yet");
+	next(0);
+	next(0);
+	check(link_ap_kept(&wifi) && link_ap_on(&wifi) && wifi.phase == LINK_SCANNING, "safe mode with a profile, the access point ordered on and a scan under way: kept");
+	link_ap_request(&wifi, false, 1000);
+	next(1000);
+	check(link_ap_kept(&wifi) && link_ap_on(&wifi), "safe mode: still kept after the user asked to switch it off");
+	link_scanned(&wifi, EVERYTHING, 5, 3000);
+	next(3000);
+	link_joined(&wifi, GATEWAY, 5000);
+	next(5000);
+	link_found(&wifi, ADAPTER, 6000);
+	check(link_ap_kept(&wifi) && link_up(&wifi), "safe mode with the link up: kept - the network the display is in changes nothing");
+	link_ap_clients(&wifi, 2, 7000);
+	link_ap_clients(&wifi, 0, 8000);
+	check(quiet(8000, 700000, 1000) && link_ap_kept(&wifi) && link_ap_on(&wifi), "safe mode, the last client left 692 s ago: kept, and still on");
+	link_init(&wifi, HOME, 0, true, 0);
+	check(link_ap_kept(&wifi), "safe mode without a profile: kept");
+
+	// No profile
+	link_init(&wifi, HOME, 0, false, 0);
+	check(link_ap_kept(&wifi) && !link_ap_on(&wifi), "no profile stored, before the first link_next: the access point is kept, although it is not ordered on yet");
+	next(0);
+	check(link_ap_kept(&wifi) && link_ap_on(&wifi), "no profile stored, the access point ordered on: kept");
+	link_ap_request(&wifi, false, 1000);
+	check(next(1000) == LINK_DO_NOTHING && link_ap_kept(&wifi) && link_ap_on(&wifi), "no profile stored: still kept after the user asked to switch it off");
+	link_init(&wifi, NULL, 0, false, 0);
+	check(link_ap_kept(&wifi), "no list at all (NULL, count 0): kept");
+
+	// With a profile
+	link_init(&wifi, HOME, 1, false, 0);
+	check(!link_ap_kept(&wifi) && !link_ap_on(&wifi), "a profile stored, no safe mode: the access point is not kept");
+	next(0);
+	link_ap_request(&wifi, true, 1000);
+	check(!link_ap_kept(&wifi), "a profile stored, the user asked for the access point: wanted, and not kept");
+	next(1000);
+	check(!link_ap_kept(&wifi) && link_ap_on(&wifi), "a profile stored, the access point on by the wish of the user: not kept - what is on is not kept by that");
+	link_ap_clients(&wifi, 1, 2000);
+	check(!link_ap_kept(&wifi) && quiet(2000, 700000, 1000) && link_ap_on(&wifi) && !link_ap_kept(&wifi),
+	      "a profile stored, a client holds the access point open for longer than 600 s: open, and not kept - it can be switched off");
+	link_ap_request(&wifi, false, 700000);
+	check(next(700000) == LINK_DO_AP_OFF && !link_ap_kept(&wifi), "a profile stored: the access point that was not kept closes when the user asks, client or not");
+	link_init(&wifi, ALL, 4, false, 0);
+	check(!link_ap_kept(&wifi), "four profiles stored, no safe mode: not kept");
+	up_by_query();
+	check(!link_ap_kept(&wifi) && link_up(&wifi), "a profile stored and the link up: not kept");
+	scanning(HOME, 1);
+	scan_failed(3000);
+	check(!link_ap_kept(&wifi) && wifi.phase == LINK_WAITING, "a profile stored whose network is not in range: not kept - the stored profile counts, not the network");
+
+	// link_profiles() to none and back
+	scanning(HOME, 1);
+	link_profiles(&wifi, HOME, 0, 2000);
+	check(link_ap_kept(&wifi) && !link_ap_on(&wifi), "the last profile is removed: kept at once, before the access point is ordered on");
+	check(next(2000) == LINK_DO_AP_ON && link_ap_kept(&wifi) && link_ap_on(&wifi), "the last profile is removed, the access point ordered on: kept");
+	link_scanned(&wifi, NULL, 0, 3000);
+	link_ap_request(&wifi, false, 3000);
+	check(next(3000) == LINK_DO_NOTHING && link_ap_kept(&wifi) && link_ap_on(&wifi) && wifi.phase == LINK_IDLE, "no profile left and the link idle: kept, the user cannot switch it off");
+	link_profiles(&wifi, HOME, 1, 4000);
+	check(!link_ap_kept(&wifi) && link_ap_on(&wifi), "a profile is stored again: not kept any more at once, and still on");
+	link_ap_request(&wifi, false, 5000);
+	check(next(5000) == LINK_DO_AP_OFF && !link_ap_on(&wifi) && !link_ap_kept(&wifi), "a profile is stored again: the user can switch the access point off");
+	link_profiles(&wifi, ALL, 5, 6000);
+	check(link_ap_kept(&wifi) && next(6000) == LINK_DO_AP_ON, "the new list has a count that is no list: kept as without a profile, and ordered on again");
+	link_profiles(&wifi, ALL, 4, 7000);
+	check(!link_ap_kept(&wifi), "the new list holds four profiles: not kept");
+
+	up_by_query();
+	link_profiles(&wifi, HOME, 0, 7000);
+	check(link_ap_kept(&wifi) && wifi.phase == LINK_JOINED, "the last profile is removed while the display is in its network: kept at once, before the network is left");
+	link_profiles(&wifi, GARAGE, 1, 7500);
+	check(!link_ap_kept(&wifi), "another profile is stored before the network was left: not kept");
+
+	link_init(&wifi, HOME, 1, true, 0);
+	link_profiles(&wifi, HOME, 0, 1000);
+	check(link_ap_kept(&wifi), "safe mode, the last profile is removed: kept");
+	link_profiles(&wifi, ALL, 4, 2000);
+	check(link_ap_kept(&wifi), "safe mode, profiles are stored again: kept all the same - the safe mode lasts until the next start");
+	link_init(&wifi, HOME, 1, false, 0);
+	check(!link_ap_kept(&wifi), "the next start without the safe mode, a profile stored: not kept");
+
+	// The answer and what a request does are one rule: kept exactly where switching it off changes nothing
+	for(size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+	{
+		link_do_t action;
+		bool on_before, said;
+
+		link_init(&wifi, cases[i].profiles, cases[i].count, cases[i].safe, 0);
+		link_ap_request(&wifi, true, 0);
+		on_before = next(0) == LINK_DO_AP_ON && link_ap_on(&wifi);
+		said = link_ap_kept(&wifi);
+		link_ap_request(&wifi, false, 1000);
+		action = next(1000);
+		check(on_before && said == cases[i].kept && link_ap_kept(&wifi) == cases[i].kept &&
+		      (cases[i].kept ? action != LINK_DO_AP_OFF && link_ap_on(&wifi) : action == LINK_DO_AP_OFF && !link_ap_on(&wifi)), cases[i].rule);
+	}
+}
+
 /* ------------------------------------------------------------------------------------------------ */
 /* Reports that do not match the action under way                                                     */
 /* ------------------------------------------------------------------------------------------------ */
@@ -1989,6 +2111,10 @@ typedef struct
 	long in_network;            // a scan or a join while in a network
 	long no_profile;            // a scan or a join without a stored profile
 	long ap_off;                // the access point ordered off in safe mode or without a profile
+	long kept_untold;           // link_ap_kept() is not: safe mode, or no profile in the list in use
+	long kept_closed;           // a request to switch a kept access point off made it unwanted
+	long kept[2];               // calls behind which the access point is not kept, and is
+	long off_refused;           // requests to switch a kept access point off
 	long host_not_up;           // a host although not up, or up without one
 	long scan_early;            // a scan sooner after a failure than the wait of the header
 	long stuck;                 // an honest driver did not get it up, or idle, in time
@@ -2431,9 +2557,16 @@ static void walk(uint32_t seed, walk_result_t *result)
 			case OP_AP_REQUEST:
 			{
 				bool on = walk_random(2) == 0;
+				bool kept = link_ap_kept(&walked);
 
 				link_ap_request(&walked, on, given);
 				model_ap_request(&model, on, given);
+				// What is told as kept is kept: the request leaves it wanted
+				if(kept && !on)
+				{
+					result->off_refused++;
+					if(!walked.ap_wanted) result->kept_closed++;
+				}
 				break;
 			}
 
@@ -2460,19 +2593,22 @@ static void walk(uint32_t seed, walk_result_t *result)
 		result->phases[model_phase(&model)]++;
 		if(op >= OP_SCANNED && op <= OP_NOT_FOUND && op != OP_LOST && open_before == watch.open && phase_before == walked.phase) result->ignored++;
 		if((link_host(&walked)[0] != '\0') != link_up(&walked)) result->host_not_up++;
+		// By the calls that were made alone: the safe mode of the start, the count of the list in use
+		if(link_ap_kept(&walked) != (watch.safe || watch.stored == 0)) result->kept_untold++;
+		result->kept[link_ap_kept(&walked)]++;
 
 		same = action == expected && walked.phase == model_phase(&model) && link_profile(&walked) == model.target &&
 		       strcmp(link_host(&walked), model.adapter) == 0 && link_up(&walked) == (model_phase(&model) == LINK_UP) &&
-		       link_ap_on(&walked) == model.ap_ordered;
+		       link_ap_on(&walked) == model.ap_ordered && link_ap_kept(&walked) == (model.safe || model.stored == 0);
 		if(!same)
 		{
 			result->different++;
 			if(shown++ < 3)
 			{
-				printf("  walk %lu, step %d, after %s at %llu ms: module does %d, phase %d, profile %d, host '%s', ap %d - model does %d, phase %d, profile %d, host '%s', ap %d\n",
+				printf("  walk %lu, step %d, after %s at %llu ms: module does %d, phase %d, profile %d, host '%s', ap %d, kept %d - model does %d, phase %d, profile %d, host '%s', ap %d, kept %d\n",
 				       (unsigned long)seed, step, op_names[op], (unsigned long long)given, (int)action, (int)walked.phase, link_profile(&walked),
-				       link_host(&walked), (int)link_ap_on(&walked), (int)expected, (int)model_phase(&model), model.target, model.adapter,
-				       (int)model.ap_ordered);
+				       link_host(&walked), (int)link_ap_on(&walked), (int)link_ap_kept(&walked), (int)expected, (int)model_phase(&model), model.target, model.adapter,
+				       (int)model.ap_ordered, (int)(model.safe || model.stored == 0));
 			}
 			// From here on they would differ in everything: this walk ends
 			return;
@@ -2529,28 +2665,32 @@ static void test_walk(void)
 
 	printf("  walk: %ld calls in %ld walks; nothing %ld, scan %ld, join %ld, leave %ld, find %ld (%ld while up), ap on %ld, ap off %ld; "
 	       "idle %ld, waiting %ld, scanning %ld, joining %ld, leaving %ld, joined %ld, up %ld; %ld joins overdue, %ld waits checked, "
-	       "%ld reports ignored, %ld steps back, %ld checks with an honest driver\n",
+	       "%ld reports ignored, %ld steps back, %ld checks with an honest driver; the access point kept behind %ld calls and not kept behind %ld, "
+	       "%ld requests to switch a kept one off\n",
 	       result.calls, result.walks, result.handed[LINK_DO_NOTHING], result.handed[LINK_DO_SCAN], result.handed[LINK_DO_JOIN],
 	       result.handed[LINK_DO_LEAVE], result.handed[LINK_DO_FIND], result.queries_up, result.handed[LINK_DO_AP_ON], result.handed[LINK_DO_AP_OFF],
 	       result.phases[LINK_IDLE], result.phases[LINK_WAITING], result.phases[LINK_SCANNING], result.phases[LINK_JOINING],
 	       result.phases[LINK_LEAVING], result.phases[LINK_JOINED], result.phases[LINK_UP], result.timeouts, result.waits_checked,
-	       result.ignored, result.steps_back, result.alive_checks);
+	       result.ignored, result.steps_back, result.alive_checks, result.kept[1], result.kept[0], result.off_refused);
 
 	snprintf(what, sizeof(what), "%d random walks of %d calls each: the module neither crashes nor hangs", WALKS, WALK_STEPS);
 	check(complete, what);
-	check(complete && result.walks == WALKS && result.different == 0, "in the walks module and model agree after every call: action, phase, profile, host, access point");
+	check(complete && result.walks == WALKS && result.different == 0, "in the walks module and model agree after every call: action, phase, profile, host, access point, and whether it is kept");
 	check(complete && result.handed[LINK_DO_SCAN] > 20000 && result.handed[LINK_DO_JOIN] > 10000 && result.handed[LINK_DO_LEAVE] > 1000 &&
 	      result.handed[LINK_DO_FIND] > 5000 && result.queries_up > 300 && result.handed[LINK_DO_AP_ON] > 1000 && result.handed[LINK_DO_AP_OFF] > 500 &&
 	      result.phases[LINK_IDLE] > 10000 && result.phases[LINK_WAITING] > 10000 && result.phases[LINK_SCANNING] > 10000 &&
 	      result.phases[LINK_JOINING] > 10000 && result.phases[LINK_LEAVING] > 1000 && result.phases[LINK_JOINED] > 10000 &&
 	      result.phases[LINK_UP] > 10000 && result.timeouts > 500 && result.waits_checked > 5000 && result.ignored > 10000 &&
-	      result.steps_back > 10000 && result.alive_checks > 10000,
-	      "the walks reach every action and every phase, overdue joins, queries for a silent adapter, ignored reports and steps back of the time in numbers");
+	      result.steps_back > 10000 && result.alive_checks > 10000 && result.kept[0] > 100000 && result.kept[1] > 100000 && result.off_refused > 1000,
+	      "the walks reach every action and every phase, overdue joins, queries for a silent adapter, ignored reports, steps back of the time, an access point that is "
+	      "kept and one that is not, and requests to switch a kept one off, in numbers");
 	check(complete && result.two_actions == 0, "in the walks no action that needs a report is handed out while another one waits for its report");
 	check(complete && result.join_unseen == 0, "in the walks a join is only ordered for a profile of the list in use that the last scan saw");
 	check(complete && result.in_network == 0, "in the walks no scan and no join while in a network, no leave and no query outside one");
 	check(complete && result.no_profile == 0, "in the walks never a scan or a join without a stored profile");
 	check(complete && result.ap_off == 0, "in the walks the access point is never ordered off in safe mode or without a stored profile");
+	check(complete && result.kept_untold == 0, "in the walks link_ap_kept is true behind every call exactly in safe mode or without a profile in the list in use");
+	check(complete && result.kept_closed == 0, "in the walks no request to switch the access point off makes one unwanted that link_ap_kept told to be kept");
 	check(complete && result.host_not_up == 0, "in the walks link_host is empty exactly when link_up is false");
 	check(complete && result.scan_early == 0, "in the walks a scan never follows a scan without success or a failed join sooner than the wait of the header");
 	check(complete && result.stuck == 0, "in the walks an honest driver gets the link up from every state while a nameable profile is stored, and to rest without one");
@@ -2580,6 +2720,7 @@ int main(void)
 	test_ap_request();
 	test_ap_idle();
 	test_ap_kept_open();
+	test_ap_kept();
 	test_reports_that_do_not_match();
 	test_clock();
 	test_clock_limits();

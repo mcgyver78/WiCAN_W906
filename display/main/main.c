@@ -566,12 +566,18 @@ static void start(void)
 	strlcpy(platform_info.reset, reset_word(reason), sizeof(platform_info.reset));
 
 	/*
-	 * What the boot loader says, from the two records of the partition "otadata".
+	 * What the boot loader says, from the two records of the partition "otadata". A record names a slot and
+	 * its state; a slot no record names has none (ESP_ERR_NOT_FOUND).
 	 * - Pending: the boot loader started this slot for the first time after it was made the one to boot. Any
 	 *   restart before esp_ota_mark_app_valid_cancel_rollback() makes it start the other slot again. A
-	 *   firmware that was flashed over USB has no record and is never pending.
-	 * - Taken back: the record of the other slot says that it was started and not confirmed, or marked as bad.
-	 *   It says so until the next upload begins (esp_ota_begin() removes it) or the slot is started again.
+	 *   firmware that was flashed over USB together with the empty otadata of the build is never pending: the
+	 *   boot loader gives the slot it starts a record as valid then (bootloader_utility.c,
+	 *   set_actual_ota_seq(): there is no factory app), and the other slot has none.
+	 * - Taken back: the record of the other slot says that it was started and not confirmed (aborted: the
+	 *   boot loader writes that at the start after the one that was not confirmed), or marked as bad
+	 *   (invalid: esp_ota_mark_app_invalid_rollback(), which nothing here calls). It says so until the next
+	 *   upload begins (esp_ota_begin() erases that record) or the slot is made the one to boot again. The
+	 *   version before a confirmed update is valid, and stays so.
 	 */
 	other_slot = esp_ota_get_next_update_partition(NULL);
 	update_pending = esp_ota_get_state_partition(running, &state) == ESP_OK && state == ESP_OTA_IMG_PENDING_VERIFY;
@@ -594,7 +600,13 @@ static void start(void)
 	}
 	guard = guard_start(&guard_memory, guard_reset_of(reason), knob_held());
 	boot.safe_mode = guard.safe_mode;
-	boot.previous_firmware = !upload_left_behind(running) && holds_firmware(other_slot);
+	/*
+	 * "Vorherige Version" is the version that ran before this one, and nothing else that lies in the other
+	 * slot: not what an upload left there, and never an update that was taken back. That one is a whole
+	 * firmware of this project as well, and its upload was installed, so neither of the other two questions
+	 * finds anything wrong with it - only the boot loader knows that it was started and nobody confirmed it.
+	 */
+	boot.previous_firmware = !upload_left_behind(running) && !boot.rolled_back && holds_firmware(other_slot);
 	ESP_LOGI(TAG, "safe mode %d, layout before the last %d, update pending %d, taken back %d, previous firmware %d",
 	         guard.safe_mode, guard.previous_layout, boot.update_pending, boot.rolled_back, boot.previous_firmware);
 

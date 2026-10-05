@@ -930,7 +930,7 @@ static void over_ask_reset(scene_t *scene)
 static void over_update(scene_t *scene)
 {
 	motor(scene);
-	over(scene, SCENE_OVER_UPDATE, -1, "Update in Ordnung?", "Knopf drücken oder Bildschirm berühren",
+	over(scene, SCENE_OVER_UPDATE, -1, "Update in Ordnung?", "Knopf drücken",
 	     "sonst alte Version in 4:12");
 }
 

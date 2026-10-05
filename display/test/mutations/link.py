@@ -23,7 +23,11 @@ DUE_AT = "\treturn link->clock_ms >= link->find_at_ms;"
 INIT_WANTED = "\tlink->ap_wanted = safe_mode || link->profile_count == 0;"
 TIMEOUT = ("\tif(link->phase == LINK_JOINING && link->busy && link->clock_ms - link->action_since_ms >= LINK_JOIN_TIMEOUT_MS) "
            "join_failed(link);")
-AP_IDLE = ("\tif(link->ap_on && !link->ap_forced && link->profile_count > 0 && link->ap_clients == 0 &&\n"
+# Safe mode and a display without a stored profile keep the access point on: one rule (link_ap_kept()), asked
+# by the idle close and by link_ap_request()
+KEPT = "\treturn link->ap_forced || link->profile_count == 0;"
+NOT_KEPT = "!link_ap_kept(link)"
+AP_IDLE = ("\tif(link->ap_on && !link_ap_kept(link) && link->ap_clients == 0 &&\n"
            "\t   link->clock_ms - link->ap_idle_since_ms >= LINK_AP_IDLE_MS)\n\t{\n\t\tlink->ap_wanted = false;\n\t}\n")
 AP_ORDER = ("\tif(link->ap_wanted != link->ap_on)\n\t{\n\t\tlink->ap_on = link->ap_wanted;\n"
             "\t\tif(!link->ap_on) return LINK_DO_AP_OFF;\n\n"
@@ -58,7 +62,7 @@ VOID = ("\t\tlink->changed = true;\n\t\tlink->profile = -1;\n\t\tlink->host[0] =
         "\t\tif(link->phase == LINK_UP) link->phase = LINK_JOINED;\n")
 PROFILES_SCANNING = "\telse if(link->phase == LINK_SCANNING) link->wait_step = 0;"
 PROFILES_ELSE = "\telse if(link->phase != LINK_LEAVING) start_over(link);"
-REQUEST = "\tlink->ap_wanted = on || link->ap_forced || link->profile_count == 0;"
+REQUEST = "\tlink->ap_wanted = on || link_ap_kept(link);"
 CLIENTS_NEGATIVE = "\tif(clients < 0) clients = 0;\n"
 CLIENTS_LEFT = "\tif(clients == 0 && link->ap_clients > 0) link->ap_idle_since_ms = link->clock_ms;"
 
@@ -295,8 +299,10 @@ MUTATIONS = [
     ("link_ap_closes_one_ms_late", T, F, AP_IDLE, AP_IDLE.replace(">= LINK_AP_IDLE_MS", "> LINK_AP_IDLE_MS")),
     ("link_ap_idle_time_shorter", T, H, "(600u * 1000u)", "(600u * 1000u - 1u)"),
     ("link_ap_idle_time_longer", T, H, "(600u * 1000u)", "(600u * 1000u + 1u)"),
-    ("link_ap_closes_in_safe_mode", T, F, AP_IDLE, AP_IDLE.replace("!link->ap_forced && ", "")),
-    ("link_ap_closes_without_profile", T, F, AP_IDLE, AP_IDLE.replace("link->profile_count > 0 && ", "")),
+    # the idle close with a rule of its own instead of the one of link_ap_kept()
+    ("link_ap_closes_in_safe_mode", T, F, AP_IDLE, AP_IDLE.replace(NOT_KEPT, "link->profile_count > 0")),
+    ("link_ap_closes_without_profile", T, F, AP_IDLE, AP_IDLE.replace(NOT_KEPT, "!link->ap_forced")),
+    ("link_ap_closes_although_kept", T, F, AP_IDLE, AP_IDLE.replace(NOT_KEPT + " && ", "")),
     ("link_ap_closes_with_clients", T, F, AP_IDLE, AP_IDLE.replace(" link->ap_clients == 0 &&", "")),
     ("link_ap_closes_with_one_client", T, F, AP_IDLE, AP_IDLE.replace("link->ap_clients == 0", "link->ap_clients <= 1")),
     ("link_ap_closes_before_it_opens", T, F, AP_IDLE, AP_IDLE.replace("if(link->ap_on && ", "if(")),
@@ -310,8 +316,10 @@ MUTATIONS = [
     ("link_ap_blocks_the_rest", T, F, AP_ORDER, AP_ORDER.replace("\t\tlink->ap_on = link->ap_wanted;\n", "\t\tlink->ap_on = link->ap_wanted;\n\t\tlink->wait_until_ms = later(link, 1);\n\t\tlink->find_at_ms = later(link, 1);\n")),
     ("link_ap_on_reports_the_wish", T, F, "\treturn link->ap_on;", "\treturn link->ap_wanted;"),
     ("link_ap_request_ignored", T, F, REQUEST, "\t(void)on;"),
+    # the request with a rule of its own instead of the one of link_ap_kept()
     ("link_ap_request_off_in_safe_mode", T, F, REQUEST, "\tlink->ap_wanted = on || link->profile_count == 0;"),
     ("link_ap_request_off_without_profile", T, F, REQUEST, "\tlink->ap_wanted = on || link->ap_forced;"),
+    ("link_ap_request_off_although_kept", T, F, REQUEST, "\tlink->ap_wanted = on;"),
     ("link_ap_request_off_ignored", T, F, REQUEST, "\tif(on) link->ap_wanted = true;"),
     ("link_ap_request_on_ignored", T, F, REQUEST, "\tif(!on) " + REQUEST.strip()),
     ("link_ap_request_starts_idle_time", T, F, REQUEST, REQUEST + "\n\tif(on) link->ap_idle_since_ms = link->clock_ms;"),
@@ -322,6 +330,21 @@ MUTATIONS = [
     ("link_ap_clients_one_leaving_restarts_only", T, F, CLIENTS_LEFT, CLIENTS_LEFT.replace("link->ap_clients > 0", "link->ap_clients == 1")),
     ("link_ap_clients_not_stored", T, F, "\tlink->ap_clients = clients;\n}", "}"),
     ("link_ap_clients_only_growing", T, F, "\tlink->ap_clients = clients;\n}", "\tif(clients > link->ap_clients) link->ap_clients = clients;\n}"),
+
+    # link_ap_kept: safe mode, or no stored profile - whatever is asked, whether it is on already or not
+    ("link_ap_kept_not_in_safe_mode", T, F, KEPT, "\treturn link->profile_count == 0;"),
+    ("link_ap_kept_not_without_profile", T, F, KEPT, "\treturn link->ap_forced;"),
+    ("link_ap_kept_only_in_safe_mode_without_profile", T, F, KEPT, KEPT.replace("||", "&&")),
+    ("link_ap_kept_never", T, F, KEPT, "\t(void)link;\n\treturn false;"),
+    ("link_ap_kept_always", T, F, KEPT, "\t(void)link;\n\treturn true;"),
+    ("link_ap_kept_with_one_profile", T, F, KEPT, KEPT.replace("profile_count == 0", "profile_count <= 1")),
+    ("link_ap_kept_unless_the_list_is_full", T, F, KEPT, KEPT.replace("profile_count == 0", "profile_count < NET_PROFILES_MAX")),
+    ("link_ap_kept_while_it_is_on", T, F, KEPT, "\treturn link->ap_on;"),
+    ("link_ap_kept_while_it_is_wanted", T, F, KEPT, "\treturn link->ap_wanted;"),
+    ("link_ap_kept_only_once_it_is_on", T, F, KEPT, "\treturn link->ap_on && (link->ap_forced || link->profile_count == 0);"),
+    ("link_ap_kept_by_a_client", T, F, KEPT, KEPT.replace(";", " || link->ap_clients > 0;")),
+    ("link_ap_kept_while_in_no_network", T, F, KEPT, KEPT.replace("link->profile_count == 0", "link->phase == LINK_IDLE || link->phase == LINK_WAITING")),
+    ("link_ap_kept_only_while_idle", T, F, KEPT, KEPT.replace("link->profile_count == 0", "link->phase == LINK_IDLE")),
 
     # link_profiles
     ("link_profiles_list_not_stored", T, F, PROFILES_TAKEN, PROFILES_TAKEN.replace("\tlink->profiles = profiles;\n", "\t(void)profiles;\n")),

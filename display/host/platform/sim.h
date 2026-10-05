@@ -1,5 +1,6 @@
 /*
- * What the simulations of the platform share (main_sim.c, net_sim.c, web_sim.c): the checks and the log.
+ * What the simulations of the platform share (main_sim.c, net_sim.c, web_sim.c, screen_sim.c): the checks and
+ * the log.
  *
  * A simulation is one program. It includes one file of display/main unchanged, as a unit of its own, and runs
  * it against the real core (display/components/core) and against stand-ins for everything below: the headers

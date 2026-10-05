@@ -98,7 +98,9 @@ typedef struct
 void conn_init(conn_t *conn, const char *bound_id);
 
 // The display joined or left a network. Joining starts over: nothing is known about the adapter, the first
-// round is due at once. Calling it again with the same value changes nothing.
+// round is due at once - so an adapter that restarted while the display was out of the network is no restart
+// here (poll.h sees it, by the start it keeps over the pause). Calling it again with the same value changes
+// nothing.
 void conn_wifi(conn_t *conn, bool up, uint64_t now_ms);
 
 // What to send now. Returns CONN_ASK_NOTHING while a request is under way (until the matching conn_got_*

@@ -76,6 +76,14 @@ typedef struct
 #define POLL_EVENT_FORGET   0x10u   // the adapter restarted or was replaced: values and lists were dropped, the
                                     // catalogue was started anew
 
+// What is known of the start of the adapter that answered GET /api/state last
+typedef enum
+{
+	POLL_START_UNKNOWN,     // nothing answered since the display started
+	POLL_START_API,         // a firmware with the API: its id and its boot number name the start
+	POLL_START_NO_API,      // a firmware without the API (404): nothing tells one of its starts from another
+} poll_start_t;
+
 typedef struct
 {
 	conn_t conn;
@@ -83,6 +91,11 @@ typedef struct
 	catalog_t catalog;
 	guard_catalog_t catalog_guard;
 	bool catalog_complete;      // the profile was loaded on this connection
+	// The start of the adapter the catalogue came from: the one that answered GET /api/state last, a foreign
+	// adapter left out (nothing is fetched from it). Kept over a pause of the network, see poll_apply().
+	poll_start_t start;
+	char start_id[33];          // POLL_START_API: "id" and "boot" of that state (tools/w906/API.md: boot is a
+	uint32_t start_boot;        // random number chosen at boot, another one means the adapter restarted)
 	dtc_flow_t flow;
 
 	// list, list_text, cleared, old and old_text mean something only while their has_.. is true. Without it
@@ -127,7 +140,8 @@ void poll_stored(poll_t *poll, const char *catalog_json, size_t catalog_length, 
 // Joining forgets the values (values_clear()): the adapter may have restarted in between, and its pass
 // counter means nothing then. conn asks for the profile again, so the catalogue counts as not complete
 // until it is loaded, and guard.h is told (guard_catalog_connected()). The catalogue itself stays: the one
-// of poll_stored() serves until the profile of this connection is loaded.
+// of poll_stored() serves until the profile of this connection is loaded. Whether the adapter did restart
+// in between shows with its first answer: poll_apply() then starts the catalogue anew (POLL_STATE).
 // Calling it again with the same value changes nothing.
 void poll_wifi(poll_t *poll, bool up, uint64_t now_ms);
 
@@ -154,14 +168,31 @@ bool poll_prepare(poll_t *poll, uint64_t now_ms, poll_request_t *request);
  *               and none of a foreign adapter: that is not the vehicle of this display).
  *               404: conn_got_state(NOT_FOUND). Anything else, also a 200 with a body that cannot be read
  *               or is empty: FAILED.
- *               After it: conn_take_bind() -> bound_id and POLL_EVENT_BOUND; conn_take_restarted() -> values,
- *               list, cleared (not old) are dropped, the catalogue is started anew (catalog_init(): a
- *               profile of another vehicle must not leave entries behind, and what was delivered once
- *               would stay for ever) and counts as not complete, guard_catalog_connected(),
- *               POLL_EVENT_FORGET and POLL_EVENT_LISTS; and the flow must not go on with numbers of
- *               another adapter or boot: dtc_flow_lost(), then dtc_flow_dismiss() if it still shows a list
- *               or an outcome (LIST, CLEARED). The battery voltage of the very state that showed the
- *               restart stays: it is one of the adapter that answers now.
+ *               After it: conn_take_bind() -> bound_id and POLL_EVENT_BOUND. Then, if the adapter is
+ *               another one or restarted - conn_take_restarted(), or another start than the one the
+ *               catalogue came from, see below -: values, list, cleared (not old) are dropped, the catalogue
+ *               is started anew (catalog_init(): a profile of another vehicle must not leave entries
+ *               behind, and what was delivered once would stay for ever) and counts as not complete,
+ *               guard_catalog_connected(), POLL_EVENT_FORGET and POLL_EVENT_LISTS, once per answer; and
+ *               the flow must not go on with numbers of another adapter or boot: dtc_flow_lost(), then
+ *               dtc_flow_dismiss() if it still shows a list or an outcome (LIST, CLEARED). The battery
+ *               voltage of the very state that showed the restart stays: it is one of the adapter that
+ *               answers now.
+ *               The start the catalogue came from. conn.h knows the adapter only since the network was
+ *               joined: an adapter that restarted while the display was out of the network is to conn the
+ *               first answer of a connection, no restart. So the start is remembered here, over every
+ *               pause of the network, until poll_init(): `start`, with start_id and start_boot of the last
+ *               state that was taken from an adapter that is not foreign (a foreign one gives nothing to
+ *               the catalogue and is no start it could come from; the rule of bound_id is that of conn.h,
+ *               unchanged). The adapter that answers is another start if
+ *                 - a state is taken, the adapter is not foreign, and the start was one with the API and
+ *                   another "boot" or another "id" (the uptime does not count, as for conn.h), or the
+ *                   start was a firmware without the API;
+ *                 - the answer is 404 and the start was one with the API.
+ *               While nothing has answered since the display started (POLL_START_UNKNOWN) no answer is
+ *               another start: the catalogue of poll_stored() serves until the profile is loaded, and
+ *               that one has no entry marked as delivered that the profile could not replace. Two
+ *               firmwares without the API cannot be told apart. Then `start` becomes what answered.
  * POLL_RESULT   200, the header carries the number that was asked for (its decimal digits and nothing
  *               else), the body is shorter than POLL_TEXT_SIZE and dtc_result_parse() takes it:
  *               conn_got_result(OK) and dtc_flow_result(). If the flow is then LIST the result is `list`

@@ -747,7 +747,17 @@ static void test_values_screens(void)
 
 	stage();
 	values_init(&values);
-	screen("values_none", "no value at all: every value a dimmed dash without unit, arc and bar without a position; the ring is yellow - a page of dashes is not one on which all is well");
+	screen("values_none", "no value was ever delivered: every value a dimmed dash without unit, arc and bar without a position; the ring is off - nothing that was there went missing");
+	stage();
+	values_init(&values);
+	seen("{\"ENGINE_RPM\":812,\"COOLANT_TMP\":88.4,\"BOOST_PRESSURE\":1013,\"ACCEL_PEDAL\":12.5}", 500);
+	screen("values_never", "four fresh values and two the adapter never delivered on this connection, the state and the battery voltage: dashes, and the ring is off - "
+	                       "everything that was ever delivered is fresh");
+	stage();
+	values_init(&values);
+	seen("{\"ENGINE_RPM\":812,\"BOOST_PRESSURE\":1013,\"ACCEL_PEDAL\":12.5}", 500);
+	seen("{\"COOLANT_TMP\":88.4}", 10000);
+	screen("values_never_and_gone", "the same page with the coolant delivered 10 s ago and gone: its dash looks like the two beside it, but it went missing - the ring is yellow");
 	stage();
 	values_init(&values);
 	seen(base_values, 10000);
@@ -759,13 +769,15 @@ static void test_values_screens(void)
 	screen("values_one_gone", "a page of one value that is gone, while other values are fresh: a dash, the ring yellow");
 	stage();
 	values_init(&values);
+	seen(base_values, 10000);
 	nav.page = 5;
-	screen("values_five_gone", "a page of dashes and of one value the profile does not have: the ring is yellow for the dashes");
+	screen("values_five_gone", "a page of values that were delivered 10 s ago and are gone, and of one the profile does not have: dashes, and the ring is yellow for them");
 
 	stage();
 	world.catalog = &unloaded;
 	nav.page = 7;
-	screen("values_unloaded", "before the profile arrived a page of foreign values is one of seven and shows dashes: nobody knows yet that the profile lacks them, the ring is yellow");
+	screen("values_unloaded", "before the profile arrived a page of foreign values is one of seven and shows dashes: nobody knows yet that the profile lacks them; "
+	                          "the ring is off, none of them was ever delivered");
 	stage();
 	nav.page = 7;
 	screen("values_foreign", "values the profile does not have are n. v., dimmed, without unit; their page is still shown but no dot is lit; the ring is off - nothing is missing");
@@ -890,6 +902,24 @@ static void test_items(void)
 		{"TRANS_TEMP", SCENE_UNAVAILABLE, "FUEL_L", "43", RING_YELLOW, "one the profile does not provide and an old one"},
 		{"COOLANT_TMP", SCENE_DASH, "FUEL_L", "43", RING_YELLOW, "a dash and an old one"},
 		{"COOLANT_TMP", SCENE_DASH, "COOLANT_TMP", SCENE_DASH, RING_YELLOW, "both dashes"},
+	};
+	// ENGINE_RPM is fresh, FUEL_L old, COOLANT_TMP delivered and gone; DPF_SOOT_MASS and LAMBDA are values of the
+	// profile the adapter never delivered; the profile does not have TRANS_TEMP
+	static const struct
+	{
+		const char *first, *first_text;
+		const char *second, *second_text;
+		ring_kind_t ring;
+		const char *rule;
+	} never[] = {
+		{"DPF_SOOT_MASS", SCENE_DASH, "ENGINE_RPM", "812", RING_NONE, "one that was never delivered and a fresh one"},
+		{"ENGINE_RPM", "812", "DPF_SOOT_MASS", SCENE_DASH, RING_NONE, "a fresh one and one that was never delivered"},
+		{"DPF_SOOT_MASS", SCENE_DASH, "LAMBDA", SCENE_DASH, RING_NONE, "both never delivered"},
+		{"DPF_SOOT_MASS", SCENE_DASH, "TRANS_TEMP", SCENE_UNAVAILABLE, RING_NONE, "one never delivered and one the profile does not provide"},
+		{"DPF_SOOT_MASS", SCENE_DASH, "FUEL_L", "43", RING_YELLOW, "one never delivered and an old one - yellow for the old one"},
+		{"FUEL_L", "43", "DPF_SOOT_MASS", SCENE_DASH, RING_YELLOW, "an old one and one never delivered"},
+		{"DPF_SOOT_MASS", SCENE_DASH, "COOLANT_TMP", SCENE_DASH, RING_YELLOW, "one never delivered and one delivered and gone, two dashes - yellow for the one that went missing"},
+		{"COOLANT_TMP", SCENE_DASH, "DPF_SOOT_MASS", SCENE_DASH, RING_YELLOW, "one delivered and gone and one never delivered"},
 	};
 	// Ages at the limits of fresh and old, at the 35 s a scan took on the vehicle, and far beyond
 	static const struct
@@ -1277,13 +1307,66 @@ static void test_items(void)
 	SET(item->key, "COOLANT_TMP");
 	values_init(&values);
 	build();
-	check(strcmp(scene->items[0].text, SCENE_DASH) == 0 && ring_is(RING_YELLOW, 0), "a page of one value of the profile that never arrived: a dash, the ring yellow");
+	check(strcmp(scene->items[0].text, SCENE_DASH) == 0 && ring_is(RING_NONE, 0),
+	      "a page of one value of the profile that never arrived: a dash, and the ring is off - a value the vehicle never answers must not keep its page yellow for ever");
 	SET(item->key, "TRANS_TEMP");
 	build();
 	check(strcmp(scene->items[0].text, SCENE_UNAVAILABLE) == 0 && ring_is(RING_NONE, 0), "a page of one value the profile does not provide: n. v., the ring off - nothing is missing");
 	world.catalog = &unloaded;
 	build();
-	check(strcmp(scene->items[0].text, SCENE_DASH) == 0 && ring_is(RING_YELLOW, 0), "the same value before the profile arrived: a dash, the ring yellow");
+	check(strcmp(scene->items[0].text, SCENE_DASH) == 0 && ring_is(RING_NONE, 0), "the same value before the profile arrived: a dash, the ring off as well - it was never delivered");
+	seen("{\"TRANS_TEMP\":80}", 10000);
+	build();
+	check(strcmp(scene->items[0].text, SCENE_DASH) == 0 && ring_is(RING_YELLOW, 0),
+	      "before the profile arrived a value that was delivered 10 s ago and is gone is missed like any other: a dash, the ring yellow");
+
+	// "Delivered" is what the display holds of this connection: values_clear() begins a new one
+	stage();
+	item = probe();
+	SET(item->key, "COOLANT_TMP");
+	seen("{\"COOLANT_TMP\":88.4}", 600000);
+	build();
+	check(strcmp(scene->items[0].text, SCENE_DASH) == 0 && ring_is(RING_YELLOW, 0), "a value delivered ten minutes ago and never since: a dash, and the ring is yellow for as long as the connection lasts");
+	values_clear(&values);
+	// The catalogue keeps its mark over a pause of the network (catalog.h): it does not say "on this connection"
+	catalog.entries[catalog_find(&catalog, "COOLANT_TMP")].delivered = true;
+	build();
+	catalog.entries[catalog_find(&catalog, "COOLANT_TMP")].delivered = false;
+	check(strcmp(scene->items[0].text, SCENE_DASH) == 0 && ring_is(RING_NONE, 0),
+	      "the same value after the display joined its network again (values_clear()): what the connection before delivered counts no more, "
+	      "whatever the catalogue still marks as delivered - a dash, the ring off");
+	seen("{\"ENGINE_RPM\":812}", 500);
+	build();
+	check(strcmp(scene->items[0].text, SCENE_DASH) == 0 && ring_is(RING_NONE, 0), "other values arrive on the new connection, this one does not: still a dash, the ring still off");
+	seen("{\"COOLANT_TMP\":88.4}", 10000);
+	build();
+	check(strcmp(scene->items[0].text, SCENE_DASH) == 0 && ring_is(RING_YELLOW, 0), "once it was delivered on the new connection and is gone again, it is missed: the ring is yellow");
+
+	// A value that never arrived beside the others: the page is as fresh as what was delivered
+	for(int i = 0; i < COUNT(never); i++)
+	{
+		stage();
+		values_init(&values);
+		seen("{\"ENGINE_RPM\":812}", 500);
+		seen("{\"FUEL_L\":43}", 5000);
+		seen("{\"COOLANT_TMP\":88.4}", 10000);
+		item = probe();
+		SET(item->key, never[i].first);
+		second = probe_more(never[i].second);
+		build();
+		snprintf(what, sizeof(what), "a page of two values, %s: the ring is %s", never[i].rule, never[i].ring == RING_YELLOW ? "yellow" : "off");
+		check(scene->item_count == 2 && strcmp(scene->items[0].text, never[i].first_text) == 0 && strcmp(scene->items[1].text, never[i].second_text) == 0 && ring_is(never[i].ring, 0), what);
+	}
+	stage();
+	values_init(&values);
+	item = probe();
+	SET(item->key, "DPF_SOOT_MASS");
+	second = probe_more("ENGINE_RPM");
+	limit(&second->warn_hi, 800);
+	seen("{\"ENGINE_RPM\":812}", 500);
+	build();
+	check(strcmp(scene->items[0].text, SCENE_DASH) == 0 && scene->items[1].tone == SCENE_TONE_WARN && ring_is(RING_YELLOW, 0),
+	      "a value that never arrived beside one at its warn limit: the ring is yellow for the limit");
 
 	// Whichever value of the page it is
 	for(int i = 0; i < COUNT(pairs); i++)
@@ -3017,7 +3100,7 @@ static void test_settings(void)
 	build();
 	check(row_is(0, true, SCENE_ROW_ACTION, "Drehrichtung", "normal", true) && row_is(1, false, SCENE_ROW_ACTION, "Hotspot", "aus", true) && row_is(3, false, SCENE_ROW_ACTION, "Vorherige Version", "", true) &&
 	      row_is(2, false, SCENE_ROW_ACTION, "Neustart", "", true) && row_is(4, false, SCENE_ROW_ACTION, "Werkseinstellungen", "", true),
-	      "a previous firmware alone: its row is enabled, restart and factory reset are always");
+	      "a previous firmware alone: its row is enabled, restart and factory reset are without one, while no request is under way");
 	world.update_pending = true;
 	build();
 	check(row_is(3, false, SCENE_ROW_ACTION, "Vorherige Version", "", true) && scene->over == SCENE_OVER_UPDATE, "a previous firmware while the update question lies over the settings: its row stays enabled");
@@ -3036,7 +3119,121 @@ static void test_settings(void)
 		enabled = enabled && scene->row_count == 5;
 		for(int i = 0; i < scene->row_count; i++) enabled = enabled && scene->rows[i].enabled && scene->rows[i].kind == SCENE_ROW_ACTION;
 	}
-	check(enabled, "every row of the settings is enabled in safe mode, without a network and when it is too hot");
+	check(enabled, "what the scene itself is told - safe mode, no network, the access point on, too hot - disables no row of the settings: "
+	               "only the world of nav does, and that one says here that every row acts");
+
+	// A row is enabled exactly when a press on it does something. An own access point that stays on whatever is
+	// asked (world.ap_kept: safe mode, or no stored network) cannot be switched: nav.h ignores the press on
+	// Hotspot, and the row is drawn as one that does nothing. Its detail still tells whether it is on.
+	stage_on(NAV_SETTINGS, 1);
+	input.ap_on = true;
+	world.ap_kept = true;
+	screen("settings_kept", "the settings with the own access point kept on, the focus on Hotspot: the row is disabled and still says an, the other rows are as without that");
+	stage_on(NAV_SETTINGS, 0);
+	world.ap_kept = true;
+	build();
+	check(row_is(0, true, SCENE_ROW_ACTION, "Drehrichtung", "normal", true) && row_is(1, false, SCENE_ROW_ACTION, "Hotspot", "aus", false) &&
+	      row_is(2, false, SCENE_ROW_ACTION, "Neustart", "", true) && row_is(4, false, SCENE_ROW_ACTION, "Werkseinstellungen", "", true),
+	      "the access point kept on and not ordered on yet: Hotspot is disabled and says aus - the detail is that of ap_on, the rule changes no text");
+	input.ap_on = true;
+	world.ap_kept = false;
+	build();
+	check(row_is(1, false, SCENE_ROW_ACTION, "Hotspot", "an", true), "the access point on and not kept: Hotspot is enabled - that it is on disables nothing");
+	stage_on(NAV_SETTINGS, 0);
+	input.safe_mode = true;
+	input.ap_on = true;
+	build();
+	check(row_is(1, false, SCENE_ROW_ACTION, "Hotspot", "an", true),
+	      "the scene is told of the safe mode while the world says the access point can be switched: Hotspot is enabled - the scene keeps no rule of its own");
+	input.safe_mode = false;
+	world.ap_kept = true;
+	build();
+	check(row_is(1, false, SCENE_ROW_ACTION, "Hotspot", "an", false),
+	      "the world says the access point is kept while the scene is told of no safe mode (no network is stored): Hotspot is disabled");
+	world.update_pending = true;
+	build();
+	check(row_is(1, false, SCENE_ROW_ACTION, "Hotspot", "an", false) && row_is(0, true, SCENE_ROW_ACTION, "Drehrichtung", "normal", true) && scene->over == SCENE_OVER_UPDATE,
+	      "the access point kept on, below the update question: the rows are those without the overlay, Hotspot disabled");
+	stage_on(NAV_SETTINGS, 5);
+	input.ap_on = true;
+	world.ap_kept = true;
+	world.previous_firmware = true;
+	build();
+	check(scene->first == 1 && row_is(0, false, SCENE_ROW_ACTION, "Hotspot", "an", false) && row_is(1, false, SCENE_ROW_ACTION, "Neustart", "", true) &&
+	      row_is(2, false, SCENE_ROW_ACTION, "Vorherige Version", "", true) && row_is(3, false, SCENE_ROW_ACTION, "Werkseinstellungen", "", true) &&
+	      row_is(4, true, SCENE_ROW_ACTION, "Zurück", "", true),
+	      "the access point kept on, the focus on Zurück: Hotspot is the first visible row and the only one that is disabled");
+	enabled = true;
+	for(int i = 0; i < 9; i++)
+	{
+		// In the order of dtc_flow_phase_t: sent or accepted, and not ended
+		static const bool under_way[] = {false, true, true, false, true, true, false, false, false};
+
+		stage_on(NAV_SETTINGS, 0);
+		world.ap_kept = true;
+		world.flow = (dtc_flow_phase_t)i;
+		build();
+		enabled = enabled && row_is(0, true, SCENE_ROW_ACTION, "Drehrichtung", "normal", true) && row_is(1, false, SCENE_ROW_ACTION, "Hotspot", "aus", false) &&
+		          row_is(2, false, SCENE_ROW_ACTION, "Neustart", "", !under_way[i]) && row_is(4, false, SCENE_ROW_ACTION, "Werkseinstellungen", "", !under_way[i]);
+	}
+	check(enabled, "the access point kept on, in every phase of the own request: Hotspot is disabled in each, the direction enabled, restart and factory reset as the phase says");
+
+	// A row is enabled exactly when a press on it does something. While the own request is under way nav.h
+	// ignores a press on the three rows that end in a restart: they are drawn as rows that do nothing.
+	stage_on(NAV_SETTINGS, 2);
+	world.previous_firmware = true;
+	world.flow = DTC_FLOW_READING;
+	world.can_read = false;
+	screen("settings_busy", "the settings while the own read runs, a previous firmware in the other slot: restart, previous version and factory reset are disabled, "
+	                        "the rows that restart nothing stay enabled");
+	for(int i = 0; i < 9; i++)
+	{
+		// In the order of dtc_flow_phase_t: sent or accepted, and not ended
+		static const bool under_way[] = {false, true, true, false, true, true, false, false, false};
+		static const char *const rules[] = {
+			"the settings before anything was read: restart, previous version and factory reset are enabled",
+			"the settings while the own read is sent: restart, previous version and factory reset are disabled",
+			"the settings while the own read runs: restart, previous version and factory reset are disabled",
+			"the settings while the list of the own read shows: restart, previous version and factory reset are enabled",
+			"the settings while the own clear is sent: restart, previous version and factory reset are disabled",
+			"the settings while the own clear runs: restart, previous version and factory reset are disabled",
+			"the settings while the outcome of the own clear shows: restart, previous version and factory reset are enabled",
+			"the settings after the own request failed: restart, previous version and factory reset are enabled",
+			"the settings while the outcome of the own clear is unknown: restart, previous version and factory reset are enabled",
+		};
+
+		stage_on(NAV_SETTINGS, 0);
+		world.previous_firmware = true;
+		world.flow = (dtc_flow_phase_t)i;
+		build();
+		check(row_is(0, true, SCENE_ROW_ACTION, "Drehrichtung", "normal", true) && row_is(1, false, SCENE_ROW_ACTION, "Hotspot", "aus", true) &&
+		      row_is(2, false, SCENE_ROW_ACTION, "Neustart", "", !under_way[i]) && row_is(3, false, SCENE_ROW_ACTION, "Vorherige Version", "", !under_way[i]) &&
+		      row_is(4, false, SCENE_ROW_ACTION, "Werkseinstellungen", "", !under_way[i]), rules[i]);
+	}
+	stage_on(NAV_SETTINGS, 5);
+	world.flow = DTC_FLOW_CLEARING;
+	build();
+	check(row_is(1, false, SCENE_ROW_ACTION, "Neustart", "", false) && row_is(2, false, SCENE_ROW_ACTION, "Vorherige Version", "", false) &&
+	      row_is(3, false, SCENE_ROW_ACTION, "Werkseinstellungen", "", false) && row_is(4, true, SCENE_ROW_ACTION, "Zurück", "", true),
+	      "the settings while the own clear runs, no previous firmware, the focus on Zurück: the way back stays enabled, the three rows are disabled");
+	stage_on(NAV_SETTINGS, 0);
+	world.flow = DTC_FLOW_READ_SENT;
+	// The phase the world names decides, as it does for the press: the flow itself is still idle here
+	flow.phase = DTC_FLOW_IDLE;
+	build();
+	check(row_is(2, false, SCENE_ROW_ACTION, "Neustart", "", false) && row_is(4, false, SCENE_ROW_ACTION, "Werkseinstellungen", "", false),
+	      "the phase of the world decides whether the settings offer a restart, not the one of the flow");
+	stage_on(NAV_SETTINGS, 0);
+	flow.phase = DTC_FLOW_READING;
+	build();
+	check(row_is(2, false, SCENE_ROW_ACTION, "Neustart", "", true) && row_is(4, false, SCENE_ROW_ACTION, "Werkseinstellungen", "", true),
+	      "a flow that reads while the world names no request: the settings offer the restart, as a press there would open its dialog");
+	stage_on(NAV_SETTINGS, 2);
+	world.flow = DTC_FLOW_READING;
+	world.update_pending = true;
+	build();
+	check(row_is(2, true, SCENE_ROW_ACTION, "Neustart", "", false) && row_is(0, false, SCENE_ROW_ACTION, "Drehrichtung", "normal", true) && scene->over == SCENE_OVER_UPDATE,
+	      "the settings below the update question while the own read runs: the rows are those without the overlay, the restart disabled, the direction enabled");
 }
 
 static void test_confirm(void)
@@ -3245,7 +3442,7 @@ static void test_overlays(void)
 		input.update_left_s = updates[i].left_s;
 		build();
 		snprintf(what, sizeof(what), "the update question with %lu seconds left: \"%s\"", (unsigned long)updates[i].left_s, updates[i].line);
-		check(over_is(SCENE_OVER_UPDATE, -1, "Update in Ordnung?", "Knopf drücken oder Bildschirm berühren", updates[i].line), what);
+		check(over_is(SCENE_OVER_UPDATE, -1, "Update in Ordnung?", "Knopf drücken", updates[i].line), what);
 	}
 
 	// What does not lie over the screen leaves nothing
@@ -3267,7 +3464,7 @@ static void test_overlays(void)
 	check(over_is(SCENE_OVER_ASK, -1, "Werkseinstellungen?", "Werkstatt", "Drücken = ja · lang = nein (42 s)"), "a question and the update question at once: the question");
 	world.asking = ACCESS_ASK_NONE;
 	build();
-	check(over_is(SCENE_OVER_UPDATE, -1, "Update in Ordnung?", "Knopf drücken oder Bildschirm berühren", "sonst alte Version in 4:12"), "the update question alone");
+	check(over_is(SCENE_OVER_UPDATE, -1, "Update in Ordnung?", "Knopf drücken", "sonst alte Version in 4:12"), "the update question alone");
 
 	// Every overlay over every screen, live and during a scan: the screen below is filled as without it
 	for(int s = 0; s < 2 * COUNT(screens); s++)
@@ -3372,7 +3569,7 @@ static void test_screens_and_views(void)
 		view_no_wifi();
 		build();
 		snprintf(what, sizeof(what), "the screen %d, which is none of nav.h, under the update question: the overlay lies over the empty notice", no_screens[i]);
-		check(head_is(SCENE_NOTICE, "", "") && over_is(SCENE_OVER_UPDATE, -1, "Update in Ordnung?", "Knopf drücken oder Bildschirm berühren", "sonst alte Version in 1:01") && ring_is(RING_RED, 0), what);
+		check(head_is(SCENE_NOTICE, "", "") && over_is(SCENE_OVER_UPDATE, -1, "Update in Ordnung?", "Knopf drücken", "sonst alte Version in 1:01") && ring_is(RING_RED, 0), what);
 		stage_on((nav_screen_t)no_screens[i], 1);
 		view_scan();
 		build();
@@ -4026,7 +4223,9 @@ typedef enum
 	IF_CLEAR,       // can_clear
 	IF_OUTCOME,     // the own request left something to look at
 	IF_OLD,         // a list from before a clear is stored
-	IF_PREVIOUS,    // the other slot holds a firmware
+	UNLESS_UNDER_WAY,   // the own request is not sent or accepted without having ended: a restart would cut it off
+	IF_PREVIOUS,    // the other slot holds a firmware, and the own request is not under way
+	UNLESS_KEPT,    // the own access point does not stay on whatever is asked
 } when_t;
 
 // The choices of the screens, in their order
@@ -4043,12 +4242,13 @@ static const struct
 	{NAV_DTC_CLEARED, "Fertig", ALWAYS},
 	{NAV_DTC_OLD, "Zurück", ALWAYS},
 	{NAV_WEB, "Freigabe", ALWAYS}, {NAV_WEB, "Zurück", ALWAYS},
-	{NAV_SETTINGS, "Drehrichtung", ALWAYS}, {NAV_SETTINGS, "Hotspot", ALWAYS}, {NAV_SETTINGS, "Neustart", ALWAYS}, {NAV_SETTINGS, "Vorherige Version", IF_PREVIOUS},
-	{NAV_SETTINGS, "Werkseinstellungen", ALWAYS}, {NAV_SETTINGS, "Zurück", ALWAYS},
+	{NAV_SETTINGS, "Drehrichtung", ALWAYS}, {NAV_SETTINGS, "Hotspot", UNLESS_KEPT}, {NAV_SETTINGS, "Neustart", UNLESS_UNDER_WAY}, {NAV_SETTINGS, "Vorherige Version", IF_PREVIOUS},
+	{NAV_SETTINGS, "Werkseinstellungen", UNLESS_UNDER_WAY}, {NAV_SETTINGS, "Zurück", ALWAYS},
 };
 
 // By the phase of a request, in the order of dtc_flow_phase_t; a phase that is none counts as the first
 static const bool OUTCOMES[] = {false, false, false, true, false, false, true, true, true};
+static const bool UNDER_WAY[] = {false, true, true, false, true, true, false, false, false};
 static const char *const BUSY_TITLES[] = {
 	"Fehlerspeicher", "Fehlerspeicher lesen", "Fehlerspeicher lesen", "Fehlerspeicher", "Fehlerspeicher löschen", "Fehlerspeicher löschen", "Fehlerspeicher", "Fehlerspeicher",
 	"Fehlerspeicher",
@@ -4072,7 +4272,9 @@ static bool holds(when_t when)
 		case IF_CLEAR:      return world.can_clear;
 		case IF_OUTCOME:    return OUTCOMES[(unsigned)world.flow < (unsigned)COUNT(OUTCOMES) ? (unsigned)world.flow : 0];
 		case IF_OLD:        return world.old_lines > 0;
-		case IF_PREVIOUS:   return world.previous_firmware;
+		case UNLESS_UNDER_WAY: return !UNDER_WAY[(unsigned)world.flow < (unsigned)COUNT(UNDER_WAY) ? (unsigned)world.flow : 0];
+		case IF_PREVIOUS:   return world.previous_firmware && holds(UNLESS_UNDER_WAY);
+		case UNLESS_KEPT:   return !world.ap_kept;
 		default:            return true;
 	}
 }
@@ -4189,7 +4391,8 @@ static const char *model_texts(scene_kind_t kind, conn_view_t view)
 }
 
 // What the values of the page shown say to the ring, from the age of each value and from the catalogue:
-// *level is the worst level of a value that is shown, *old whether a value is old or missed
+// *level is the worst level of a value that is shown, *old whether a value is old or missed. Missed is only
+// what was there: a value the display has, of this connection.
 static void model_page(int *level, bool *old)
 {
 	const layout_page_t *page = &world.layout->pages[nav.page];
@@ -4203,7 +4406,7 @@ static void model_page(int *level, bool *old)
 		bool there = age != VALUE_AGE_GONE && layout_item_text(item, value, text, sizeof(text));
 		// A value that is gone is only missed if the profile has it, or may have it: `unloaded` is the
 		// catalogue before the profile arrived
-		bool missed = !there && (age != VALUE_AGE_GONE || world.catalog == &unloaded || catalog_find(world.catalog, item->key) >= 0);
+		bool missed = !there && value != NULL && (age != VALUE_AGE_GONE || world.catalog == &unloaded || catalog_find(world.catalog, item->key) >= 0);
 
 		if(there && layout_item_level(item, value) > *level) *level = layout_item_level(item, value);
 		if(missed || (there && age == VALUE_AGE_OLD)) *old = true;
@@ -4348,6 +4551,21 @@ static const char *model(void)
 			if((row->kind == SCENE_ROW_ACTION) != (choice >= 0)) return "the choices are not the last rows";
 			if(choice >= 0 && strcmp(row->text, CHOICES[first_choice + choice].text) != 0) return "a choice is not the one of the table";
 			if(row->enabled != (choice < 0 || holds(CHOICES[first_choice + choice].when))) return "a row is enabled although it does nothing, or the other way round";
+			if(choice >= 0)
+			{
+				// The rule in its own words: a choice is enabled exactly when the knob, pressed on it with nothing lying
+				// over the screen, does something - it returns something to carry out or shows another screen
+				nav_world_t bare = world;
+				nav_t pressed = nav;
+				nav_do_t action;
+
+				bare.uploading = false;
+				bare.asking = ACCESS_ASK_NONE;
+				bare.update_pending = false;
+				pressed.row = nav_rows(&nav, &world) - choices + choice;
+				action = nav_short(&pressed, &bare, input.now_ms);
+				if(row->enabled != (action != NAV_DO_NOTHING || pressed.screen != nav.screen)) return "a row is enabled although a press on it is ignored, or the other way round";
+			}
 			if(row->focus) focused++;
 		}
 		if(focused != (nav.row >= first && nav.row < first + scene->row_count ? 1 : 0)) return "the focus is visible although it is on no visible row, or the other way round";
@@ -4373,6 +4591,8 @@ static void test_made_up(void)
 	// What the arc of a screen and the lines of fault memory and web access depend on
 	static int stands[9];
 	int own_arcs = 0, summed = 0, unsummed = 0, hotspots = 0, no_networks = 0;
+	// The row Hotspot of the settings where it is visible: [kept][told of the safe mode][told that it is on]
+	int switches[2][2][2] = {{{0, 0}, {0, 0}}, {{0, 0}, {0, 0}}};
 	int differences = 0, dumps = 0, scenes = 0;
 	bool reached = true;
 
@@ -4499,6 +4719,9 @@ static void test_made_up(void)
 			input.safe_mode = pick(4) == 0;
 			input.heat = (guard_heat_t)(pick(3) == 0 ? any_number() : 0);
 			input.now_ms = pick(8) == 0 ? NOW - (uint64_t)pick(100000) : NOW + (uint64_t)pick(20000);
+			// Whether the own access point can be switched, whatever the scene is told of the safe mode and of
+			// the access point: the world alone decides about the row
+			world.ap_kept = pick(2) == 0;
 
 			build();
 			scenes++;
@@ -4528,6 +4751,7 @@ static void test_made_up(void)
 			}
 			if(nav.screen == NAV_WEB && !has_text(input.address) && input.ap_on) hotspots++;
 			if(nav.screen == NAV_WEB && !has_text(input.address) && !input.ap_on) no_networks++;
+			if(nav.screen == NAV_SETTINGS && scene->first <= 1 && scene->row_count > 1 - scene->first) switches[world.ap_kept][input.safe_mode][input.ap_on]++;
 		}
 	}
 	for(int i = 0; i < 15; i++) reached = reached && screens[i] >= 500;
@@ -4544,6 +4768,7 @@ static void test_made_up(void)
 	check(scenes == 32000 && reached, "32000 made-up inputs reach every screen and what is none, every view of the connection, every overlay and every kind of scene, each at least 500 times");
 	reached = own_arcs >= 50 && summed >= 20 && unsummed >= 20 && hotspots >= 50 && no_networks >= 50;
 	for(int i = 0; i < COUNT(stands); i++) reached = reached && stands[i] >= 50;
+	for(int i = 0; i < 8; i++) reached = reached && switches[i >> 2][i >> 1 & 1][i & 1] >= 20;
 	if(!reached)
 	{
 		printf("  progress screen or clear dialog during a scan: %d\n", own_arcs);
@@ -4551,8 +4776,11 @@ static void test_made_up(void)
 		printf("  fault memory with a list and a summary: %d, without: %d\n", summed, unsummed);
 		printf("  web access without an address, with the own access point: %d, without: %d\n", hotspots, no_networks);
 	}
+	printf("  settings with the row Hotspot visible: the access point not kept %d %d %d %d, kept %d %d %d %d (each: no safe mode and off, on; safe mode and off, on)\n",
+	       switches[0][0][0], switches[0][0][1], switches[0][1][0], switches[0][1][1], switches[1][0][0], switches[1][0][1], switches[1][1][0], switches[1][1][1]);
 	check(reached, "the made-up inputs reach the two screens with an arc of their own during a scan, the web access without an address with and without the own access point "
-	      "and the fault memory in every phase, each at least 50 times, a list with and without a summary at least 20 times");
+	      "and the fault memory in every phase, each at least 50 times, a list with and without a summary at least 20 times, and the row Hotspot with its access point kept "
+	      "on and not, whatever the scene is told of the safe mode and of the access point, each of the eight at least 20 times");
 	check(differences == 0, "the scenes of the made-up inputs have the kind, the title, the note, the lines, the overlay, the dots, the ring, the window, the focus, the choices, the answers and the level the rules give "
 	      "when they are followed a second way");
 	check(dumps == 0, "each of those scenes can be written as a text of 34 to 2734 bytes, the smallest and the largest dump there is");
@@ -4604,6 +4832,9 @@ static void test_made_up_pages(void)
 	// During a scan: pages with a value that is shown although it is gone by its age, with a dash for a value
 	// the display never had, and at a time before the values
 	int held = 0, never = 0, held_back = 0;
+	// Live pages with a dash for a value that was never delivered under a ring that is off, and with a dash for
+	// one that was delivered and is gone
+	int never_off = 0, missed = 0, missed_off = 0;
 	bool reached;
 
 	for(int s = 0; s < COUNT(seeds); s++)
@@ -4726,9 +4957,22 @@ static void test_made_up_pages(void)
 			if(conn_view(&conn, input.now_ms) != CONN_VIEW_LIVE) rings[scene->ring.kind == RING_GREY ? RING_GREY : RING_PROGRESS]++;
 			else
 			{
+				const layout_page_t *page = &world.layout->pages[nav.page];
+				bool never_delivered = false, went_missing = false;
+
+				for(int i = 0; i < scene->item_count; i++)
+				{
+					if(strcmp(scene->items[i].text, SCENE_DASH) != 0) continue;
+					if(values_find(&values, page->items[i].key) == NULL) never_delivered = true;
+					else went_missing = true;
+				}
 				rings[scene->ring.kind]++;
 				if(dash && !shown) dashes++;
 				if(unavailable && scene->ring.kind == RING_NONE) lacking++;
+				if(never_delivered && scene->ring.kind == RING_NONE) never_off++;
+				if(went_missing) missed++;
+				// A value that went missing never leaves the ring off
+				if(went_missing && scene->ring.kind == RING_NONE) missed_off++;
 			}
 		}
 	}
@@ -4745,6 +4989,9 @@ static void test_made_up_pages(void)
 	      "each at least 500 times, and a scan with the clock stepping back at least 50 times");
 	check(scenes == 16000 && reached, "16000 made-up value pages reach the ring off, yellow and red in the view LIVE, grey without the API and the progress during a scan, the clock stepping back, "
 	      "each at least 500 times, live pages of nothing but dashes and live pages with a value the profile lacks under a ring that is off at least 200 times");
+	if(never_off < 200 || missed < 200) printf("  live pages with a value never delivered under a ring that is off: %d; with a value that was delivered and is gone: %d\n", never_off, missed);
+	check(never_off >= 200 && missed >= 200 && missed_off == 0, "of the made-up live pages at least 200 show a dash for a value that was never delivered under a ring that is off, "
+	      "at least 200 a dash for a value that was delivered and is gone - and none of those has the ring off");
 	check(differences == 0, "each of the made-up value pages has the ring that the age of each of its values, the catalogue and the limits give when they are followed a second way, "
 	      "each value the text and the tone that what the display has of it gives - held during a scan whatever its age - and title, note and dots as the tables of the screens say");
 }

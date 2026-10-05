@@ -48,7 +48,8 @@ PENDING_GIVES_UP = "if(needed || update_pending)"
 PENDING = "state == ESP_OTA_IMG_PENDING_VERIFY;"
 ROLLED_BACK = "(state == ESP_OTA_IMG_INVALID || state == ESP_OTA_IMG_ABORTED)"
 BOARD_NEEDED = "step_failed(\"board\", err, true);"
-PREVIOUS = "boot.previous_firmware = !upload_left_behind(running) && holds_firmware(other_slot);"
+PREVIOUS = "boot.previous_firmware = !upload_left_behind(running) && !boot.rolled_back && holds_firmware(other_slot);"
+TAKEN_BACK_ASKED = "boot.rolled_back = other_slot != NULL && esp_ota_get_state_partition(other_slot, &state) == ESP_OK &&"
 ROOM_APP = "\tplatform_app = heap_caps_malloc(sizeof(app_t), MALLOC_CAP_SPIRAM);\n"
 ROOM_JOBS = "\tjobs = heap_caps_calloc(JOBS + 1, sizeof(job_t), MALLOC_CAP_SPIRAM);\n"
 NO_NETWORK = "\t\tstep_failed(\"network\", err, false);\n\t\treturn;\n"
@@ -117,7 +118,7 @@ MUTATIONS = [
     ("main_upload_record_never_read", S, F, RECORD_READ, "\tif(true)"),
     ("main_upload_record_inverted", S, F, RECORD_OTHER, "if(strcmp(label, running->label) == 0)"),
     ("main_upload_record_not_asked", S, F, PREVIOUS,
-     "boot.previous_firmware = ((void)upload_left_behind, holds_firmware(other_slot));"),
+     "boot.previous_firmware = ((void)upload_left_behind, !boot.rolled_back && holds_firmware(other_slot));"),
     ("main_every_slot_holds_a_firmware", S, F, HOLDS, "\t(void)project; (void)description;\n\treturn slot != NULL;"),
 
     # the start
@@ -142,6 +143,16 @@ MUTATIONS = [
     ("main_pending_update_goes_on", S, F, PENDING_GIVES_UP, "if(needed)"),
     ("main_pending_never", S, F, PENDING, "false;"),
     ("main_rolled_back_never", S, F, ROLLED_BACK, "false"),
+
+    # "Vorherige Version" is never an update that was taken back, and still the version before a confirmed one
+    ("main_update_taken_back_is_offered", S, F, PREVIOUS,
+     "boot.previous_firmware = !upload_left_behind(running) && holds_firmware(other_slot);"),
+    ("main_aborted_is_not_taken_back", S, F, ROLLED_BACK, "(state == ESP_OTA_IMG_INVALID)"),
+    ("main_marked_bad_is_not_taken_back", S, F, ROLLED_BACK, "(state == ESP_OTA_IMG_ABORTED)"),
+    ("main_confirmed_version_counts_as_taken_back", S, F, ROLLED_BACK,
+     "(state == ESP_OTA_IMG_INVALID || state == ESP_OTA_IMG_ABORTED || state == ESP_OTA_IMG_VALID)"),
+    ("main_taken_back_asked_of_the_running_slot", S, F, TAKEN_BACK_ASKED,
+     "boot.rolled_back = other_slot != NULL && esp_ota_get_state_partition(running, &state) == ESP_OK &&"),
     ("main_board_failure_goes_on", S, F, BOARD_NEEDED, "step_failed(\"board\", err, false);"),
     ("main_app_in_the_internal_ram", S, F, ROOM_APP,
      "\tplatform_app = heap_caps_malloc(sizeof(app_t), MALLOC_CAP_INTERNAL);\n"),

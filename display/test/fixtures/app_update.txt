@@ -9,5 +9,5 @@ item: Fahrpedal | 0 | % | normal | bar | 0
 dots: 1/7
 over: update
 over_line: Update in Ordnung?
-over_line: Knopf drücken oder Bildschirm berühren
+over_line: Knopf drücken
 over_line: sonst alte Version in 5:00

@@ -87,7 +87,8 @@ typedef struct
 	scene_row_kind_t kind;
 	char text[SCENE_TEXT_SIZE];
 	char detail[SCENE_SHORT_SIZE];  // shown smaller, behind or below the text; may be empty
-	bool enabled;                   // an action that does something now; lines are always enabled
+	bool enabled;                   // an action a press on which does something now (see below); lines are
+	                                // always enabled
 	bool focus;                     // the knob is on this row
 } scene_row_t;
 
@@ -171,19 +172,30 @@ typedef struct
  * dot -1 without dots), every byte of the struct: items, rows and lines that are not used are zero, and so
  * is what lies between the fields. Two scenes that show the same are the same memory.
  *
- * What a row does when it is pressed is decided by nav.h from the world, so whether a row is enabled comes
- * from the world as well (can_read, can_clear, flow, old_lines, previous_firmware). Phase, number and reason
- * of the own request come from `flow`.
+ * A choice is enabled exactly when a short press of the knob on it would do something: this module keeps no
+ * rule of its own for that, it asks nav.h (nav_row_acts(), with the row as nav.h counts it and the world as
+ * it is). So the screen never draws a row as if it worked while the press on it is ignored. The conditions
+ * named with the screens below are those of nav.h, written down for the reader (can_read, can_clear, flow,
+ * old_lines, previous_firmware and ap_kept of the world). What lies over the screen is not asked: the rows
+ * below an overlay are those without it. Phase, number and reason of the own request come from `flow`.
  *
  * ring: ring_state() with the view of the connection, its state, and - on a value page - the worst level
  * and `old`; level 0 and not old on every other screen.
  *   level  Only a value that is shown counts (LIVE or OLD, with a text): one that became a dash raises no
  *          level, although values.h still has its last number.
- *   old    At least one item of the page is LAYOUT_ITEM_OLD or shows the dash: LAYOUT_ITEM_NO_VALUE (the
- *          profile has the value, but it is not there), or a value whose text cannot be made. So a page in
- *          the view LIVE on which a value is missing never has the ring of "live, all well", also when all
- *          of its values have become dashes. LAYOUT_ITEM_UNAVAILABLE does not count: the profile does not
- *          provide the value, nothing is wrong.
+ *   old    At least one item of the page is LAYOUT_ITEM_OLD, or shows the dash for a value that went
+ *          missing: one the adapter has delivered before on this connection - the display holds it,
+ *          values_find() finds it - and that is gone by its age (LAYOUT_ITEM_NO_VALUE) or has a text that
+ *          cannot be made. So a page in the view LIVE on which a value went missing never has the ring of
+ *          "live, all well", also when all of its values have become dashes.
+ *          A value that was never delivered on this connection is a dash as well, but it does not count: the
+ *          vehicle does not answer every value of its profile, and such a page would keep the yellow ring
+ *          for ever. The page counts as fresh if everything that was ever delivered is fresh - also a page
+ *          on which nothing was delivered yet. "On this connection" is what values.h holds: since the
+ *          display joined the network and since the adapter started (values_clear(), poll.h). The mark
+ *          `delivered` of the catalogue is not asked: it outlasts a pause of the network.
+ *          LAYOUT_ITEM_UNAVAILABLE does not count either: the profile does not provide the value, nothing is
+ *          wrong.
  * On NAV_DTC_BUSY and NAV_DTC_CONFIRM the screen has an arc of its own (permille), and two arcs on one
  * screen would be read as one: the ring is never RING_PROGRESS there. Where ring_state() gives
  * RING_PROGRESS the scene carries RING_NONE with permille 0; every other ring stays, and so does the ring
@@ -200,7 +212,8 @@ typedef struct
  *   SCENE_VALUES: title = title of the page. Per item, by layout_item_state():
  *     LIVE         text = layout_item_text(), tone by layout_item_level(): 2 ALARM, 1 WARN, else NORMAL
  *     OLD          the same text, tone DIM
- *     NO_VALUE     text SCENE_DASH, tone DIM
+ *     NO_VALUE     text SCENE_DASH, tone DIM (whether the value went missing or never arrived: the ring
+ *                  tells the two apart, see above)
  *     UNAVAILABLE  text SCENE_UNAVAILABLE, tone DIM
  *     A value whose text cannot be made (layout_item_text() false) counts as NO_VALUE.
  *     In the view SCAN the adapter delivers no values (a scan took 35 s on the vehicle, measured 2026-10-04,
@@ -286,8 +299,14 @@ typedef struct
  *                "WLAN: <ap_ssid>" and "Passwort: <ap_password>".
  * NAV_INFO       SCENE_LIST "Info": the texts of `info` as rows of the kind SCENE_ROW_LINE
  * NAV_SETTINGS   SCENE_LIST "Einstellungen": "Drehrichtung" detail "umgekehrt" / "normal"; "Hotspot" detail
- *                "an" / "aus"; "Neustart"; "Vorherige Version" (enabled if previous_firmware);
- *                "Werkseinstellungen"; "Zurück"
+ *                "an" / "aus" (ap_on; enabled unless world->ap_kept); "Neustart"; "Vorherige Version"
+ *                (enabled if previous_firmware); "Werkseinstellungen"; "Zurück". "Neustart", "Vorherige
+ *                Version" and "Werkseinstellungen" are not enabled while the own request is under way
+ *                (world->flow is READ_SENT, READING, CLEAR_SENT or CLEARING): nav.h ignores a press on them
+ *                then, a restart would cut the request off. "Hotspot" is not enabled while the own access
+ *                point stays on whatever is asked (world->ap_kept: safe mode, or no stored network): nav.h
+ *                ignores the press, which would switch nothing. Its detail is that of ap_on all the same, and
+ *                neither safe_mode of this input nor ap_on decides whether the row is enabled.
  * NAV_CONFIRM    SCENE_CHOICE, by nav->confirm: NAV_DO_REBOOT "Neu starten?"; NAV_DO_PREVIOUS_FIRMWARE
  *                "Vorherige Version starten?"; NAV_DO_FACTORY_RESET "Werkseinstellungen?" with the lines
  *                "WLAN, Kopplung und Einstellungen werden gelöscht." and "Die Ansichten bleiben.";
@@ -310,8 +329,8 @@ typedef struct
  *            installieren?", RESET "Werkseinstellungen?", empty for any other value; line 2 ask_detail if
  *            there is one (not NULL, not empty); then "Drücken = ja · lang = nein (42 s)" with
  *            access_ask_seconds_left()
- *   UPDATE   "Update in Ordnung?", "Knopf drücken oder Bildschirm berühren", "sonst alte Version in 4:12"
- *            (update_left_s as minutes:seconds)
+ *   UPDATE   "Update in Ordnung?", "Knopf drücken", "sonst alte Version in 4:12" (update_left_s as
+ *            minutes:seconds). No word of a touch: the knob alone answers (nav.h)
  * The screen below is filled as without the overlay.
  */
 void scene_build(const scene_input_t *input, scene_t *scene);

@@ -55,9 +55,16 @@ DTC_VIEW = "\t\t\tif(outcome != NAV_DTC) enter(nav, outcome, 0);"
 DTC_OLD = "\t\t\tif(world->old_lines > 0) enter(nav, NAV_DTC_OLD, 0);"
 LIST_ROW = "\tswitch(nav->row - lines_of(world->list_lines))"
 LIST_CLEAR = "\t\t\tif(!world->can_clear) break;\n\t\t\tenter(nav, NAV_DTC_CONFIRM, CHOICE_CANCEL);\n\t\t\treturn NAV_DO_HOLD_OPEN;"
+# The own access point that stays on whatever is asked (link.h) is not switched: the row does nothing then
+SET_AP = "\t\t\tif(!world->ap_kept) return NAV_DO_AP_TOGGLE;\n\t\t\tbreak;"
+AP_KEPT_ROW = "nav->screen == NAV_SETTINGS && nav->row == SETTINGS_AP && world->ap_kept"
+SET_REVERSE = "\t\t\treturn NAV_DO_REVERSE_TOGGLE;"
 SET_REBOOT = "\t\t\task(nav, NAV_DO_REBOOT, world);\n\t\t\tbreak;"
 SET_PREVIOUS = "\t\t\tif(world->previous_firmware) ask(nav, NAV_DO_PREVIOUS_FIRMWARE, world);"
 SET_RESET = "\t\t\task(nav, NAV_DO_FACTORY_RESET, world);\n\t\t\tbreak;"
+ACTS_ROW = "\tif(row < 0 || row >= nav_rows(nav, world)) return false;\n"
+ACTS_TRY = "\ttried.row = row;\n"
+ACTS = "\treturn press(&tried, world) != NAV_DO_NOTHING || tried.screen != nav->screen;"
 
 PRESS_PAGES = "\t\t\tenter(nav, NAV_MENU, MENU_DTC);\n\t\t\tbreak;\n\t\tcase NAV_MENU:\n\t\t\treturn press_menu(nav, world);"
 PRESS_DIALOG = "\t\t\tif(nav->row != CHOICE_CANCEL) break;\n\t\t\tclose_dialog(nav, world);\n\t\t\treturn NAV_DO_HOLD_CLOSE;"
@@ -88,7 +95,12 @@ TURN_LEVEL = "\t\tnav->value = brightness_of(nav->value + (int64_t)detents * NAV
 SHORT = "\tnote_input(nav, now_ms);\n\tif(overlay != NAV_OVER_NONE) return press_overlay(overlay);\n\treturn press(nav, world);"
 LONG = ("\tnote_input(nav, now_ms);\n\tif(overlay == NAV_OVER_ASK) return NAV_DO_ASK_REFUSE;\n"
         "\tif(overlay != NAV_OVER_NONE) return NAV_DO_NOTHING;\n\treturn back(nav, world);")
-TAP_HEAD = "\tnote_input(nav, now_ms);\n\tif(overlay != NAV_OVER_NONE) return press_overlay(overlay);\n\n\t// The failure"
+TAP_OVER = "\tif(nav_overlay(world) != NAV_OVER_NONE) return NAV_DO_NOTHING;\n\n\t// The failure"
+TAP_HEAD = ("\tnote_input(nav, now_ms);\n"
+            "\t// What lies over the screen is answered with the knob alone, the questions as well: a touch happens too\n"
+            "\t// easily for what they ask, and none of them has a row a finger could mean\n" + TAP_OVER)
+TAP_ASKED = "nav_overlay(world) == NAV_OVER_ASK"
+TAP_ON_A_ROW = "row >= 0 && row < nav_rows(nav, world)"
 TAP_FAILED = "\tif(nav->screen != NAV_DTC_FAILED)\n\t{"
 TAP_ROW = "\t\tif(row < 0 || row >= nav_rows(nav, world)) return NAV_DO_NOTHING;\n"
 TAP_FOCUS = "\t\tnav->row = row;\n\t}\n\treturn press(nav, world);"
@@ -102,6 +114,9 @@ SWIPE = ("\tnote_input(nav, now_ms);\n"
 HOLD_HEAD = "\tadvance(nav, now_ms);\n\tif(nav->screen != NAV_DTC_CONFIRM) return NAV_DO_NOTHING;\n"
 HOLD_CLEAR = "\tif(event == HOLD_CONFIRMED && nav_overlay(world) == NAV_OVER_NONE)\n\t{\n\t\tenter(nav, NAV_DTC_BUSY, 0);\n\t\treturn NAV_DO_CLEAR;\n\t}"
 HOLD_ENDS = "\tif(event == HOLD_CONFIRMED || event == HOLD_CANCELLED || event == HOLD_STUCK) close_dialog(nav, world);"
+CANCEL_TIME = "\t// No input: nobody is at a screen that cannot be seen\n\tadvance(nav, now_ms);\n"
+CANCEL_CLEAR = "\tif(nav->screen == NAV_DTC_CONFIRM)\n\t{\n\t\tclose_dialog(nav, world);\n\t\treturn NAV_DO_HOLD_CLOSE;\n\t}\n"
+CANCEL_ASK = "\tif(nav->screen == NAV_CONFIRM) return back(nav, world);\n"
 
 TICK_TIME = "\tadvance(nav, now_ms);\n\n\tif(screen == NAV_DTC_CONFIRM"
 TICK_DIALOG_IF = "\tif(screen == NAV_DTC_CONFIRM && (world->flow != DTC_FLOW_LIST || !world->can_clear))"
@@ -141,6 +156,8 @@ MUTATIONS = [
     ("nav_short_is_no_input", T, F, SHORT, SHORT.replace("note_input", "advance")),
     ("nav_long_is_no_input", T, F, LONG, LONG.replace("note_input", "advance")),
     ("nav_tap_is_no_input", T, F, TAP_HEAD, TAP_HEAD.replace("note_input", "advance")),
+    ("nav_tap_under_an_overlay_is_no_input", T, F,
+     TAP_HEAD, TAP_HEAD.replace("note_input", "advance").replace("return NAV_DO_NOTHING;\n\n", "return NAV_DO_NOTHING;\n\n\tnote_input(nav, now_ms);\n")),
     ("nav_ignored_tap_is_no_input", T, F,
      TAP_BODY, "\tuint64_t last_input_ms = nav->last_input_ms;\n\n" +
      TAP_BODY.replace(TAP_ROW, "\t\tif(row < 0 || row >= nav_rows(nav, world))\n\t\t{\n\t\t\tnav->last_input_ms = last_input_ms;\n\t\t\treturn NAV_DO_NOTHING;\n\t\t}\n")),
@@ -468,9 +485,29 @@ MUTATIONS = [
     ("nav_settings_rows_2_and_3_swapped", T, F, SETTINGS_ROWS, "\tSETTINGS_REVERSE, SETTINGS_AP, SETTINGS_PREVIOUS, SETTINGS_REBOOT, SETTINGS_RESET, SETTINGS_BACK,"),
     ("nav_settings_rows_3_and_4_swapped", T, F, SETTINGS_ROWS, "\tSETTINGS_REVERSE, SETTINGS_AP, SETTINGS_REBOOT, SETTINGS_RESET, SETTINGS_PREVIOUS, SETTINGS_BACK,"),
     ("nav_settings_rows_4_and_5_swapped", T, F, SETTINGS_ROWS, "\tSETTINGS_REVERSE, SETTINGS_AP, SETTINGS_REBOOT, SETTINGS_PREVIOUS, SETTINGS_BACK, SETTINGS_RESET,"),
-    ("nav_settings_reverse_not_toggled", T, F, "\t\t\treturn NAV_DO_REVERSE_TOGGLE;", "\t\t\tbreak;"),
-    ("nav_settings_ap_not_toggled", T, F, "\t\t\treturn NAV_DO_AP_TOGGLE;", "\t\t\tbreak;"),
-    ("nav_settings_reverse_toggles_night", T, F, "\t\t\treturn NAV_DO_REVERSE_TOGGLE;", "\t\t\treturn NAV_DO_NIGHT_TOGGLE;"),
+    ("nav_settings_reverse_not_toggled", T, F, SET_REVERSE, "\t\t\tbreak;"),
+    ("nav_settings_ap_not_toggled", T, F, SET_AP, "\t\t\tbreak;"),
+    ("nav_settings_reverse_toggles_night", T, F, SET_REVERSE, "\t\t\treturn NAV_DO_NIGHT_TOGGLE;"),
+    # the row Hotspot while the access point is kept on: nothing but the focus and the idle time
+    ("nav_settings_ap_toggled_while_kept", T, F, SET_AP, "\t\t\treturn NAV_DO_AP_TOGGLE;"),
+    ("nav_settings_ap_toggled_only_while_kept", T, F, SET_AP, SET_AP.replace("!world->ap_kept", "world->ap_kept")),
+    ("nav_settings_ap_kept_only_while_no_request_is_under_way", T, F, SET_AP, SET_AP.replace("!world->ap_kept", "!world->ap_kept || under_way(world->flow)")),
+    ("nav_settings_ap_kept_only_without_previous_firmware", T, F, SET_AP, SET_AP.replace("!world->ap_kept", "!world->ap_kept || world->previous_firmware")),
+    ("nav_settings_ap_kept_leads_back", T, F, SET_AP, SET_AP.replace("\t\t\tbreak;", "\t\t\treturn back(nav, world);")),
+    ("nav_settings_ap_kept_toggles_the_direction", T, F, SET_AP, SET_AP.replace("\t\t\tbreak;", "\t\t\treturn NAV_DO_REVERSE_TOGGLE;")),
+    ("nav_settings_ap_kept_keeps_the_direction_too", T, F, SET_REVERSE, "\t\t\tif(!world->ap_kept) return NAV_DO_REVERSE_TOGGLE;\n\t\t\tbreak;"),
+    ("nav_settings_ap_kept_keeps_the_restart_too", T, F, SET_REBOOT, "\t\t\tif(!world->ap_kept) ask(nav, NAV_DO_REBOOT, world);\n\t\t\tbreak;"),
+    ("nav_settings_ap_kept_keeps_the_way_back_too", T, F,
+     "\t\tcase SETTINGS_BACK:\n\t\t\treturn back(nav, world);", "\t\tcase SETTINGS_BACK:\n\t\t\tif(world->ap_kept) break;\n\t\t\treturn back(nav, world);"),
+    ("nav_settings_ap_kept_press_is_no_input", T, F,
+     SHORT, SHORT.replace("\tnote_input(nav, now_ms);\n", "\tif(!(" + AP_KEPT_ROW + ")) note_input(nav, now_ms);\n")),
+    ("nav_settings_ap_kept_press_takes_the_time_but_is_no_input", T, F,
+     SHORT, SHORT.replace("\tnote_input(nav, now_ms);\n", "\tif(" + AP_KEPT_ROW + ") advance(nav, now_ms);\n\telse note_input(nav, now_ms);\n")),
+    ("nav_settings_ap_kept_tap_moves_no_focus", T, F,
+     TAP_FOCUS, "\t\tif(nav->screen == NAV_SETTINGS && row == SETTINGS_AP && world->ap_kept) return NAV_DO_NOTHING;\n" + TAP_FOCUS),
+    ("nav_settings_ap_kept_for_the_knob_alone", T, F,
+     TAP_FOCUS, TAP_FOCUS.replace("\treturn press(nav, world);",
+                                  "\tif(nav->screen == NAV_SETTINGS && nav->row == SETTINGS_AP && world->ap_kept) return NAV_DO_AP_TOGGLE;\n\treturn press(nav, world);")),
     ("nav_settings_restart_at_once", T, F, SET_REBOOT, "\t\t\treturn NAV_DO_REBOOT;"),
     ("nav_settings_restart_asks_for_reset", T, F, SET_REBOOT, SET_REBOOT.replace("NAV_DO_REBOOT", "NAV_DO_FACTORY_RESET")),
     ("nav_settings_restart_no_dialog", T, F, SET_REBOOT, "\t\t\tbreak;"),
@@ -536,10 +573,28 @@ MUTATIONS = [
     ("nav_long_refuses_and_goes_back", T, F, LONG, LONG.replace("if(overlay == NAV_OVER_ASK) return NAV_DO_ASK_REFUSE;", "if(overlay == NAV_OVER_ASK)\n\t{\n\t\tback(nav, world);\n\t\treturn NAV_DO_ASK_REFUSE;\n\t}")),
 
     # taps
-    ("nav_tap_under_an_overlay_reaches_the_screen", T, F, TAP_HEAD, TAP_HEAD.replace("if(overlay != NAV_OVER_NONE) return press_overlay(overlay);", "(void)overlay;")),
-    ("nav_tap_under_an_overlay_ignored", T, F, TAP_HEAD, TAP_HEAD.replace("return press_overlay(overlay);", "return NAV_DO_NOTHING;")),
-    ("nav_tap_answers_only_on_a_row", T, F, TAP_HEAD, TAP_HEAD.replace("if(overlay != NAV_OVER_NONE)", "if(overlay != NAV_OVER_NONE && (row < 0 || row >= nav_rows(nav, world))) return NAV_DO_NOTHING;\n\tif(overlay != NAV_OVER_NONE)")),
-    ("nav_tap_under_an_overlay_moves_focus", T, F, TAP_HEAD, TAP_HEAD.replace("if(overlay != NAV_OVER_NONE)", "if(overlay != NAV_OVER_NONE && row >= 0 && row < nav_rows(nav, world)) nav->row = row;\n\tif(overlay != NAV_OVER_NONE)")),
+    ("nav_tap_under_an_overlay_reaches_the_screen", T, F, TAP_OVER, "\n\t// The failure"),
+    ("nav_tap_under_an_upload_reaches_the_screen", T, F, TAP_OVER, TAP_OVER.replace("!= NAV_OVER_NONE)", "!= NAV_OVER_NONE && nav_overlay(world) != NAV_OVER_UPLOAD)")),
+    ("nav_tap_under_a_question_reaches_the_screen", T, F, TAP_OVER, TAP_OVER.replace("!= NAV_OVER_NONE)", "!= NAV_OVER_NONE && nav_overlay(world) != NAV_OVER_ASK)")),
+    ("nav_tap_under_the_update_question_reaches_the_screen", T, F, TAP_OVER, TAP_OVER.replace("!= NAV_OVER_NONE)", "!= NAV_OVER_NONE && nav_overlay(world) != NAV_OVER_UPDATE)")),
+    ("nav_tap_under_an_overlay_moves_focus", T, F, TAP_OVER, "\tif(nav_overlay(world) != NAV_OVER_NONE && " + TAP_ON_A_ROW + ") nav->row = row;\n" + TAP_OVER),
+    # no touch answers a question: the knob alone does
+    ("nav_tap_answers_as_a_short_press", T, F, TAP_OVER, TAP_OVER.replace("return NAV_DO_NOTHING;", "return press_overlay(nav_overlay(world));")),
+    ("nav_tap_confirms_what_the_browser_asks", T, F, TAP_OVER, "\tif(" + TAP_ASKED + ") return NAV_DO_ASK_CONFIRM;\n" + TAP_OVER),
+    ("nav_tap_confirms_the_network", T, F, TAP_OVER, "\tif(" + TAP_ASKED + " && world->asking == ACCESS_ASK_WIFI) return NAV_DO_ASK_CONFIRM;\n" + TAP_OVER),
+    ("nav_tap_confirms_the_firmware", T, F, TAP_OVER, "\tif(" + TAP_ASKED + " && world->asking == ACCESS_ASK_FIRMWARE) return NAV_DO_ASK_CONFIRM;\n" + TAP_OVER),
+    ("nav_tap_confirms_the_factory_reset", T, F, TAP_OVER, "\tif(" + TAP_ASKED + " && world->asking == ACCESS_ASK_RESET) return NAV_DO_ASK_CONFIRM;\n" + TAP_OVER),
+    ("nav_tap_confirms_a_question_outside_the_enum", T, F, TAP_OVER, "\tif(" + TAP_ASKED + " && world->asking > ACCESS_ASK_RESET) return NAV_DO_ASK_CONFIRM;\n" + TAP_OVER),
+    ("nav_tap_confirms_on_a_row", T, F, TAP_OVER, "\tif(" + TAP_ASKED + " && " + TAP_ON_A_ROW + ") return NAV_DO_ASK_CONFIRM;\n" + TAP_OVER),
+    ("nav_tap_confirms_beside_the_rows", T, F, TAP_OVER, "\tif(" + TAP_ASKED + " && !(" + TAP_ON_A_ROW + ")) return NAV_DO_ASK_CONFIRM;\n" + TAP_OVER),
+    ("nav_tap_confirms_on_the_focused_row", T, F, TAP_OVER, "\tif(" + TAP_ASKED + " && row == nav->row) return NAV_DO_ASK_CONFIRM;\n" + TAP_OVER),
+    ("nav_tap_confirms_over_the_pages_only", T, F, TAP_OVER, "\tif(" + TAP_ASKED + " && nav->screen == NAV_PAGES) return NAV_DO_ASK_CONFIRM;\n" + TAP_OVER),
+    ("nav_tap_refuses_what_the_browser_asks", T, F, TAP_OVER, "\tif(" + TAP_ASKED + ") return NAV_DO_ASK_REFUSE;\n" + TAP_OVER),
+    ("nav_tap_says_the_update_is_in_order", T, F, TAP_OVER, "\tif(nav_overlay(world) == NAV_OVER_UPDATE) return NAV_DO_UPDATE_OK;\n" + TAP_OVER),
+    ("nav_tap_beside_the_rows_says_the_update_is_in_order", T, F,
+     TAP_OVER, "\tif(nav_overlay(world) == NAV_OVER_UPDATE && !(" + TAP_ON_A_ROW + ")) return NAV_DO_UPDATE_OK;\n" + TAP_OVER),
+    ("nav_tap_on_a_row_says_the_update_is_in_order", T, F,
+     TAP_OVER, "\tif(nav_overlay(world) == NAV_OVER_UPDATE && " + TAP_ON_A_ROW + ") return NAV_DO_UPDATE_OK;\n" + TAP_OVER),
     ("nav_tap_on_failure_ignored", T, F, TAP_FAILED, "\tif(nav->screen != NAV_DTC_FAILED || nav_rows(nav, world) == 0)\n\t{"),
     ("nav_tap_on_every_screen_without_rows", T, F, TAP_FAILED, "\tif(nav_rows(nav, world) > 0)\n\t{"),
     ("nav_tap_on_brightness_stores", T, F, TAP_FAILED, "\tif(nav->screen != NAV_DTC_FAILED && nav->screen != NAV_BRIGHTNESS)\n\t{"),
@@ -571,6 +626,27 @@ MUTATIONS = [
     ("nav_dialog_ignored_tap_is_no_input", T, F,
      TAP_BODY + TAP_KNOB_ALONE, "\tuint64_t last_input_ms = nav->last_input_ms;\n\n" + TAP_BODY +
      TAP_KNOB_ALONE.replace("return NAV_DO_NOTHING;", "\n\t\t{\n\t\t\tnav->last_input_ms = last_input_ms;\n\t\t\treturn NAV_DO_NOTHING;\n\t\t}")),
+
+    # nav_cancel
+    ("nav_cancel_counts_as_input", T, F, CANCEL_TIME, CANCEL_TIME.replace("advance(nav, now_ms)", "note_input(nav, now_ms)")),
+    ("nav_cancel_does_not_move_the_time", T, F, CANCEL_TIME, "\t(void)now_ms;\n"),
+    ("nav_cancel_at_the_time_of_the_caller", T, F, CANCEL_TIME, "\tnav->clock_ms = now_ms;\n"),
+    ("nav_cancel_leaves_the_clear_dialog_open", T, F, CANCEL_CLEAR, ""),
+    ("nav_cancel_does_not_ask_to_close_the_hold", T, F, CANCEL_CLEAR, CANCEL_CLEAR.replace("NAV_DO_HOLD_CLOSE", "NAV_DO_NOTHING")),
+    ("nav_cancel_clears", T, F, CANCEL_CLEAR, CANCEL_CLEAR.replace("\t\tclose_dialog(nav, world);\n\t\treturn NAV_DO_HOLD_CLOSE;", "\t\tenter(nav, NAV_DTC_BUSY, 0);\n\t\treturn NAV_DO_CLEAR;")),
+    ("nav_cancel_clear_dialog_to_the_fault_memory", T, F, CANCEL_CLEAR, CANCEL_CLEAR.replace("close_dialog(nav, world);", "enter(nav, NAV_DTC, 0);")),
+    ("nav_cancel_clear_dialog_only_from_the_action", T, F, CANCEL_CLEAR, CANCEL_CLEAR.replace("nav->screen == NAV_DTC_CONFIRM", "nav->screen == NAV_DTC_CONFIRM && nav->row == CHOICE_ACT")),
+    ("nav_cancel_leaves_the_dialog_of_the_settings_open", T, F, CANCEL_ASK, ""),
+    ("nav_cancel_dialog_of_the_settings_only_from_the_action", T, F, CANCEL_ASK, CANCEL_ASK.replace("nav->screen == NAV_CONFIRM", "nav->screen == NAV_CONFIRM && nav->row == CHOICE_ACT")),
+    ("nav_cancel_carries_out_what_the_dialog_asks", T, F,
+     CANCEL_ASK, "\tif(nav->screen == NAV_CONFIRM)\n\t{\n\t\tnav_do_t asked = nav->confirm;\n\n\t\tback(nav, world);\n\t\treturn asked;\n\t}\n"),
+    ("nav_cancel_dialog_of_the_settings_to_the_pages", T, F, CANCEL_ASK, "\tif(nav->screen == NAV_CONFIRM) enter(nav, NAV_PAGES, 0);\n"),
+    ("nav_cancel_keeps_what_waits", T, F, CANCEL_ASK, "\tif(nav->screen == NAV_CONFIRM)\n\t{\n\t\tnav->screen = NAV_SETTINGS;\n\t\tnav->row = SETTINGS_RESET;\n\t}\n"),
+    ("nav_cancel_goes_back_from_every_screen", T, F, CANCEL_ASK, "\treturn back(nav, world);\n"),
+    ("nav_cancel_not_under_an_overlay", T, F, CANCEL_TIME, CANCEL_TIME + "\tif(nav_overlay(world) != NAV_OVER_NONE) return NAV_DO_NOTHING;\n"),
+    ("nav_cancel_not_under_an_upload", T, F, CANCEL_TIME, CANCEL_TIME + "\tif(nav_overlay(world) == NAV_OVER_UPLOAD) return NAV_DO_NOTHING;\n"),
+    ("nav_cancel_not_under_a_question", T, F, CANCEL_TIME, CANCEL_TIME + "\tif(nav_overlay(world) == NAV_OVER_ASK) return NAV_DO_NOTHING;\n"),
+    ("nav_cancel_not_under_the_update_question", T, F, CANCEL_TIME, CANCEL_TIME + "\tif(nav_overlay(world) == NAV_OVER_UPDATE) return NAV_DO_NOTHING;\n"),
 
     # nav_tick: the clear dialog
     ("nav_tick_dialog_stays", T, F, TICK_DIALOG, ""),
@@ -673,4 +749,28 @@ MUTATIONS = [
     ("nav_idle_dismisses_outcome", T, F, TICK_RETURN, TICK_RETURN.replace(": NAV_DO_NOTHING", ": screen == NAV_DTC_CLEARED ? NAV_DO_DISMISS : NAV_DO_NOTHING")),
     ("nav_idle_dismisses_failure", T, F, TICK_RETURN, TICK_RETURN.replace(": NAV_DO_NOTHING", ": screen == NAV_DTC_FAILED ? NAV_DO_DISMISS : NAV_DO_NOTHING")),
     ("nav_idle_executes_dialog", T, F, TICK_RETURN, "\tlast = (int)nav->confirm;\n" + TICK_RETURN.replace(": NAV_DO_NOTHING", ": screen == NAV_CONFIRM ? (nav_do_t)last : NAV_DO_NOTHING")),
+
+    # nav_row_acts: a row acts exactly when a short press on it does something
+    ("nav_acts_row_that_does_not_exist", T, F, ACTS_ROW, ""),
+    ("nav_acts_row_before_the_first", T, F, ACTS_ROW, "\tif(row >= nav_rows(nav, world)) return false;\n"),
+    ("nav_acts_row_behind_the_last", T, F, ACTS_ROW, "\tif(row < 0) return false;\n"),
+    ("nav_acts_one_row_behind_the_last", T, F, ACTS_ROW, "\tif(row < 0 || row > nav_rows(nav, world)) return false;\n"),
+    ("nav_acts_first_row_does_not_exist", T, F, ACTS_ROW, "\tif(row <= 0 || row >= nav_rows(nav, world)) return false;\n"),
+    ("nav_acts_for_the_row_in_focus", T, F, ACTS_TRY, ""),
+    ("nav_acts_only_by_action", T, F, ACTS, "\treturn press(&tried, world) != NAV_DO_NOTHING;"),
+    ("nav_acts_only_by_screen", T, F, ACTS, "\tpress(&tried, world);\n\treturn tried.screen != nav->screen;"),
+    ("nav_acts_always", T, F, ACTS, "\tpress(&tried, world);\n\treturn true;"),
+    ("nav_acts_never", T, F, ACTS, "\tpress(&tried, world);\n\treturn false;"),
+    ("nav_acts_not_under_an_overlay", T, F, ACTS_ROW, "\tif(nav_overlay(world) != NAV_OVER_NONE || row < 0 || row >= nav_rows(nav, world)) return false;\n"),
+    # the knob is asked, not the finger: a tap does nothing on the second answer of a dialog, a press does
+    ("nav_acts_as_a_tap_would", T, F,
+     ACTS_ROW, ACTS_ROW + "\tif((nav->screen == NAV_DTC_CONFIRM || nav->screen == NAV_CONFIRM) && row != CHOICE_CANCEL) return false;\n"),
+    ("nav_acts_lines_of_the_list_too", T, F, ACTS, ACTS.replace(";", " || nav->screen == NAV_DTC_LIST;")),
+    ("nav_acts_info_lines_do_not", T, F, ACTS_ROW, ACTS_ROW + "\tif(nav->screen == NAV_INFO) return false;\n"),
+    # the row Hotspot acts by what the press does, as every row: not by a rule kept for this question
+    ("nav_acts_hotspot_also_while_kept", T, F, ACTS, ACTS.replace(";", " || (nav->screen == NAV_SETTINGS && row == SETTINGS_AP);")),
+    ("nav_acts_hotspot_never", T, F, ACTS_ROW, ACTS_ROW + "\tif(nav->screen == NAV_SETTINGS && row == SETTINGS_AP) return false;\n"),
+    ("nav_acts_kept_hotspot_under_an_overlay", T, F,
+     ACTS, ACTS.replace(";", " || (nav->screen == NAV_SETTINGS && row == SETTINGS_AP && nav_overlay(world) != NAV_OVER_NONE);")),
+    ("nav_acts_no_row_of_the_settings_while_kept", T, F, ACTS_ROW, ACTS_ROW + "\tif(nav->screen == NAV_SETTINGS && world->ap_kept) return false;\n"),
 ]

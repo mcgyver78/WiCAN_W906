@@ -14,12 +14,11 @@
 
 #define COUNT(a)    ((int)(sizeof(a) / sizeof((a)[0])))
 
-// A row to choose
+// A row to choose. Whether it does something now is not written down here: nav.h is asked (nav_row_acts())
 typedef struct
 {
 	const char *text;
 	const char *detail;
-	bool enabled;
 } choice_t;
 
 // Of scene_dump()
@@ -164,9 +163,11 @@ static void build_item(const scene_input_t *input, conn_view_t view, const layou
 
 	if(!shown)
 	{
-		// A dash stands for a value that should be there: a page of dashes must not have the ring of a
-		// page on which all is well. What the profile does not provide is missed by nobody.
-		if(state != LAYOUT_ITEM_UNAVAILABLE) *old = true;
+		// A dash is missed only where a value was: one the display holds was delivered on this connection, and
+		// its page must not have the ring of a page on which all is well. A value the vehicle never answers is
+		// a dash as well, but nothing went missing - its page would keep the yellow ring for ever. What the
+		// profile does not provide is missed by nobody.
+		if(value != NULL && state != LAYOUT_ITEM_UNAVAILABLE) *old = true;
 		append(out->text, sizeof(out->text), state == LAYOUT_ITEM_UNAVAILABLE ? SCENE_UNAVAILABLE : SCENE_DASH);
 		return;
 	}
@@ -265,7 +266,9 @@ static void build_rows(const scene_input_t *input, const dtc_line_t *lines, cons
 			const choice_t *choice = &choices[index - line_count];
 
 			row->kind = SCENE_ROW_ACTION;
-			row->enabled = choice->enabled;
+			// Enabled is what a press acts on: the rules of the press are asked, none is kept here. nav.h counts
+			// the choices behind the lines the world names, also when the scene has no texts for them.
+			row->enabled = nav_row_acts(nav, index - line_count + (nav_rows(nav, input->world) - choice_count), input->world);
 			append(row->text, sizeof(row->text), choice->text);
 			append(row->detail, sizeof(row->detail), choice->detail);
 		}
@@ -288,13 +291,13 @@ static void build_menu(const scene_input_t *input, scene_t *scene)
 	const nav_world_t *world = input->world;
 	char brightness[SCENE_SHORT_SIZE] = "";
 	const choice_t choices[] = {
-		{"Fehlerspeicher", "", true},
-		{"Helligkeit", brightness, true},
-		{"Nachtmodus", world->night_mode ? "an" : "aus", true},
-		{"Web-Zugriff", world->release_open ? "frei" : "gesperrt", true},
-		{"Info", "", true},
-		{"Einstellungen", "", true},
-		{"Zurück", "", true},
+		{"Fehlerspeicher", ""},
+		{"Helligkeit", brightness},
+		{"Nachtmodus", world->night_mode ? "an" : "aus"},
+		{"Web-Zugriff", world->release_open ? "frei" : "gesperrt"},
+		{"Info", ""},
+		{"Einstellungen", ""},
+		{"Zurück", ""},
 	};
 
 	append_percent(brightness, sizeof(brightness), world->brightness);
@@ -315,15 +318,12 @@ static void add_summary(scene_t *scene, const dtc_summary_t *summary)
 
 static void build_dtc(const scene_input_t *input, scene_t *scene)
 {
-	const nav_world_t *world = input->world;
-	// What "Liste ansehen" leads to, as nav.h decides it: the phase the world names
-	bool outcome = world->flow == DTC_FLOW_LIST || world->flow == DTC_FLOW_CLEARED || world->flow == DTC_FLOW_FAILED || world->flow == DTC_FLOW_UNKNOWN;
 	const choice_t choices[] = {
-		{"Lesen", "", world->can_read},
-		{"Liste ansehen", "", outcome},
+		{"Lesen", ""},
+		{"Liste ansehen", ""},
 		// Not "gelöscht": the adapter can accept a clear and refuse it afterwards, at its own engine check
-		{"Liste vor dem Löschen", "", world->old_lines > 0},
-		{"Zurück", "", true},
+		{"Liste vor dem Löschen", ""},
+		{"Zurück", ""},
 	};
 
 	set_title(scene, "Fehlerspeicher");
@@ -401,15 +401,14 @@ static void build_busy(const scene_input_t *input, const wican_state_t *state, s
 
 static void build_dtc_list(const scene_input_t *input, scene_t *scene)
 {
-	const nav_world_t *world = input->world;
 	const choice_t choices[] = {
-		{"Erneut lesen", "", world->can_read},
-		{"Fehler löschen", "", world->can_clear},
-		{"Zurück", "", true},
+		{"Erneut lesen", ""},
+		{"Fehler löschen", ""},
+		{"Zurück", ""},
 	};
 
 	set_title(scene, "Fehlerspeicher");
-	if(world->can_clear)
+	if(input->world->can_clear)
 	{
 		set_note(scene, "Löschen möglich: ");
 		append_time(scene->note, sizeof(scene->note), dtc_flow_seconds_left(input->flow, input->now_ms));
@@ -488,8 +487,8 @@ static void build_web(const scene_input_t *input, scene_t *scene)
 	uint32_t seconds = access_seconds_left(input->access, input->now_ms);
 	char release[SCENE_SHORT_SIZE] = "aus";
 	const choice_t choices[] = {
-		{"Freigabe", release, true},
-		{"Zurück", "", true},
+		{"Freigabe", release},
+		{"Zurück", ""},
 	};
 	bool has_address = input->address != NULL && input->address[0] != '\0';
 	char *line;
@@ -521,12 +520,12 @@ static void build_web(const scene_input_t *input, scene_t *scene)
 static void build_settings(const scene_input_t *input, scene_t *scene)
 {
 	const choice_t choices[] = {
-		{"Drehrichtung", input->reverse ? "umgekehrt" : "normal", true},
-		{"Hotspot", input->ap_on ? "an" : "aus", true},
-		{"Neustart", "", true},
-		{"Vorherige Version", "", input->world->previous_firmware},
-		{"Werkseinstellungen", "", true},
-		{"Zurück", "", true},
+		{"Drehrichtung", input->reverse ? "umgekehrt" : "normal"},
+		{"Hotspot", input->ap_on ? "an" : "aus"},
+		{"Neustart", ""},
+		{"Vorherige Version", ""},
+		{"Werkseinstellungen", ""},
+		{"Zurück", ""},
 	};
 
 	set_title(scene, "Einstellungen");
@@ -588,8 +587,9 @@ static void build_overlay(const scene_input_t *input, scene_t *scene)
 
 		case NAV_OVER_UPDATE:
 			scene->over = SCENE_OVER_UPDATE;
+			// The knob alone answers (nav.h): the screen must not invite a touch that does nothing
 			add_over_text(scene, "Update in Ordnung?");
-			add_over_text(scene, "Knopf drücken oder Bildschirm berühren");
+			add_over_text(scene, "Knopf drücken");
 			line = add_over_line(scene);
 			append(line, SCENE_TEXT_SIZE, "sonst alte Version in ");
 			append_time(line, SCENE_TEXT_SIZE, input->update_left_s);
@@ -602,8 +602,8 @@ static void build_overlay(const scene_input_t *input, scene_t *scene)
 
 void scene_build(const scene_input_t *input, scene_t *scene)
 {
-	static const choice_t done[] = {{"Fertig", "", true}};
-	static const choice_t back[] = {{"Zurück", "", true}};
+	static const choice_t done[] = {{"Fertig", ""}};
+	static const choice_t back[] = {{"Zurück", ""}};
 	conn_view_t view = conn_view(input->conn, input->now_ms);
 	const wican_state_t *state = conn_state(input->conn);
 	// What the values of a page say to the ring

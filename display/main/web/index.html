@@ -161,7 +161,7 @@ progress{width:100%}
 	<progress id="fwbar" max="100" value="0" hidden></progress>
 	<p class="why dim"></p>
 	<p id="fmsg" class="msg" hidden></p>
-	<p class="dim">Nach der Übertragung fragt das Display nach dem Knopf und startet neu. Dann fragt es „Update in Ordnung?“ – ohne Antwort binnen 5 Minuten läuft wieder die vorherige Version.</p>
+	<p class="dim">Nach der Übertragung fragt das Display nach dem Knopf und startet neu. Dann fragt es „Update in Ordnung?“ (Knopf drücken) – ohne Antwort binnen 5 Minuten läuft wieder die vorherige Version.</p>
 </section>
 </main>
 <div id="ask" class="ask" hidden>
@@ -194,6 +194,7 @@ const REFUSALS = {
 	locked: "Der Web-Zugriff ist nicht frei. Am Display: Menü > Web-Zugriff freigeben.",
 	busy: "Das Display ist beschäftigt (Fehlerspeicher, Löschdialog oder Firmware-Empfang). Gleich noch einmal versuchen.",
 	asking: "Am Display wartet noch eine Frage auf den Knopf. Dort antworten oder eine Minute warten.",
+	hot: "Das Display ist zu heiß und hat seinen Bildschirm abgeschaltet: Dort könnte jetzt niemand die Frage sehen und beantworten. Abkühlen lassen, dann noch einmal versuchen.",
 	body: "Das Display nimmt diese Angaben nicht an.",
 	too_large: "Das ist zu groß für das Display.",
 	upload: "Die Übertragung ist abgebrochen, oder das Display hat sie nach 30 Sekunden ohne Daten beendet. Die laufende Firmware ist unverändert.",
@@ -481,7 +482,7 @@ function knob(asked, what, then)
 	const id = String(asked.ticket);
 	const ends = {
 		confirmed: "Bestätigt.",
-		refused: "Abgelehnt: am Display lang gedrückt, oder der Web-Zugriff endete. Nichts wurde geändert.",
+		refused: "Abgelehnt: am Display lang gedrückt, der Web-Zugriff endete, oder das Display wurde zu heiß und hat seinen Bildschirm abgeschaltet. Nichts wurde geändert.",
 		expired: "Niemand hat den Knopf gedrückt. Nichts wurde geändert.",
 		unknown: "Das Display kennt die Frage nicht mehr – es hat inzwischen neu gestartet."
 	};
@@ -504,7 +505,7 @@ function knob(asked, what, then)
 		if(state === "waiting")
 		{
 			silent = 0;
-			$("askleft").textContent = "Noch " + text(r.body.left_s) + " s. Drücken = ja, lang drücken = nein.";
+			$("askleft").textContent = "Noch " + text(r.body.left_s) + " s. Knopf drücken = ja, lang drücken = nein. Tippen auf den Bildschirm zählt nicht.";
 			setTimeout(wait, 1000);
 		}
 		else if(has(ends, state)) over(state, ends[state]);
@@ -1062,7 +1063,7 @@ async function send(mode)
 	if(!report(r, true, "Geprüft:")) return;
 
 	r = mode === "save" ? await api("PUT", "/api/layout?mode=save", json) : await api("PUT", "/api/layout?mode=apply", json);
-	if(!report(r, true, mode === "save" ? "Gespeichert:" : "Das Display zeigt die Ansichten jetzt ab ihrer ersten Seite, gespeichert sind sie noch nicht:", true)) return;
+	if(!report(r, true, mode === "save" ? "Gespeichert:" : "Das Display zeigt die Ansichten jetzt, gespeichert sind sie noch nicht:", true)) return;
 
 	if(mode === "save")
 	{
@@ -1491,7 +1492,7 @@ async function upload()
 		knob(r.body, "Firmware " + S.version + " installieren", state =>
 		{
 			if(state === "refused" || state === "expired") tell("fmsg", "Die Firmware wurde nicht installiert; die laufende ist unverändert.", "note");
-			else tell("fmsg", "Nach dem Druck auf den Knopf startet das Display mit der neuen Firmware. Dort dann „Update in Ordnung?“ bestätigen.", "note");
+			else tell("fmsg", "Nach dem Druck auf den Knopf startet das Display mit der neuen Firmware. Dort dann „Update in Ordnung?“ mit dem Knopf bestätigen.", "note");
 		});
 	}
 	else if(r.status === 0) tell("fmsg", "Die Verbindung ist beim Übertragen abgerissen. Die laufende Firmware ist unverändert.", "bad");

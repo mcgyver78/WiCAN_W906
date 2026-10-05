@@ -501,14 +501,21 @@ void app_temperature(app_t *app, int celsius, bool valid)
 	app->has_temp = valid;
 	if(valid) app->temp_c = celsius;
 
-	// Nobody sees a dialog on a screen the heat switched off, and nobody may confirm a clear there: it is
-	// left as by a hold that was cancelled
-	if(app->heat == GUARD_HEAT_OFF && app->nav.screen == NAV_DTC_CONFIRM)
-	{
-		hold_close(&app->hold);
-		app_world(app, &world, app->clock_ms);
-		nav_hold(&app->nav, HOLD_CANCELLED, &world, app->clock_ms);
-	}
+	if(app->heat != GUARD_HEAT_OFF) return;
+
+	// A press that is under way began on a screen its hand could see and ends on one it cannot. Below it
+	// the question it was meant for is refused, the dialog it stood in is left: what it would act on is no
+	// longer what it was made for. The knob's report of that press is dropped, as of one begun in the dark.
+	// Set whether a press is under way or not: without one nothing reads this before the next press begins,
+	// which decides anew.
+	app->woke = true;
+
+	// Nobody sees a question on a screen the heat switched off, and nobody may answer one there. What the
+	// browser asks is refused and dropped: it learns that at once, and nothing waits for a press in the dark.
+	if(access_asking(&app->access, app->clock_ms) != ACCESS_ASK_NONE) app_do(app, NAV_DO_ASK_REFUSE, app->clock_ms);
+	// The clear dialog and the dialog of the settings are left as by "Abbrechen", whatever lies over them
+	app_world(app, &world, app->clock_ms);
+	app_do(app, nav_cancel(&app->nav, &world, app->clock_ms), app->clock_ms);
 }
 
 void app_platform(app_t *app, const app_platform_t *platform)
@@ -690,6 +697,7 @@ void app_world(const app_t *app, nav_world_t *world, uint64_t now_ms)
 	world->update_pending = app->update_pending;
 	world->uploading = app->uploading;
 	world->previous_firmware = app->previous_firmware;
+	world->ap_kept = link_ap_kept(&app->link);
 	world->night_mode = app->settings.night_mode;
 	world->brightness = app->settings.night_mode ? app->settings.night : app->settings.brightness;
 }

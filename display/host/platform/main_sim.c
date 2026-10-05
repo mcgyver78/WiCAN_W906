@@ -6,12 +6,22 @@
  *
  * What stands for the device, and what it rests on (ESP-IDF v5.5.2, read, not run):
  *   the flash       store.h as an array of records that outlasts a start; it can be broken as a whole
- *   the boot loader two app slots and their records in "otadata". esp_ota_set_boot_partition() checks the
- *                   image and makes the slot the next to start (app_update/esp_ota_ops.c); the boot loader
- *                   marks it as pending at its first start and as aborted at the start after that, and then
- *                   starts the other slot again (bootloader_support/src/bootloader_utility.c);
- *                   esp_ota_mark_app_valid_cancel_rollback() ends that. A slot without a record has no state
- *                   (ESP_ERR_NOT_FOUND).
+ *   the boot loader two app slots, no factory app, and the two records of "otadata" as app_update/esp_ota_ops.c
+ *                   and bootloader_support/src/bootloader_utility.c keep them with
+ *                   CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE: a record names a slot by its number ((number - 1)
+ *                   modulo the two slots) and holds its state. The state of a slot is that of the first
+ *                   record that names it; a slot no record names has none (ESP_ERR_NOT_FOUND). The boot
+ *                   loader starts the slot of the record with the highest number among those not marked as
+ *                   bad, the first slot if there is none, and the other slot if the image of the one it
+ *                   chose is not whole. esp_ota_set_boot_partition() checks the image
+ *                   and writes the next number that names the slot, as new, into the other record; the boot
+ *                   loader makes new pending at the first start, and pending aborted at the start after that -
+ *                   so that it starts the slot of the other record again;
+ *                   esp_ota_mark_app_valid_cancel_rollback() makes the record with the highest number valid.
+ *                   With both records erased (as flashed over USB) the boot loader writes a valid record for
+ *                   the slot it starts. esp_ota_begin(), which web.c calls, erases the record that is not
+ *                   the one in use unless it names the running slot. A record is written whole or not at
+ *                   all: its check sum is not here.
  *   the RTC memory  the counter of guard.h is a variable that is kept from start to start, and filled with
  *                   something else where the power was lost
  *   the heap        what a start allocates is given back with the next one. A block that was not asked for
@@ -57,10 +67,20 @@ static record_t flash[STORE_RECORDS];
 static bool store_broken;                   // the partition cannot be read or written
 static esp_partition_t slots[2] = { { .label = "ota_0" }, { .label = "ota_1" } };
 static int running_slot;
-static int state_of[2] = { -1, -1 };        // the record of a slot in otadata; -1: none
 static bool image_in[2] = { true, false };  // a whole firmware of this project lies there
-static int boot_target = -1;                // the slot made the one to boot, -1: none
 static int marked_valid;
+
+// A record of otadata (esp_ota_select_entry_t, without its label and its check sum)
+typedef struct
+{
+	uint32_t number;                        // ota_seq; all ones: the record is erased
+	uint32_t state;                         // esp_ota_img_states_t
+} ota_record_t;
+
+#define OTA_ERASED      { UINT32_MAX, ESP_OTA_IMG_UNDEFINED }
+#define NO_RECORD       -2                  // no state of a slot: none of esp_ota_img_states_t as an int
+
+static ota_record_t otadata[2] = { OTA_ERASED, OTA_ERASED };
 
 /* One start ------------------------------------------------------------------------------------------ */
 
@@ -499,11 +519,94 @@ esp_err_t web_start(void)
 	return ESP_OK;
 }
 
-/* The boot loader */
+/* The boot loader, and what the firmware asks it (see the head of this file) */
 
 static int slot_of(const esp_partition_t *partition)
 {
 	return (int)(partition - slots);
+}
+
+static bool record_names(const ota_record_t *record, int slot)
+{
+	return record->number != UINT32_MAX && (int)((record->number - 1) % 2) == slot;
+}
+
+// bootloader_common_ota_select_valid(): written, and not marked as bad
+static bool record_valid(const ota_record_t *record)
+{
+	return record->number != UINT32_MAX && record->state != ESP_OTA_IMG_INVALID && record->state != ESP_OTA_IMG_ABORTED;
+}
+
+// bootloader_common_get_active_otadata(): of the valid records the one with the higher number; -1: none
+static int record_in_use(void)
+{
+	if(record_valid(&otadata[0]) && record_valid(&otadata[1]))
+	{
+		return otadata[0].number >= otadata[1].number ? 0 : 1;
+	}
+	return record_valid(&otadata[0]) ? 0 : record_valid(&otadata[1]) ? 1 : -1;
+}
+
+// The record esp_ota_get_state_partition() takes the state of a slot from: the first that names it; -1: none
+static int record_of(int slot)
+{
+	return record_names(&otadata[0], slot) ? 0 : record_names(&otadata[1], slot) ? 1 : -1;
+}
+
+// What esp_ota_get_state_partition() says of a slot, NO_RECORD if no record names it
+static int state_of(int slot)
+{
+	return record_of(slot) < 0 ? NO_RECORD : (int)otadata[record_of(slot)].state;
+}
+
+// The record of a slot is given a state, as a firmware could do it that calls
+// esp_ota_mark_app_invalid_rollback(); the slot has to have a record
+static void set_state_of(int slot, esp_ota_img_states_t state)
+{
+	NEED(record_of(slot) >= 0);
+	otadata[record_of(slot)].state = state;
+}
+
+// bootloader_utility_get_selected_boot_partition() and bootloader_utility_load_boot_image()
+static void boot_loader(void)
+{
+	bool initial = otadata[0].number == UINT32_MAX && otadata[1].number == UINT32_MAX;
+	int first = 0;
+	int used;
+
+	// A slot that was started and not confirmed is not started again
+	for(int i = 0; i < 2; i++)
+	{
+		if(otadata[i].state == ESP_OTA_IMG_PENDING_VERIFY)
+		{
+			otadata[i].state = ESP_OTA_IMG_ABORTED;
+		}
+	}
+	used = record_in_use();
+	if(used >= 0)
+	{
+		first = (int)((otadata[used].number - 1) % 2);
+		if(otadata[used].state == ESP_OTA_IMG_NEW)
+		{
+			otadata[used].state = ESP_OTA_IMG_PENDING_VERIFY;
+		}
+	}
+	// The slot chosen if its image is whole, else the other one
+	running_slot = image_in[first] ? first : 1 - first;
+	NEED(image_in[running_slot]);
+	if(initial)
+	{
+		// set_actual_ota_seq()
+		otadata[0] = (ota_record_t){ (uint32_t)running_slot + 1, ESP_OTA_IMG_VALID };
+	}
+}
+
+// As flashed over USB (idf.py flash): a firmware in the first slot and the empty otadata of the build. What
+// lay in the other slot before lies there still.
+static void flashed_by_usb(void)
+{
+	otadata[0] = otadata[1] = (ota_record_t)OTA_ERASED;
+	image_in[0] = true;
 }
 
 const esp_partition_t *esp_ota_get_running_partition(void)
@@ -519,11 +622,13 @@ const esp_partition_t *esp_ota_get_next_update_partition(const esp_partition_t *
 
 esp_err_t esp_ota_get_state_partition(const esp_partition_t *partition, esp_ota_img_states_t *state)
 {
-	if(state_of[slot_of(partition)] < 0)
+	const int record = record_of(slot_of(partition));
+
+	if(record < 0)
 	{
 		return ESP_ERR_NOT_FOUND;
 	}
-	*state = (esp_ota_img_states_t)state_of[slot_of(partition)];
+	*state = (esp_ota_img_states_t)otadata[record].state;
 	return ESP_OK;
 }
 
@@ -537,24 +642,70 @@ esp_err_t esp_ota_get_partition_description(const esp_partition_t *partition, es
 	return ESP_OK;
 }
 
+// esp_rewrite_ota_data(): the slot is the one to start next, as new
+static void set_boot(int slot)
+{
+	const int used = record_in_use();
+	// The lowest number that names the slot
+	uint32_t number = (uint32_t)(slot + 1) % 2;
+
+	if(used < 0)
+	{
+		otadata[0] = (ota_record_t){ (uint32_t)slot + 1, ESP_OTA_IMG_NEW };
+		return;
+	}
+	// The first such number that is not below the one in use, into the other record
+	while(otadata[used].number > number)
+	{
+		number += 2;
+	}
+	otadata[1 - used] = (ota_record_t){ number, ESP_OTA_IMG_NEW };
+}
+
 esp_err_t esp_ota_set_boot_partition(const esp_partition_t *partition)
 {
 	// Reads and hashes the whole image, then writes otadata
 	CHECK(!lock_held());
 	if(!image_in[slot_of(partition)])
 	{
-		return ESP_FAIL;
+		return ESP_ERR_OTA_VALIDATE_FAILED;
 	}
-	boot_target = slot_of(partition);
+	set_boot(slot_of(partition));
 	return ESP_OK;
 }
 
 esp_err_t esp_ota_mark_app_valid_cancel_rollback(void)
 {
+	const int used = record_in_use();
+
 	CHECK(!lock_held());
-	state_of[running_slot] = ESP_OTA_IMG_VALID;
+	if(used < 0)
+	{
+		return ESP_FAIL;
+	}
+	otadata[used].state = ESP_OTA_IMG_VALID;
 	marked_valid++;
 	return ESP_OK;
+}
+
+// What esp_ota_begin() does to otadata when web.c begins to write the other slot
+// (esp_ota_invalidate_inactive_ota_data_slot()): the record that is not in use is erased, unless it names
+// the running slot. The slot itself is erased as the writing goes.
+static void ota_begin(void)
+{
+	const int used = record_in_use();
+
+	if(used >= 0 && otadata[1 - used].number != UINT32_MAX && !record_names(&otadata[1 - used], running_slot))
+	{
+		otadata[1 - used] = (ota_record_t)OTA_ERASED;
+	}
+}
+
+// An update lies in the other slot and was made the one to boot: the next start is its first
+static void update_installed(void)
+{
+	image_in[1 - running_slot] = true;
+	set_boot(1 - running_slot);
 }
 
 // A start that gave up before it made the app leaves none. The checks behind it look at an empty one then:
@@ -574,24 +725,15 @@ static int ended(int how)
 }
 
 /*
- * A start of the firmware; returns how it ended: OUT_IDLE (the task of main.c sleeps and the scenario has
- * no step left) or OUT_RESTART. The flash, the slots and the memory of guard.h stay; everything else is
+ * A start of the firmware, in the slot the boot loader chooses; returns how it ended: OUT_IDLE (the task of
+ * main.c sleeps and the scenario has no step left) or OUT_RESTART. The flash, the slots, otadata and the
+ * memory of guard.h stay; everything else is
  * as a chip has it after a reset: the heap empty, the variables of main.c as they are written there. A
  * variable that is added to main.c has to be added here.
  */
 static int boot(esp_reset_reason_t why, void (*steps)(void))
 {
-	if(boot_target >= 0)
-	{
-		running_slot = boot_target;
-		state_of[running_slot] = ESP_OTA_IMG_PENDING_VERIFY;
-		boot_target = -1;
-	}
-	else if(state_of[running_slot] == ESP_OTA_IMG_PENDING_VERIFY)
-	{
-		state_of[running_slot] = ESP_OTA_IMG_ABORTED;
-		running_slot = 1 - running_slot;
-	}
+	boot_loader();
 	if(why == ESP_RST_POWERON)
 	{
 		memset(&guard_memory, 0xA5, sizeof(guard_memory));
@@ -763,6 +905,8 @@ static char first_password[80];
 static void test_first_start(void)
 {
 	CHECK(boot(ESP_RST_POWERON, NULL) == OUT_IDLE);
+	// As flashed over USB: the boot loader has named the slot it started as valid, and the other one not at all
+	CHECK(running_slot == 0 && state_of(0) == ESP_OTA_IMG_VALID && state_of(1) == NO_RECORD);
 	CHECK(screens == 1 && nets == 1 && webs == 1);
 	CHECK(strcmp(net_ssid, "WiCAN-Display-EE0F") == 0);
 	CHECK(strlen(net_password) == 10 && strspn(net_password, "abcdefghjkmnpqrstuvwxyz23456789") == 10);
@@ -880,29 +1024,38 @@ static void test_wifi(void)
 	CHECK(platform_app->profile_count == 0);
 }
 
+// The web server begins to write the other slot (web.c): the record of main.c first, then esp_ota_begin()
+static void upload_begins(void)
+{
+	if(CHECK(platform_upload_begun()))
+	{
+		ota_begin();
+	}
+}
+
 static void step_begin(void)
 {
-	CHECK(platform_upload_begun());
+	upload_begins();
 }
 
 static void step_install_incomplete(void)
 {
-	CHECK(platform_upload_begun());
+	upload_begins();
 	raise_events(APP_EVENT_INSTALL_FIRMWARE);
 }
 
 static void step_install(void)
 {
-	CHECK(platform_upload_begun());
+	upload_begins();
 	platform_upload_complete();
 	raise_events(APP_EVENT_INSTALL_FIRMWARE);
 }
 
 static void step_install_stale(void)
 {
-	CHECK(platform_upload_begun());
+	upload_begins();
 	platform_upload_complete();
-	CHECK(platform_upload_begun());
+	upload_begins();
 	raise_events(APP_EVENT_INSTALL_FIRMWARE);
 }
 
@@ -918,9 +1071,14 @@ static void step_previous(void)
 
 static void test_firmware(void)
 {
+	/*
+	 * The other slot holds a firmware that was written over USB and never went through an update: no record
+	 * of otadata names it, nobody took it back, and it can be started.
+	 */
 	image_in[1] = true;
 	CHECK(boot(ESP_RST_SW, step_begin) == OUT_IDLE);
-	CHECK(platform_app->previous_firmware);                 // it was one when the display started
+	CHECK(state_of(0) == ESP_OTA_IMG_VALID && state_of(1) == NO_RECORD);
+	CHECK(platform_app->previous_firmware && !platform_app->rolled_back);   // it was one when the display started
 	CHECK(stored_is(STORE_DATA, "upload", "ota_1"));
 	CHECK(boot(ESP_RST_SW, NULL) == OUT_IDLE);
 	CHECK(!platform_app->previous_firmware);                // an upload began: not after any restart
@@ -929,40 +1087,79 @@ static void test_firmware(void)
 
 	// Not reported complete: nothing is made the one to boot, the display restarts as it was told
 	CHECK(boot(ESP_RST_SW, step_install_incomplete) == OUT_RESTART);
-	CHECK(boot_target == -1 && fake_us >= 500000);
+	CHECK(state_of(1) == NO_RECORD && fake_us >= 500000);
 	CHECK(restart_waits == 1 && dark_in_wait && held_at_restart);
 	CHECK(boot(ESP_RST_SW, NULL) == OUT_IDLE);
 	CHECK(running_slot == 0 && !platform_app->previous_firmware && !platform_app->update_pending);
 
 	// A second upload began after a complete one: that one is not there any more
 	CHECK(boot(ESP_RST_SW, step_install_stale) == OUT_RESTART);
-	CHECK(boot_target == -1);
+	CHECK(state_of(1) == NO_RECORD);
 
+	// Installed: it runs once, to be confirmed, and what it was installed from is the version before it
 	CHECK(boot(ESP_RST_SW, step_install) == OUT_RESTART);
-	CHECK(boot_target == 1);
+	CHECK(state_of(1) == ESP_OTA_IMG_NEW);
 	CHECK(boot(ESP_RST_SW, NULL) == OUT_IDLE);
-	CHECK(running_slot == 1 && platform_app->update_pending && platform_app->previous_firmware && !platform_app->rolled_back);
+	CHECK(running_slot == 1 && state_of(1) == ESP_OTA_IMG_PENDING_VERIFY && state_of(0) == ESP_OTA_IMG_VALID);
+	CHECK(platform_app->update_pending && platform_app->previous_firmware && !platform_app->rolled_back);
 	CHECK(find(STORE_DATA, "upload") == NULL);
 	CHECK(strcmp(platform_info.slot, "ota_1") == 0);
 
-	// Not confirmed, restarted: the boot loader takes it back
+	/*
+	 * Not confirmed, restarted: the boot loader takes it back and marks it as aborted. What lies in the other
+	 * slot now begins like a firmware of this project, and its upload was installed - and it is never the
+	 * previous version, after whatever restart.
+	 */
 	CHECK(boot(ESP_RST_SW, NULL) == OUT_IDLE);
-	CHECK(running_slot == 0 && !platform_app->update_pending && platform_app->rolled_back && platform_app->previous_firmware);
+	CHECK(running_slot == 0 && state_of(0) == ESP_OTA_IMG_VALID && state_of(1) == ESP_OTA_IMG_ABORTED);
+	CHECK(!platform_app->update_pending && platform_app->rolled_back && !platform_app->previous_firmware);
+	CHECK(boot(ESP_RST_PANIC, NULL) == OUT_IDLE);
+	CHECK(platform_app->rolled_back && !platform_app->previous_firmware);
 
-	// "Vorherige Version", and this time confirmed
-	CHECK(boot(ESP_RST_SW, step_previous) == OUT_RESTART);
-	CHECK(boot(ESP_RST_SW, step_confirm) == OUT_IDLE);
-	CHECK(running_slot == 1 && marked_valid == 1 && state_of[1] == ESP_OTA_IMG_VALID);
+	// The next upload begins: esp_ota_begin() erases the mark of the boot loader, and from here on the record
+	// of the upload says that the slot holds no previous version
+	CHECK(boot(ESP_RST_SW, step_begin) == OUT_IDLE);
+	CHECK(state_of(1) == NO_RECORD && stored_is(STORE_DATA, "upload", "ota_1"));
 	CHECK(boot(ESP_RST_SW, NULL) == OUT_IDLE);
-	CHECK(running_slot == 1 && !platform_app->update_pending);
+	CHECK(!platform_app->rolled_back && !platform_app->previous_firmware);
+
+	/*
+	 * Installed, and confirmed this time: the usual case. The version before the last update lies in the
+	 * other slot, valid, and is the previous version from then on.
+	 */
+	CHECK(boot(ESP_RST_SW, step_install) == OUT_RESTART);
+	CHECK(boot(ESP_RST_SW, step_confirm) == OUT_IDLE);
+	CHECK(running_slot == 1 && marked_valid == 1 && state_of(1) == ESP_OTA_IMG_VALID && state_of(0) == ESP_OTA_IMG_VALID);
+	CHECK(boot(ESP_RST_SW, NULL) == OUT_IDLE);
+	CHECK(running_slot == 1 && !platform_app->update_pending && !platform_app->rolled_back &&
+	      platform_app->previous_firmware);
+	CHECK(boot(ESP_RST_POWERON, NULL) == OUT_IDLE);
+	CHECK(platform_app->previous_firmware);
 
 	// A slot without a firmware is never offered as the previous version
 	image_in[0] = false;
 	CHECK(boot(ESP_RST_SW, NULL) == OUT_IDLE);
-	CHECK(!platform_app->previous_firmware);
+	CHECK(running_slot == 1 && !platform_app->previous_firmware);
 	image_in[0] = true;
-	running_slot = 0;
-	state_of[0] = state_of[1] = -1;
+
+	// "Vorherige Version": the boot loader starts it as it starts an update, to be confirmed like one, and
+	// the version it was started from is the previous one meanwhile
+	CHECK(boot(ESP_RST_SW, step_previous) == OUT_RESTART);
+	CHECK(boot(ESP_RST_SW, NULL) == OUT_IDLE);
+	CHECK(running_slot == 0 && state_of(0) == ESP_OTA_IMG_PENDING_VERIFY && state_of(1) == ESP_OTA_IMG_VALID);
+	CHECK(platform_app->update_pending && platform_app->previous_firmware);
+	// Nobody confirms it: it was taken back as an update is, and is not offered a second time
+	CHECK(boot(ESP_RST_SW, NULL) == OUT_IDLE);
+	CHECK(running_slot == 1 && state_of(0) == ESP_OTA_IMG_ABORTED);
+	CHECK(platform_app->rolled_back && !platform_app->previous_firmware);
+
+	// A slot that a firmware marked as bad itself (esp_ota_mark_app_invalid_rollback(), which this one never
+	// calls) is one that was taken back as well
+	set_state_of(0, ESP_OTA_IMG_INVALID);
+	CHECK(boot(ESP_RST_SW, NULL) == OUT_IDLE);
+	CHECK(running_slot == 1 && platform_app->rolled_back && !platform_app->previous_firmware);
+
+	flashed_by_usb();
 }
 
 static void step_factory(void)
@@ -1105,14 +1302,12 @@ static void test_restart(void)
 	CHECK(platform_app->settings.night_mode == !night);
 
 	// "Update in Ordnung?" answered just when its time had run out: the update stays
-	image_in[1] = true;
-	boot_target = 1;
+	update_installed();
 	marked_valid = 0;
 	CHECK(boot(ESP_RST_SW, step_reboot_then_confirm) == OUT_RESTART && running_slot == 1);
 	CHECK(marked_valid == 1);
 	CHECK(boot(ESP_RST_SW, NULL) == OUT_IDLE && running_slot == 1 && !platform_app->update_pending && !platform_app->rolled_back);
-	running_slot = 0;
-	state_of[0] = state_of[1] = -1;
+	flashed_by_usb();
 	marked_valid = 0;
 
 	// What found no room during the wait gets one when the job of the restart is done
@@ -1322,12 +1517,11 @@ static void test_failures(void)
 	net_result = ESP_FAIL;
 	CHECK(boot(ESP_RST_SW, NULL) == OUT_IDLE && screens == 1 && nets == 1 && webs == 0);
 	// The same while an update waits to be confirmed: it has not passed
-	image_in[1] = true;
-	boot_target = 1;
+	update_installed();
 	CHECK(boot(ESP_RST_SW, NULL) == OUT_RESTART && running_slot == 1);
 	CHECK(boot(ESP_RST_SW, NULL) == OUT_IDLE && running_slot == 0 && platform_app->rolled_back);
 	net_result = ESP_OK;
-	state_of[0] = state_of[1] = -1;
+	flashed_by_usb();
 
 	// Without the store it runs with what is built in, and the access point has a password all the same
 	store_broken = true;

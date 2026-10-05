@@ -751,7 +751,7 @@ class Api(unittest.TestCase):
     def test_refusals(self):
         display = self.display
         answers = {word: "{\"error\":\"%s\"}" % word for word in ("not_found", "method", "host", "header", "query", "length", "too_large",
-                                                                    "busy", "asking", "body", "upload")}
+                                                                    "busy", "asking", "hot", "body", "upload")}
         self.release()
 
         for target in ("/api/nothing", "/api/info/", "/API/INFO", "/api", "//api/info", "/api/info%3F", "/index.html", ""):
@@ -797,13 +797,21 @@ class Api(unittest.TestCase):
             for target in ("/api/reboot", "/api/reset", "/api/ota"):
                 self.assertEqual(self.call("POST", target, b"x"), (409, answers["busy"]), (busy, target))
             setattr(display, busy, False)
-        # A question to the knob while a firmware is received; a read does not keep the WiFi question away
+        # A question to the knob while a firmware is received
         display.uploading = True
         self.assertEqual(self.call("POST", "/api/wifi", b"{\"ssid\":\"N\"}"), (409, answers["busy"]))
         display.uploading = False
+        # What makes the display leave its network, while it reads or clears the fault memory
         display.reading = True
-        self.assertEqual(self.call("POST", "/api/wifi", b"{\"ssid\":\"N\"}")[0], 202)
+        self.assertEqual(self.call("POST", "/api/wifi", b"{\"ssid\":\"N\"}"), (409, answers["busy"]))
+        self.assertEqual(self.call("POST", "/api/wifi/forget", b"{\"ssid\":\"Werkstatt\"}"), (409, answers["busy"]))
         display.reading = False
+        # A question to the knob, or the begin of an upload, while the heat keeps the screen dark
+        display.set_hot(True)
+        for target, body in (("/api/wifi", b"{\"ssid\":\"N\"}"), ("/api/reset", b""), ("/api/ota", mock_display.firmware_image(size=200))):
+            self.assertEqual(self.call("POST", target, body), (409, answers["hot"]), target)
+        display.set_hot(False)
+        self.assertEqual(self.call("POST", "/api/wifi", b"{\"ssid\":\"N\"}")[0], 202)
 
         # A question to the knob, or the begin of an upload, while a question still waits
         for target, body in (("/api/wifi", b"{\"ssid\":\"N\"}"), ("/api/reset", b""), ("/api/ota", mock_display.firmware_image(size=200))):
@@ -854,14 +862,28 @@ class Api(unittest.TestCase):
         self.assertEqual(status("POST", "/api/ota", b"no firmware"), "409 busy")
         display.reading = False
 
-        # Answered by the request itself: locked, busy, asking, the rest
+        # Answered by the request itself: locked, busy, asking, hot, the rest
         self.assertEqual(self.ask_reset()[0], 202)
+        # The heat with a question that waits and a busy display, as the device never has it: the heat
+        # refuses the question that waits
+        display.hot = True
         display.uploading = True
         self.assertEqual(status("POST", "/api/wifi", b"no network"), "409 busy")
         display.uploading = False
+        display.reading = True
+        self.assertEqual(status("POST", "/api/wifi", b"no network"), "409 busy")
+        self.assertEqual(status("POST", "/api/wifi/forget", b"no network"), "409 busy")
+        display.reading = False
         self.assertEqual(status("POST", "/api/wifi", b"no network"), "409 asking")
         self.assertEqual(status("POST", "/api/ota", b"no firmware"), "409 asking")
         display.press_long()
+        display.uploading = True
+        self.assertEqual(status("POST", "/api/wifi", b"no network"), "409 busy")
+        display.uploading = False
+        self.assertEqual(status("POST", "/api/wifi", b"no network"), "409 hot")
+        self.assertEqual(status("POST", "/api/reset", b""), "409 hot")
+        self.assertEqual(status("POST", "/api/ota", b"no firmware"), "409 hot")
+        display.hot = False
         self.assertEqual(status("POST", "/api/wifi", b"no network"), "400 body")
         self.assertEqual(status("POST", "/api/ota", b"no firmware"), "422 too_short")
         large = mock_display.firmware_image(size=9000)
@@ -883,6 +905,93 @@ class Api(unittest.TestCase):
         self.clock.advance(321)
         self.assertEqual(self.ask_reset()[0], 202)
         self.assertEqual(status("POST", "/api/ota", image), "403 locked")
+
+    def test_busy_keeps_the_adapter(self):
+        display = self.display
+        busy = (409, fixture("app_web_busy.json"))
+        self.release()
+        display.profiles.append(["Camping", "", ""])
+        # The display reads or clears the fault memory: nothing takes its network away from under it
+        display.reading = True
+        self.clock.advance(100)
+        for body in (b"{\"ssid\":\"Camping\"}", b"{\"ssid\":\"Werkstatt\"}", b"{\"ssid\":\"Nirgends\"}", b"no network"):
+            self.assertEqual(self.call("POST", "/api/wifi/forget", body), busy, body)
+        self.assertEqual([profile[0] for profile in display.profiles], ["Werkstatt", "Camping"])
+        self.assertIn("\"current\":\"Werkstatt\"", self.call("GET", "/api/wifi")[1])
+        # The request found the release open and has renewed it, as every change that is refused as busy
+        self.assertIn("\"release\":{\"open\":true,\"left_s\":600}", self.call("GET", "/api/info")[1])
+        self.clock.advance(100)
+        for body in (b"{\"ssid\":\"Neu\",\"password\":\"12345678\"}", b"{\"ssid\":\"Werkstatt\",\"host\":\"10.0.0.9\"}", b"no network"):
+            self.assertEqual(self.call("POST", "/api/wifi", body), busy, body)
+        # A question that is not asked renews nothing, and there is no ticket
+        self.assertIn("\"release\":{\"open\":true,\"left_s\":500}", self.call("GET", "/api/info")[1])
+        self.assertEqual(self.call("GET", "/api/ticket?id=1")[1], "{\"ticket\":1,\"state\":\"unknown\",\"left_s\":0}")
+        self.assertIsNone(display.press())
+        # What leaves the network alone goes on
+        self.assertEqual(self.call("POST", "/api/settings", b"{}")[0], 200)
+        self.assertEqual(self.call("PUT", "/api/layout?mode=apply", display.builtin)[0], 200)
+        # The read has ended
+        display.reading = False
+        self.assertEqual(self.call("POST", "/api/wifi/forget", b"{\"ssid\":\"Camping\"}"), (200, fixture("app_web_ok.json")))
+        self.assertEqual(self.call("POST", "/api/wifi", b"{\"ssid\":\"Neu\",\"password\":\"12345678\"}"), (202, fixture("app_web_asked_1.json")))
+
+    def test_heat(self):
+        display = self.display
+        hot = (409, fixture("app_web_hot.json"))
+        image = mock_display.firmware_image(size=5000)
+        questions = (("/api/wifi", b"{\"ssid\":\"Neu\",\"password\":\"12345678\"}"), ("/api/reset", b""), ("/api/ota", image))
+        self.release()
+        self.assertIn("\"temp_c\":47,\"heat\":\"normal\"", self.call("GET", "/api/info")[1])
+        # While the heat keeps the screen dark no upload begins: the display takes nothing of the file
+        display.set_hot(True)
+        self.assertEqual(self.call("POST", "/api/ota", image), hot)
+        self.assertEqual((display.uploading, display.upload_version), (False, ""))
+        display.set_hot(False)
+
+        for number, (target, body) in enumerate(questions, 1):
+            with self.subTest(target=target):
+                # A question that waits when the heat switches the light off is refused at once
+                self.assertEqual(self.call("POST", target, body)[0], 202)
+                self.clock.advance(2)
+                display.set_hot(True)
+                self.assertEqual(self.call("GET", "/api/ticket?id=%d" % number)[1], "{\"ticket\":%d,\"state\":\"refused\",\"left_s\":0}" % number)
+                self.assertIsNone(display.press())
+                # ... and while it lasts none is asked and no upload begins
+                self.assertEqual(self.call("POST", target, body), hot)
+                self.assertEqual(self.call("GET", "/api/ticket?id=%d" % (number + 1))[1], "{\"ticket\":%d,\"state\":\"unknown\",\"left_s\":0}" % (number + 1))
+                self.assertFalse(display.uploading)
+                display.set_hot(False)
+        self.assertEqual(display.profiles, [["Werkstatt", "geheim123", "192.168.1.50"]])
+        self.assertEqual(display.version, "0.1.0")
+
+        display.set_hot(True)
+        self.assertIn("\"temp_c\":88,\"heat\":\"off\"", self.call("GET", "/api/info")[1])
+        # A question that is not asked renews nothing; the begin of an upload is a change like every other
+        self.clock.advance(100)
+        self.assertEqual(self.call("POST", "/api/reset"), hot)
+        self.assertEqual(self.call("POST", "/api/wifi", questions[0][1]), hot)
+        self.assertIn("\"left_s\":500}", self.call("GET", "/api/info")[1])
+        self.assertEqual(self.call("POST", "/api/ota", image), hot)
+        self.assertIn("\"left_s\":600}", self.call("GET", "/api/info")[1])
+        # What asks nothing at the display goes on
+        self.assertEqual(self.call("POST", "/api/settings", b"{}")[0], 200)
+        self.assertEqual(self.call("POST", "/api/wifi/forget", b"{\"ssid\":\"Nirgends\"}")[0], 404)
+        self.assertEqual(self.call("PUT", "/api/layout?mode=apply", display.builtin)[0], 200)
+        display.set_hot(False)
+
+        # The heat comes while a firmware arrives: at its end the file is not asked for
+        self.assertEqual(self.call("POST", "/api/ota", image, read=reader(image, lambda: display.set_hot(True))), hot)
+        self.assertFalse(display.uploading)
+        self.assertEqual(display.access.waiting(display.now()), None)
+        # The update question has no answer that takes it back: it stays
+        display.update_pending = True
+        display.previous = ("0.0.9", "display-v0.0.9", "ota_1")
+        display.set_hot(True)
+        self.assertIn("\"update_pending\":true", self.call("GET", "/api/info")[1])
+        # Cooled down, the display asks again
+        display.set_hot(False)
+        display.update_ok()
+        self.assertEqual(self.call("POST", "/api/reset")[0], 202)
 
     # ------------------------------------------------------------------------------------------------
     # The server
@@ -941,6 +1050,12 @@ class Api(unittest.TestCase):
         self.assertEqual(display.control("POST", "/mock/release?on", own)[0], 200)
         self.assertEqual(self.call("POST", "/api/reset")[0], 202)
         self.assertIn("\"question\": \"Werkseinstellungen?\"", display.control("GET", "/mock/state", own)[2].decode("utf-8"))
+        # The heat takes the question from the screen
+        state = display.control("POST", "/mock/hot?on", own)[2].decode("utf-8")
+        self.assertIn("\"hot\": true", state)
+        self.assertIn("\"question\": \"\"", state)
+        self.assertIn("\"hot\": false", display.control("POST", "/mock/hot?off", own)[2].decode("utf-8"))
+        self.assertEqual(self.call("POST", "/api/reset")[0], 202)
         display.control("POST", "/mock/skip?2", own)
         self.assertIn("\"down\": true", display.control("POST", "/mock/press", own)[2].decode("utf-8"))
         for target in ("/mock/skip?-5", "/mock/skip?x", "/mock/lists?all"):
@@ -1091,6 +1206,73 @@ class AsksForBrokenUploads(mock_display.Display):
         return (status, body) if status != 500 else self._ask("firmware", self.upload_version, self.now())
 
 
+class ForgetsWhileItReads(mock_display.Display):
+    """Forgets a network while the display reads the fault memory"""
+
+    def _change(self, route, data, now):
+        reading, self.reading = self.reading, self.reading and route != "wifi_forget"
+        try:
+            return super()._change(route, data, now)
+        finally:
+            self.reading = reading
+
+
+class AsksForANetworkWhileItReads(mock_display.Display):
+    def _change(self, route, data, now):
+        reading, self.reading = self.reading, self.reading and route != "wifi_store"
+        try:
+            return super()._change(route, data, now)
+        finally:
+            self.reading = reading
+
+
+class AsksInTheDark(mock_display.Display):
+    """Asks a question on a screen the heat keeps dark"""
+
+    def _ask_refused(self, busy, now):
+        hot, self.hot = self.hot, False
+        try:
+            return super()._ask_refused(busy, now)
+        finally:
+            self.hot = hot
+
+
+class UploadsInTheDark(mock_display.Display):
+    def _upload_begin(self, first, file_size, now):
+        hot, self.hot = self.hot, False
+        try:
+            return super()._upload_begin(first, file_size, now)
+        finally:
+            self.hot = hot
+
+
+class KeepsTheQuestionInTheDark(mock_display.Display):
+    def set_hot(self, on):
+        self.hot = on
+        self.numbers["temp_c"] = mock_display.HOT_C if on else mock_display.COOL_C
+
+
+class HeatBeforeTheQuestion(mock_display.Display):
+    """Looks at the heat before the question that waits"""
+
+    def _ask_refused(self, busy, now):
+        if self.access.is_open(now) and not busy and self.hot:
+            return 409, mock_display.error_body("hot")
+        return super()._ask_refused(busy, now)
+
+
+class HeatBeforeTheBusyDisplay(mock_display.Display):
+    def _ask_refused(self, busy, now):
+        if self.access.is_open(now) and self.hot and self.access.waiting(now) is None:
+            return 409, mock_display.error_body("hot")
+        return super()._ask_refused(busy, now)
+
+
+class NamesNoHeat(mock_display.Display):
+    def info_json(self, now):
+        return super().info_json(now).replace("\"heat\":\"off\"", "\"heat\":\"normal\"")
+
+
 class AnswersTheStrip(mock_display.Display):
     def control(self, method, target, headers):
         return super().control(method, target, dict(headers, **{"x-display": "1"}))
@@ -1149,12 +1331,16 @@ API_MUTATIONS = {
     "test_ota_that_breaks_or_comes_late": ("UPLOAD_LEFT_S", 299),
     "test_refusals": NoHostRule,
     "test_refusals_in_the_documented_order": WrongRoute,
+    "test_busy_keeps_the_adapter": ForgetsWhileItReads,
+    "test_heat": AsksInTheDark,
     "test_over_http": ("Handler", AllowsOrigins),
     "test_the_strip_is_no_part_of_the_display": AnswersTheStrip,
 }
 # More than one thing a test guards is broken for it
 API_MUTATIONS_MORE = {
-    "test_refusals_in_the_documented_order": [WrongStage],
+    "test_refusals_in_the_documented_order": [WrongStage, HeatBeforeTheQuestion, HeatBeforeTheBusyDisplay],
+    "test_busy_keeps_the_adapter": [AsksForANetworkWhileItReads],
+    "test_heat": [UploadsInTheDark, KeepsTheQuestionInTheDark, NamesNoHeat],
     "test_refusals": [("BODY_SMALL_MAX", 513), ("OUT_SIZE", 60000), AsksForBrokenUploads],
     "test_release": [("OPEN_MS", 601 * 1000)],
     "test_ota_that_breaks_or_comes_late": [AsksForBrokenUploads],

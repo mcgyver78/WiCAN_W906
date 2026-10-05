@@ -86,8 +86,25 @@ static void drop_network(app_t *app)
 	app->has_wifi_asked = false;
 }
 
+// A fault memory request of the display is under way: sent or accepted, and not ended. What takes the adapter
+// away then - the display leaves its network - leaves a read without its list and a clear without its
+// outcome. In the same phases the settings at the knob offer no restart (nav.h), and app_busy() is true; the
+// clear dialog and an upload, which app_busy() names as well, cut no request off.
+static bool request_under_way(const app_t *app)
+{
+	dtc_flow_phase_t phase = app->poll.flow.phase;
+
+	return phase == DTC_FLOW_READ_SENT || phase == DTC_FLOW_READING || phase == DTC_FLOW_CLEAR_SENT || phase == DTC_FLOW_CLEARING;
+}
+
+// The heat keeps the backlight off (app.h): nobody could see a question, and nobody answer it
+static bool screen_unseen(const app_t *app)
+{
+	return app->heat == GUARD_HEAT_OFF;
+}
+
 // Why the question cannot be asked now: the status of the refusal, with its body written, or 0 if it can.
-// busy: the display cannot show a question, or must not be restarted by its answer.
+// busy: the display cannot show a question, or must not be restarted or taken from its network by its answer.
 static int ask_refused(const app_t *app, access_ask_t question, bool busy, char *out, size_t *length, uint64_t now)
 {
 	access_refusal_t refusal = access_may_ask(&app->access, question, now);
@@ -96,6 +113,8 @@ static int ask_refused(const app_t *app, access_ask_t question, bool busy, char 
 	if(refusal == ACCESS_CLOSED) return refuse(403, "locked", out, length);
 	if(busy) return refuse(409, "busy", out, length);
 	if(refusal != ACCESS_ALLOWED) return refuse(409, "asking", out, length);
+	// A question on a dark screen would wait for nobody
+	if(screen_unseen(app)) return refuse(409, "hot", out, length);
 	return 0;
 }
 
@@ -229,7 +248,8 @@ int app_web_layout(app_t *app, web_route_t route, const char *body, size_t body_
 		// The views the display chooses by itself were read or made without anything to put right
 		memset(&report, 0, sizeof(report));
 		app_choose_layout(app);
-		app->events |= APP_EVENT_ERASE_LAYOUT;
+		// A save that still waits to be taken is undone by this reset: the later of the two alone counts (app.h)
+		app->events = (app->events & ~APP_EVENT_STORE_LAYOUT) | APP_EVENT_ERASE_LAYOUT;
 	}
 	else
 	{
@@ -252,11 +272,14 @@ int app_web_layout(app_t *app, web_route_t route, const char *body, size_t body_
 		if(route == WEB_ROUTE_LAYOUT_SAVE)
 		{
 			app->source = APP_LAYOUT_STORED;
-			app->events |= APP_EVENT_STORE_LAYOUT;
+			// ... and a reset that still waits by this save: the platform would erase what it has just stored
+			app->events = (app->events & ~APP_EVENT_ERASE_LAYOUT) | APP_EVENT_STORE_LAYOUT;
 		}
 	}
-	// The page shown before means nothing in other views, and nav_tick() would only leave one that is gone
-	app->nav.page = layout_first_page(&app->layout, catalog);
+	// Whoever tries views in the browser looks at the page he is working on: it stays where the new layout
+	// shows a page at its position. Without one there - and in the views the display chose itself after a
+	// reset - the value pages start at the first page: nav_tick() would only look for the nearest.
+	if(route == WEB_ROUTE_LAYOUT_RESET || !layout_page_shown(&app->layout, app->nav.page, catalog)) app->nav.page = layout_first_page(&app->layout, catalog);
 	return answer(200, web_layout_report_json(true, &report, &app->layout, catalog, out, APP_WEB_OUT_SIZE), out, length);
 }
 
@@ -274,8 +297,10 @@ int app_web_wifi(app_t *app, web_route_t route, const char *body, size_t body_le
 
 	if(route == WEB_ROUTE_WIFI_STORE)
 	{
-		// Under an upload the screen takes no input: the question would wait unseen
-		status = ask_refused(app, ACCESS_ASK_WIFI, app->uploading, out, length, now);
+		// Under an upload the screen takes no input: the question would wait unseen. And its answer makes the
+		// display leave its network: not while a request of its own is under way, whose progress the question
+		// would hide from whoever presses the knob
+		status = ask_refused(app, ACCESS_ASK_WIFI, app->uploading || request_under_way(app), out, length, now);
 		if(status != 0) return status;
 
 		// No question waits: what stands in the room of the request is left over from one that is over. A
@@ -287,6 +312,8 @@ int app_web_wifi(app_t *app, web_route_t route, const char *body, size_t body_le
 	}
 
 	if(!access_write(&app->access, now)) return refuse(403, "locked", out, length);
+	// The display leaves its network with every network that is forgotten, whichever is named
+	if(request_under_way(app)) return refuse(409, "busy", out, length);
 	if(!web_forget_parse(body, body_length, ssid, app->work, app->work_count)) return refuse(400, "body", out, length);
 
 	left = net_forget(app->profiles, app->profile_count, ssid);
@@ -362,6 +389,8 @@ int app_web_upload_begin(app_t *app, const uint8_t *first, size_t first_length, 
 	if(app_busy(app) || app->update_pending) return refuse(409, "busy", out, length);
 	// A firmware question of an earlier upload must not be confirmed for a slot that is being rewritten
 	if(access_asking(&app->access, now) != ACCESS_ASK_NONE) return refuse(409, "asking", out, length);
+	// The question at the end of the upload could not be seen on a dark screen: no megabytes for that either
+	if(screen_unseen(app)) return refuse(409, "hot", out, length);
 
 	check = ota_check(first, first != NULL ? first_length : 0, file_size, slot_size, version, sizeof(version));
 	if(check != OTA_CHECK_OK) return refuse(422, words[check], out, length);

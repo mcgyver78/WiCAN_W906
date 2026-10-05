@@ -1,5 +1,5 @@
 kind: values
-ring: yellow
+ring: none
 title: Fremd
 note:
 item: Getriebeöl | – |  | dim | number | -1

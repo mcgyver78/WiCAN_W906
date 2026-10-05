@@ -155,12 +155,19 @@ void link_answering(link_t *link, bool answering, uint64_t now_ms);
 // with nothing under way the scan follows at once. The waits start from the beginning in every case.
 void link_profiles(link_t *link, const net_profile_t *profiles, int profile_count, uint64_t now_ms);
 
+// true while the own access point stays on whatever is asked: in safe mode, or while no profile is stored.
+// It is then wanted, cannot be switched off (link_ap_request()) and does not close by itself
+// (link_ap_clients()): the one place for that rule. It says nothing about whether the access point is
+// ordered on already (link_ap_on()): before the first link_next(), and right after the last profile was
+// removed, it is kept and not on yet.
+bool link_ap_kept(const link_t *link);
+
 // The user switched the own access point on or off at the device. In safe mode and without a stored
-// profile it stays on whatever is asked.
+// profile it stays on whatever is asked (link_ap_kept()).
 void link_ap_request(link_t *link, bool on, uint64_t now_ms);
 
 // Number of clients of the own access point, reported when it changes. With no client for LINK_AP_IDLE_MS
-// the access point closes by itself - unless safe mode or no stored profile keep it open.
+// the access point closes by itself - unless safe mode or no stored profile keep it open (link_ap_kept()).
 // The time counts from LINK_DO_AP_ON or from the last client leaving. A negative number counts as 0, and
 // with LINK_DO_AP_ON the number is 0 again: an access point that was closed has no clients.
 void link_ap_clients(link_t *link, int clients, uint64_t now_ms);

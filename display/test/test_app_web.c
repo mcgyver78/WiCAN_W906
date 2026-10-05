@@ -1273,6 +1273,13 @@ static void test_layout_check(void)
 static void test_layout_change(void)
 {
 	static char warning[1024], hidden[1024], refused[1024], largest[LAYOUT_TEXT_MAX + 1];
+	// Three pages, none hidden: the second names a value no profile of the harness has. In a room with bytes
+	// to spare, as the other bodies: a function that reads behind the length it was given must fail a check
+	// here, not end the test.
+	static char unknown_middle[1024] = "{\"format\":\"wican-display-layout\",\"v\":1,\"name\":\"Mitte fehlt\",\"pages\":["
+	                                     "{\"title\":\"A\",\"items\":[{\"key\":\"ENGINE_RPM\"}]},"
+	                                     "{\"title\":\"B\",\"items\":[{\"key\":\"TURBO_SPEED\"}]},"
+	                                     "{\"title\":\"C\",\"items\":[{\"key\":\"FUEL_L\"}]}]}";
 	size_t length;
 	bool loaded = read_fixture("fixtures/app_web_layout_warning.json", warning, sizeof(warning)) && read_fixture("fixtures/app_web_layout_hidden.json", hidden, sizeof(hidden)) &&
 	              read_fixture("fixtures/app_web_layout_refused.json", refused, sizeof(refused));
@@ -1311,7 +1318,7 @@ static void test_layout_change(void)
 	put("/api/layout?mode=apply", stored_layout);
 	check(answered(200, "report_stored") && routed == WEB_ROUTE_LAYOUT_APPLY, "a layout that is taken is applied: 200 with its report");
 	check(in_use(stored_layout) && app->source == APP_LAYOUT_PREVIEW && app->nav.page == 0 && carried() == 0 && !flash.has_layout,
-	      "the applied layout is the layout in use with its text, source preview, shown from its first page; nothing is stored");
+	      "the applied layout is the layout in use with its text, source preview; it has two pages and none at the position of the third, so it is shown from its first; nothing is stored");
 	check(access_is_open(&app->access, 699999) && !access_is_open(&app->access, 700000), "a layout applied at 100000 renews the release until 700000");
 	sees("preview", "the applied layout is on the screen at once");
 	remember();
@@ -1321,25 +1328,53 @@ static void test_layout_change(void)
 	put("/api/layout?mode=apply", refused);
 	check(code == 400 && access_is_open(&app->access, 749999) && !access_is_open(&app->access, 750000), "a layout refused at 150000 has renewed the release all the same, until 750000");
 
-	// The first page the new layout shows
+	// The page shown stays where the new layout shows a page at its position
 	turn(1);
+	check(app->nav.page == 1, "the scene of the second page of a preview");
+	put("/api/layout?mode=apply", builtin_text);
+	check(code == 200 && in_use(builtin_text) && app->source == APP_LAYOUT_PREVIEW && app->nav.page == 1,
+	      "another layout applied while the second page shows: its second page is shown, the display does not jump back to the first");
+	shows("page_ladeluft", "the second page of the applied layout is on the screen at once");
+	put("/api/layout?mode=apply", builtin_text);
+	check(code == 200 && app->nav.page == 1, "the same layout applied again keeps the page as well");
+	turn(5);
+	check(app->nav.page == 6, "the scene of the seventh page of a preview");
+	put("/api/layout?mode=apply", stored_layout);
+	check(code == 200 && in_use(stored_layout) && app->nav.page == 0,
+	      "a layout of two pages applied while the seventh page shows: it has no page at that position - the value pages start at its first, not at its last");
+
+	// A page at the position that the layout does not show is no page to stay on
 	put("/api/layout?mode=apply", warning);
-	check(answered(200, "report_warning") && in_use(warning) && app->nav.page == 1, "a layout whose first page is hidden is shown from its second page");
+	check(answered(200, "report_warning") && in_use(warning) && app->nav.page == 1,
+	      "a layout whose page at the position shown, the first, is hidden: the first page it shows, its second");
 	put("/api/layout?mode=apply", hidden);
 	check(answered(200, "report_hidden") && in_use(hidden) && app->nav.page == -1, "app_web_report_hidden.json: a layout without a page to show is applied, no page is shown");
 	put("/api/layout?mode=apply", stored_layout);
+	check(code == 200 && app->nav.page == 0, "a layout applied while no page is shown starts at its first page");
 	turn(1);
-	check(app->nav.page == 1, "the scene of the second page of a preview");
-	put("/api/layout?mode=apply", stored_layout);
-	check(code == 200 && app->nav.page == 0, "the same layout applied again starts at its first page as well");
-
+	put("/api/layout?mode=apply", unknown_middle);
+	check(code == 200 && in_use(unknown_middle) && app->layout.page_count == 3 && !app->layout.pages[1].hidden && app->nav.page == 0,
+	      "a layout whose page at the position shown, the second, holds no value of the profile: it is not shown - the first page");
 	put("/api/layout?mode=apply", builtin_text);
 	turn(2);
+	put("/api/layout?mode=apply", unknown_middle);
+	check(code == 200 && app->nav.page == 2, "the same layout applied while the third page shows: its third page, behind the one that is not shown, stays in front");
+
+	// Below another screen the page is kept by the same rule
+	put("/api/layout?mode=apply", builtin_text);
 	short_press();
 	check(on(NAV_MENU) && app->nav.page == 2, "the scene of the menu over the third page");
 	put("/api/layout?mode=apply", stored_layout);
-	check(code == 200 && on(NAV_MENU) && app->nav.page == 0, "a layout applied while the menu shows: the value pages start at its first page all the same");
+	check(code == 200 && on(NAV_MENU) && app->nav.page == 0, "a layout of two pages applied while the menu lies over the third page: the menu stays, the value pages below start at its first page");
 	long_press();
+	turn(1);
+	short_press();
+	turn(3);
+	check(on(NAV_MENU) && app->nav.row == 3 && app->nav.page == 1, "the scene of the menu, the focus on its fourth row, over the second page");
+	put("/api/layout?mode=apply", builtin_text);
+	check(code == 200 && on(NAV_MENU) && app->nav.row == 3 && app->nav.page == 1, "a layout applied while the menu lies over the second page: menu and focus stay, and its second page waits below");
+	long_press();
+	check(on(NAV_PAGES) && app->nav.page == 1, "back from the menu the second page of the applied layout is shown");
 
 	// The layout with the most values there can be: 12 pages of 6 state widgets with 8 texts each
 	length = (size_t)snprintf(largest, sizeof(largest), "{\"format\":\"wican-display-layout\",\"v\":1,\"name\":\"Gross\",\"pages\":[");
@@ -1373,16 +1408,24 @@ static void test_layout_change(void)
 	put("/api/layout?mode=save", stored_layout);
 	check(answered(200, "report_stored") && routed == WEB_ROUTE_LAYOUT_SAVE, "a layout that is taken is saved: 200 with its report");
 	check(in_use(stored_layout) && app->source == APP_LAYOUT_STORED && app->nav.page == 0 && done.layout == 1 && carried() == 1 && done.last == APP_EVENT_STORE_LAYOUT,
-	      "the saved layout is the layout in use, source stored, shown from its first page; the platform is asked to store it, and nothing else");
+	      "the saved layout is the layout in use, source stored; it has no page at the position of the fourth, so it is shown from its first; "
+	      "the platform is asked to store it, and nothing else");
 	check(flash.has_layout && strcmp(flash.layout, stored_layout) == 0, "the text of the saved layout is in the flash, byte for byte");
 	remember();
 	put("/api/layout?mode=save", refused);
 	check(answered(400, "report_refused") && only_time() && carried() == 1 && strcmp(flash.layout, stored_layout) == 0, "a layout that is refused is not saved: 400, no event, the stored one stays");
 	turn(1);
 	put("/api/layout?mode=save", stored_layout);
-	check(code == 200 && app->nav.page == 0 && done.layout == 2, "the same layout saved again is stored again and starts at its first page");
+	check(code == 200 && app->nav.page == 1 && done.layout == 2, "the same layout saved again while its second page shows is stored again, and the second page stays in front");
+	shows("stored_page2", "the second page of the saved layout is still on the screen");
+	put("/api/layout?mode=save", builtin_text);
+	check(code == 200 && app->source == APP_LAYOUT_STORED && in_use(builtin_text) && app->nav.page == 1 && done.layout == 3,
+	      "another layout saved while the second page shows: its second page is shown");
+	turn(5);
+	put("/api/layout?mode=save", stored_layout);
+	check(code == 200 && app->nav.page == 0 && done.layout == 4, "a layout of two pages saved while the seventh page shows: the value pages start at its first");
 	put("/api/layout?mode=apply", warning);
-	check(code == 200 && app->source == APP_LAYOUT_PREVIEW && done.layout == 2 && strcmp(flash.layout, stored_layout) == 0, "a layout applied over a saved one is a preview: the stored one stays in the flash");
+	check(code == 200 && app->source == APP_LAYOUT_PREVIEW && done.layout == 4 && strcmp(flash.layout, stored_layout) == 0, "a layout applied over a saved one is a preview: the stored one stays in the flash");
 	start();
 	run(2100);
 	check(app->source == APP_LAYOUT_STORED && in_use(stored_layout), "after a restart the saved layout is in use, the preview is gone");
@@ -1488,12 +1531,27 @@ static void test_wifi_store(void)
 	check(answered(403, "locked"), "while an upload runs and the release is closed the answer is locked, not busy");
 	app->uploading = false;
 
-	// A fault memory request of the display does not keep the question away
+	// A fault memory request of the display keeps the question away: the answer of the knob would take the
+	// adapter from under it
 	released();
+	run_to(10000);
 	app_do(app, NAV_DO_READ, now);
+	remember();
 	post("/api/wifi", NEU);
-	check(answered(202, "asked_1") && app_busy(app) && phase() == DTC_FLOW_READ_SENT, "while a read of the display is under way a network is asked for all the same");
+	check(!by_route && answered(409, "busy") && only_time() && nothing_asked() && access_asking(&app->access, now) == ACCESS_ASK_NONE && phase() == DTC_FLOW_READ_SENT,
+	      "while a read of the display waits to be sent no network is asked for: 409 busy, and nothing changes but the time");
+	check(access_is_open(&app->access, 602099) && !access_is_open(&app->access, 602100) && access_ticket(&app->access, 1, now) == ACCESS_TICKET_UNKNOWN,
+	      "the network question that was refused as busy has not renewed the release, and no ticket was given");
+	run(1000);
+	post("/api/wifi", NEU);
+	check(answered(409, "busy") && phase() == DTC_FLOW_READING && nothing_asked(), "while the adapter reads for the display no network is asked for either");
+	post("/api/wifi", "kein JSON");
+	check(answered(409, "busy"), "while a read is under way a body that cannot be read is answered busy, not body");
+	run(6000);
+	post("/api/wifi", NEU);
+	check(answered(202, "asked_1") && phase() == DTC_FLOW_LIST && sent[POLL_DTC_READ] == 1, "when the read has ended with its list the network is asked for");
 
+	// The clear dialog alone does not: nothing is sent yet, and no hold counts under the question
 	listed();
 	open_dialog();
 	post("/api/wifi", NEU);
@@ -1678,21 +1736,134 @@ static void test_wifi_forget(void)
 	post("/api/wifi/forget", "{\"ssid\":\"Ein Netz mit dem laengsten Namen\"}");
 	check(answered(200, "ok") && app->profile_count == 1 && profile_is(0, "Werkstatt", "geheim-123", "192.168.1.50"), "a network with a name of 32 bytes is forgotten");
 
-	// One of two, and a fault memory request under way
+	// One of two, and a fault memory request under way: the display would leave its network in the middle of it
 	garage();
 	strcpy(flash.profiles[1].ssid, "Camping");
 	strcpy(flash.profiles[1].password, "zelt-und-wurst");
 	flash.profile_count = 2;
 	start();
 	run(2100);
+	memset(&done, 0, sizeof(done));
 	app_do(app, NAV_DO_RELEASE_ON, now);
+	run_to(10000);
 	app_do(app, NAV_DO_READ, now);
+	remember();
+	post("/api/wifi/forget", "{\"ssid\":\"Camping\"}");
+	check(!by_route && answered(409, "busy") && only_time() && carried() == 0 && phase() == DTC_FLOW_READ_SENT && app->profile_count == 2,
+	      "while a read of the display waits to be sent no network is forgotten: 409 busy, and nothing changes but the time and the release");
+	check(access_is_open(&app->access, 609999) && !access_is_open(&app->access, 610000), "the forget request that was refused as busy at 10000 has renewed the release, as every change that found it open");
 	run(1000);
 	check(phase() == DTC_FLOW_READING, "the scene of a read the adapter accepted, two networks stored");
+	remember();
+	post("/api/wifi/forget", "{\"ssid\":\"Camping\"}");
+	check(answered(409, "busy") && only_time() && app->profile_count == 2 && profile_is(1, "Camping", "zelt-und-wurst", "") && flash.profile_count == 2 && link_up(&app->link),
+	      "while the adapter reads for the display the second of two networks is not forgotten: the display would leave its network for the new list, whichever network is named");
+	post("/api/wifi/forget", "{\"ssid\":\"Garage\"}");
+	check(answered(409, "busy"), "while a read is under way a network that is not stored is answered busy, not not_found");
+	post("/api/wifi/forget", "kein JSON");
+	check(answered(409, "busy"), "while a read is under way a forget request that cannot be read is answered busy, not body");
+	meanwhile = close_release;
+	post("/api/wifi/forget", "{\"ssid\":\"Camping\"}");
+	meanwhile = NULL;
+	check(!by_route && answered(403, "locked") && app->profile_count == 2, "the release is taken back while a read is under way: the forget request is answered locked, not busy");
+	app_do(app, NAV_DO_RELEASE_ON, now);
+	run(6000);
+	check(phase() == DTC_FLOW_LIST && app->poll.has_list && sent[POLL_DTC_READ] == 1 && link_up(&app->link), "nothing took the adapter away: the read went on and its list is there");
 	post("/api/wifi/forget", "{\"ssid\":\"Camping\"}");
 	check(answered(200, "ok") && app->profile_count == 1 && profile_is(0, "Werkstatt", "geheim-123", "192.168.1.50") && all_bytes(&app->profiles[1], sizeof(app->profiles[1]), 0) && flash.profile_count == 1,
-	      "the second of two networks is forgotten: the first stays, the room of the second is emptied");
-	check(!link_up(&app->link) && phase() == DTC_FLOW_FAILED && strcmp(app->poll.flow.reason, "no_answer") == 0, "the display leaves its network for the new list also when another network was forgotten: the read under way is lost");
+	      "when the read has ended the second of two networks is forgotten: the first stays, the room of the second is emptied");
+	check(!link_up(&app->link) && app_host(app)[0] == '\0', "the display leaves its network for the new list also when another network was forgotten");
+
+	// ... and while it clears: the knob is held on Löschen for 3000 ms
+	listed();
+	open_dialog();
+	turn(1);
+	run(400);
+	switch_pressed = true;
+	run(3020);
+	switch_pressed = false;
+	run(200);
+	check(phase() == DTC_FLOW_CLEARING && sent[POLL_DTC_CLEAR] == 1, "the scene of a clear the adapter accepted");
+	post("/api/wifi/forget", "{\"ssid\":\"Werkstatt\"}");
+	check(answered(409, "busy") && app->profile_count == 1 && link_up(&app->link) && done.wifi == 0, "while the adapter clears for the display no network is forgotten: the outcome of the clear would be unknown");
+	run(6000);
+	check(phase() == DTC_FLOW_CLEARED && app->poll.has_cleared, "nothing took the adapter away: the clear went on to its outcome");
+	post("/api/wifi/forget", "{\"ssid\":\"Werkstatt\"}");
+	check(answered(200, "ok") && app->profile_count == 0, "when the clear has ended the network is forgotten");
+
+	// The clear dialog alone keeps nothing away: nothing is sent yet, and the dialog closes when the adapter is gone
+	listed();
+	open_dialog();
+	check(on(NAV_DTC_CONFIRM) && app_busy(app) && phase() == DTC_FLOW_LIST, "the scene of the clear dialog, nothing sent");
+	post("/api/wifi/forget", "{\"ssid\":\"Werkstatt\"}");
+	check(answered(200, "ok") && app->profile_count == 0 && !link_up(&app->link), "while the clear dialog only shows a network is forgotten");
+	run(400);
+	check(!on(NAV_DTC_CONFIRM) && !app->hold.open && sent[POLL_DTC_CLEAR] == 0, "the adapter is gone with its network: the tick has closed the clear dialog, nothing was cleared");
+	// ... and neither does an upload, or the heat: forgetting asks nothing at the display
+	released();
+	app->uploading = true;
+	post("/api/wifi/forget", "{\"ssid\":\"Werkstatt\"}");
+	check(answered(200, "ok") && app->profile_count == 0, "while a firmware upload runs a network is forgotten");
+	released();
+	app_temperature(app, 85, true);
+	post("/api/wifi/forget", "{\"ssid\":\"Werkstatt\"}");
+	check(answered(200, "ok") && app->profile_count == 0, "while the heat keeps the screen dark a network is forgotten: nothing is asked at the display");
+}
+
+// What takes the adapter away, in every phase of the flow: the web interface and the settings at the knob agree
+static void test_under_way(void)
+{
+	static const struct
+	{
+		dtc_flow_phase_t phase;
+		bool under_way;
+		const char *rule;
+	} phases[] = {
+		{DTC_FLOW_IDLE, false, "nothing read: a network is forgotten and asked for, the restart carried out, and the settings at the knob ask before they restart"},
+		{DTC_FLOW_READ_SENT, true, "a read waits for its answer: forgetting and storing a network and the restart are answered busy, and Neustart at the knob opens no dialog"},
+		{DTC_FLOW_READING, true, "the adapter reads: forgetting and storing a network and the restart are answered busy, and Neustart at the knob opens no dialog"},
+		{DTC_FLOW_LIST, false, "the list is shown: a network is forgotten and asked for, the restart carried out, and the settings at the knob ask before they restart"},
+		{DTC_FLOW_CLEAR_SENT, true, "a clear waits for its answer: forgetting and storing a network and the restart are answered busy, and Neustart at the knob opens no dialog"},
+		{DTC_FLOW_CLEARING, true, "the adapter clears: forgetting and storing a network and the restart are answered busy, and Neustart at the knob opens no dialog"},
+		{DTC_FLOW_CLEARED, false, "the outcome of a clear is shown: a network is forgotten and asked for, the restart carried out, and the settings at the knob ask before they restart"},
+		{DTC_FLOW_FAILED, false, "a request has failed: a network is forgotten and asked for, the restart carried out, and the settings at the knob ask before they restart"},
+		{DTC_FLOW_UNKNOWN, false, "the outcome of a clear is unknown: a network is forgotten and asked for, the restart carried out, and the settings at the knob ask before they restart"},
+	};
+
+	for(int i = 0; i < COUNT(phases); i++)
+	{
+		bool busy = phases[i].under_way;
+		bool forget, store, reboot, knob;
+
+		released();
+		app->poll.flow.phase = phases[i].phase;
+		post("/api/wifi/forget", "{\"ssid\":\"Werkstatt\"}");
+		forget = !by_route && (busy ? answered(409, "busy") && app->profile_count == 1 && link_up(&app->link) && carried() == 0 : answered(200, "ok") && app->profile_count == 0 && done.wifi == 1);
+
+		released();
+		app->poll.flow.phase = phases[i].phase;
+		post("/api/wifi", NEU);
+		store = !by_route && (busy ? answered(409, "busy") && nothing_asked() && access_asking(&app->access, now) == ACCESS_ASK_NONE : answered(202, "asked_1") && access_asking(&app->access, now) == ACCESS_ASK_WIFI);
+
+		released();
+		app->poll.flow.phase = phases[i].phase;
+		post("/api/reboot", "");
+		reboot = busy ? answered(409, "busy") && done.reboot == 0 : answered(200, "ok") && done.reboot == 1;
+
+		// The settings of the device, the focus on Neustart; the press ends before the next round of the adapter
+		released();
+		short_press();
+		turn(5);
+		short_press();
+		turn(2);
+		run_to(3300);
+		app->poll.flow.phase = phases[i].phase;
+		short_press();
+		knob = on(busy ? NAV_SETTINGS : NAV_CONFIRM) && app->poll.flow.phase == phases[i].phase && done.reboot == 0;
+
+		if(!forget || !store || !reboot || !knob) printf("  phase %d: forget %d, store %d, reboot %d, knob %d\n", (int)phases[i].phase, forget, store, reboot, knob);
+		check(forget && store && reboot && knob, phases[i].rule);
+	}
 }
 
 /* The settings ----------------------------------------------------------------------------------------- */
@@ -2456,6 +2627,237 @@ static void test_upload_progress(void)
 	check(!app->uploading, "with the tick at 39800, 30 s after the last bytes, the upload is over");
 }
 
+// The heat keeps the backlight off: nobody could see a question, none is asked and no upload begins
+static void test_heat(void)
+{
+	// The questions
+	released();
+	run_to(10000);
+	app_temperature(app, 85, true);
+	remember();
+	post("/api/wifi", NEU);
+	check(!by_route && answered(409, "hot") && only_time() && nothing_asked() && access_asking(&app->access, now) == ACCESS_ASK_NONE && access_ticket(&app->access, 1, now) == ACCESS_TICKET_UNKNOWN,
+	      "app_web_hot.json: while the heat keeps the backlight off no network is asked for: 409 hot, no ticket, and nothing changes but the time");
+	remember();
+	post("/api/reset", "");
+	check(!by_route && answered(409, "hot") && only_time() && access_asking(&app->access, now) == ACCESS_ASK_NONE && carried() == 0, "while the heat keeps the backlight off no factory reset is asked for: 409 hot");
+	check(access_is_open(&app->access, 602099) && !access_is_open(&app->access, 602100), "a question that is refused as hot does not renew the release");
+	app_temperature(app, 99, false);
+	post("/api/reset", "");
+	check(answered(409, "hot"), "a reading of the temperature that failed leaves the light off: still 409 hot");
+	app_temperature(app, 80, true);
+	post("/api/reset", "");
+	check(answered(409, "hot") && app->heat == GUARD_HEAT_OFF, "back at 80 degrees the light is still off: still 409 hot");
+	app_temperature(app, 79, true);
+	post("/api/reset", "");
+	check(answered(202, "asked_1") && app->heat == GUARD_HEAT_DIM && has_line("over: ask"), "back at 79 degrees the screen is lit again, its backlight limited: the factory reset is asked for");
+	released();
+	app_temperature(app, 84, true);
+	post("/api/wifi", NEU);
+	check(answered(202, "asked_1") && app->heat == GUARD_HEAT_DIM, "at 84 degrees the backlight is only limited: a network is asked for");
+
+	// The upload
+	ready_for_upload();
+	run_to(10000);
+	app_temperature(app, 85, true);
+	remember();
+	upload_begin("0.2.0");
+	check(!by_route && answered(409, "hot") && only_time() && !app->uploading && !app_busy(app) && app->previous_firmware && machine.previous_firmware && carried() == 0,
+	      "while the heat keeps the backlight off no upload begins: 409 hot, nothing is erased, the version to go back to stays");
+	check(access_is_open(&app->access, 609999) && !access_is_open(&app->access, 610000), "the upload that was refused as hot at 10000 has renewed the release, as every change that found it open");
+	app_temperature(app, 79, true);
+	upload_begin("0.2.0");
+	check(code == 0 && app->uploading, "cooled down to 79 degrees the upload begins");
+	run(1000);
+	upload_progress(750000);
+	app_temperature(app, 85, true);
+	run(1000);
+	check(app->uploading && app->upload_percent == 50 && has_line("over: upload"), "the heat switches the light off while a firmware arrives: the upload runs on");
+	upload_end(true);
+	check(answered(409, "hot") && !app->uploading && !app_busy(app) && access_asking(&app->access, now) == ACCESS_ASK_NONE && app->ask_detail[0] == '\0' && carried() == 0 && !app->previous_firmware,
+	      "the heat has switched the light off when the upload is complete: 409 hot, the upload is over, the firmware is not asked for");
+	check(access_ticket(&app->access, 1, now) == ACCESS_TICKET_UNKNOWN, "no ticket was given for the firmware nobody could be asked about");
+
+	// The order: locked, busy, asking, hot, the rest
+	released();
+	app_temperature(app, 85, true);
+	post("/api/wifi", "kein JSON");
+	check(answered(409, "hot"), "in the heat a network request that cannot be read is answered hot, not body");
+	make_image("0.2.0");
+	image[0] = 0;
+	upload_first(OTA_CHECK_BYTES, FILE_SIZE);
+	check(!by_route && answered(409, "hot"), "in the heat a file that is no firmware is answered hot, not no_image");
+	app->uploading = true;
+	post("/api/wifi", NEU);
+	check(answered(409, "busy"), "in the heat, while an upload runs, a network request is answered busy, not hot");
+	app->uploading = false;
+	meanwhile = begin_read;
+	post("/api/reset", "");
+	check(!by_route && answered(409, "busy"), "in the heat, while a read is under way, the factory reset is answered busy, not hot");
+	make_image("0.2.0");
+	upload_first(OTA_CHECK_BYTES, FILE_SIZE);
+	meanwhile = NULL;
+	check(answered(409, "busy") && !app->uploading, "in the heat, while a read is under way, an upload is answered busy, not hot");
+	released();
+	app->heat = GUARD_HEAT_OFF;
+	ask_reset();
+	post("/api/wifi", NEU);
+	check(answered(409, "asking"), "a question that waits on a dark screen, as the display never has it: a second one is answered asking, not hot");
+	make_image("0.2.0");
+	upload_first(OTA_CHECK_BYTES, FILE_SIZE);
+	check(!by_route && answered(409, "asking") && !app->uploading, "... and so is the begin of an upload");
+	meanwhile = close_release;
+	post("/api/wifi", NEU);
+	meanwhile = NULL;
+	check(!by_route && answered(403, "locked"), "in the heat, with the release taken back before the function runs, the answer is locked, not hot");
+	released();
+	app_temperature(app, 85, true);
+	make_image("0.2.0");
+	meanwhile = close_release;
+	upload_first(OTA_CHECK_BYTES, FILE_SIZE);
+	meanwhile = NULL;
+	check(!by_route && answered(403, "locked") && !app->uploading, "... and so it is for the begin of an upload");
+	garage();
+	machine.update_pending = true;
+	start();
+	run(2100);
+	app_do(app, NAV_DO_RELEASE_ON, now);
+	app_temperature(app, 85, true);
+	upload_begin("0.3.0");
+	check(!by_route && answered(409, "busy"), "in the heat, while the running firmware is not confirmed, an upload is answered busy, not hot");
+
+	// The story: the browser asks, the board gets too hot, and cools down again
+	released();
+	strcpy(wifi.in_range[1], "Neu");
+	wifi.in_range_count = 2;
+	post("/api/wifi", NEU);
+	check(answered(202, "asked_1"), "the story of the heat: a network is asked for");
+	run(2000);
+	app_temperature(app, 85, true);
+	get("/api/ticket?id=1");
+	check(answered(200, "ticket_refused") && nothing_asked() && carried() == 0, "the story of the heat: the light goes off, and the ticket of the question that waited says refused; what it asked for is dropped");
+	get("/api/info");
+	check(answered_with(200, "\"temp_c\":85,\"heat\":\"off\","), "the story of the heat: the info tells why");
+	post("/api/wifi", NEU);
+	check(answered(409, "hot"), "the story of the heat: asked again at once, the answer is hot");
+	short_press();
+	check(carried() == 0 && app->profile_count == 1 && on(NAV_PAGES), "the story of the heat: a press on the dark screen stores nothing");
+	app_temperature(app, 69, true);
+	post("/api/wifi", NEU);
+	check(answered(202, "asked_2") && has_line("over: ask"), "the story of the heat: cooled down, the network is asked for with the next ticket");
+	run(1500);
+	short_press();
+	check(done.wifi == 1 && app->profile_count == 2 && access_ticket(&app->access, 2, now) == ACCESS_TICKET_CONFIRMED, "the story of the heat: the knob confirms, the network is stored");
+
+	// What asks nothing at the display goes on in the heat
+	released();
+	app_temperature(app, 85, true);
+	post("/api/settings", "{\"brightness\":40}");
+	check(code == 200 && app->settings.brightness == 40, "in the heat the settings can be changed");
+	put("/api/layout?mode=save", stored_layout);
+	check(code == 200 && app->source == APP_LAYOUT_STORED, "in the heat a layout can be saved");
+	post("/api/reboot", "");
+	check(answered(200, "ok") && done.reboot == 1, "in the heat the display can be restarted");
+}
+
+// A save and a reset of the layout between two takes of the events: the later alone counts
+static void test_layout_events(void)
+{
+	static char warning[1024], refused[1024];
+	// What the browser sends, and what it leaves to be carried out: s save, r reset, a apply, x a save that is refused
+	static const char kinds[] = "srax";
+	bool loaded = read_fixture("fixtures/app_web_layout_warning.json", warning, sizeof(warning)) && read_fixture("fixtures/app_web_layout_refused.json", refused, sizeof(refused));
+	int wrong = 0, sequences = 0;
+
+	check(loaded, "the layouts of the layout events are there");
+
+	// The functions alone: serve() takes the events behind every request, as the platform does
+	released();
+	fresh_room();
+	code = app_web_layout(app, WEB_ROUTE_LAYOUT_SAVE, stored_layout, strlen(stored_layout), reply, &reply_length, now);
+	check(code == 200 && app->events == APP_EVENT_STORE_LAYOUT, "the scene of a save whose event was not taken yet");
+	code = app_web_layout(app, WEB_ROUTE_LAYOUT_RESET, NULL, 0, reply, &reply_length, now);
+	check(code == 200 && app->events == APP_EVENT_ERASE_LAYOUT, "a reset behind a save that was not taken yet: the erase alone waits, the save is taken back");
+	carry_out();
+	check(done.layout == 0 && done.erase == 1 && !flash.has_layout && app->source == APP_LAYOUT_BUILTIN && app_take_events(app) == 0,
+	      "carried out, nothing was stored and the flash holds no layout: a reset after a save erases");
+
+	released();
+	put("/api/layout?mode=save", warning);
+	check(code == 200 && flash.has_layout && done.layout == 1, "the scene of a stored layout in the flash");
+	fresh_room();
+	code = app_web_layout(app, WEB_ROUTE_LAYOUT_RESET, NULL, 0, reply, &reply_length, now);
+	check(code == 200 && app->events == APP_EVENT_ERASE_LAYOUT, "the scene of a reset whose event was not taken yet");
+	code = app_web_layout(app, WEB_ROUTE_LAYOUT_SAVE, stored_layout, strlen(stored_layout), reply, &reply_length, now);
+	check(code == 200 && app->events == APP_EVENT_STORE_LAYOUT, "a save behind a reset that was not taken yet: the store alone waits, the reset is taken back");
+	carry_out();
+	check(done.layout == 2 && done.erase == 0 && flash.has_layout && strcmp(flash.layout, stored_layout) == 0 && app->source == APP_LAYOUT_STORED && in_use(stored_layout),
+	      "carried out, the flash holds the layout that was saved last and nothing was erased: a save after a reset stores");
+
+	// Every other event that waits stays
+	app->events = APP_EVENT_STORE_BOUND | APP_EVENT_STORE_SETTINGS | APP_EVENT_STORE_LAYOUT | APP_EVENT_REBOOT;
+	code = app_web_layout(app, WEB_ROUTE_LAYOUT_RESET, NULL, 0, reply, &reply_length, now);
+	check(code == 200 && app_take_events(app) == (APP_EVENT_STORE_BOUND | APP_EVENT_STORE_SETTINGS | APP_EVENT_ERASE_LAYOUT | APP_EVENT_REBOOT),
+	      "a reset takes back the save that waits and no other event: binding, settings and restart stay to be carried out");
+	app->events = APP_EVENT_STORE_BOUND | APP_EVENT_STORE_SETTINGS | APP_EVENT_ERASE_LAYOUT | APP_EVENT_REBOOT;
+	code = app_web_layout(app, WEB_ROUTE_LAYOUT_SAVE, stored_layout, strlen(stored_layout), reply, &reply_length, now);
+	check(code == 200 && app_take_events(app) == (APP_EVENT_STORE_BOUND | APP_EVENT_STORE_SETTINGS | APP_EVENT_STORE_LAYOUT | APP_EVENT_REBOOT),
+	      "a save takes back the reset that waits and no other event");
+
+	// What stores and erases nothing takes nothing back
+	app->events = APP_EVENT_ERASE_LAYOUT;
+	code = app_web_layout(app, WEB_ROUTE_LAYOUT_SAVE, refused, strlen(refused), reply, &reply_length, now);
+	check(code == 400 && app->events == APP_EVENT_ERASE_LAYOUT, "a save that is refused leaves the reset that waits");
+	code = app_web_layout(app, WEB_ROUTE_LAYOUT_APPLY, stored_layout, strlen(stored_layout), reply, &reply_length, now);
+	check(code == 200 && app->events == APP_EVENT_ERASE_LAYOUT, "a layout that is only applied leaves the reset that waits: the preview is not stored");
+	code = app_web_layout(app, WEB_ROUTE_LAYOUT_CHECK, stored_layout, strlen(stored_layout), reply, &reply_length, now);
+	check(code == 200 && app_take_events(app) == APP_EVENT_ERASE_LAYOUT, "a layout that is only checked leaves it as well");
+	app->events = APP_EVENT_STORE_LAYOUT;
+	app_do(app, NAV_DO_RELEASE_OFF, now);
+	code = app_web_layout(app, WEB_ROUTE_LAYOUT_RESET, NULL, 0, reply, &reply_length, now);
+	check(code == 403 && app_take_events(app) == APP_EVENT_STORE_LAYOUT, "a reset that is refused without the release leaves the save that waits");
+	app->events = APP_EVENT_ERASE_LAYOUT;
+	code = app_web_layout(app, WEB_ROUTE_LAYOUT_SAVE, stored_layout, strlen(stored_layout), reply, &reply_length, now);
+	check(code == 403 && app_take_events(app) == APP_EVENT_ERASE_LAYOUT, "a save that is refused without the release leaves the reset that waits");
+
+	// Every sequence of one to five requests without a take in between
+	released();
+	for(int length = 1; length <= 5; length++)
+	{
+		int count = 1;
+
+		for(int i = 0; i < length; i++) count *= 4;
+		for(int sequence = 0; sequence < count; sequence++)
+		{
+			uint32_t expected = 0, taken;
+			int rest = sequence;
+
+			for(int i = 0; i < length; i++, rest /= 4)
+			{
+				char kind = kinds[rest % 4];
+
+				if(kind == 's') code = app_web_layout(app, WEB_ROUTE_LAYOUT_SAVE, stored_layout, strlen(stored_layout), reply, &reply_length, now);
+				if(kind == 'r') code = app_web_layout(app, WEB_ROUTE_LAYOUT_RESET, NULL, 0, reply, &reply_length, now);
+				if(kind == 'a') code = app_web_layout(app, WEB_ROUTE_LAYOUT_APPLY, warning, strlen(warning), reply, &reply_length, now);
+				if(kind == 'x') code = app_web_layout(app, WEB_ROUTE_LAYOUT_SAVE, refused, strlen(refused), reply, &reply_length, now);
+				// The later of a save and a reset alone counts
+				if(kind == 's') expected = APP_EVENT_STORE_LAYOUT;
+				if(kind == 'r') expected = APP_EVENT_ERASE_LAYOUT;
+				if(code != (kind == 'x' ? 400 : 200)) wrong++;
+			}
+			taken = app_take_events(app);
+			if(taken != expected)
+			{
+				if(wrong < 4) printf("  sequence %d of length %d: events 0x%04x, expected 0x%04x\n", sequence, length, (unsigned)taken, (unsigned)expected);
+				wrong++;
+			}
+			sequences++;
+		}
+	}
+	check(wrong == 0 && sequences == 1364, "all 1364 sequences of one to five saves, resets, previews and refused saves without a take in between: what waits is the event of the last save or "
+	                                        "reset alone, never both, and nothing without one of them");
+}
+
 // What each request that is accepted changes: the parts of the app that app_web.h names for it, the time,
 // and the release as one change or one question at its time leaves it - and nothing else
 static void test_frame(void)
@@ -2784,8 +3186,9 @@ static void test_stories(void)
 /* ---------------------------------------------------------------------------------------------------
  * Random sequences of requests and of inputs at the device
  *
- * A browser that sends whatever it likes at any moment, a driver who presses, turns and taps, and time that
- * passes - for RUNS displays, RUN_DEEDS deeds each, in a child process. Next to it runs a second account of
+ * A browser that sends whatever it likes at any moment, a driver who presses, turns and taps, a board that
+ * gets too hot and cools down, and time that passes - for RUNS displays, RUN_DEEDS deeds each, in a child
+ * process. Next to it runs a second account of
  * the rules, in another shape than the module: what each request has to answer is read from a list of
  * refusals in the order of app_web.h, judged by what could be seen of the display before the request
  * (seen_t); what the display holds afterwards - networks, settings, views, questions - is kept by the test
@@ -2800,6 +3203,7 @@ static void test_stories(void)
 #define B_LOCKED    "{\"error\":\"locked\",\"hint\":\"Am Display: Menü > Web-Zugriff freigeben\"}"
 #define B_BUSY      "{\"error\":\"busy\"}"
 #define B_ASKING    "{\"error\":\"asking\"}"
+#define B_HOT       "{\"error\":\"hot\"}"
 #define B_BODY      "{\"error\":\"body\"}"
 #define B_NOT_FOUND "{\"error\":\"not_found\"}"
 #define B_UPLOAD    "{\"error\":\"upload\"}"
@@ -2813,8 +3217,8 @@ enum
 	PROMISE_CLOSED,     // nothing changes without the release
 	PROMISE_REFUSED,    // a request that is refused leaves everything but the release and the time
 	PROMISE_READING,    // a reading request changes nothing at all
-	PROMISE_ASKED,      // no question is asked while one waits or an upload runs
-	PROMISE_KNOB,       // what a question asks for is carried out only when the knob confirmed that question
+	PROMISE_ASKED,      // no question is asked while one waits, an upload runs or the heat keeps the screen dark
+	PROMISE_KNOB,       // what a question asks for is carried out only when the knob confirmed that question, never by a tap
 	PROMISE_EVENTS,     // every event has its cause
 	PROMISE_PASSWORD,   // no answer holds a password
 	PROMISE_DTC,        // no request starts a read or a clear of the fault memory
@@ -2842,7 +3246,7 @@ static const char *const KIND_NAMES[KINDS] = {"info", "catalog", "values", "layo
 // The answers a request can get, as columns of the tally
 enum
 {
-	A_GO, A_200, A_202, A_400, A_403, A_404, A_BUSY, A_ASKING, A_422, A_500, ANSWERS,
+	A_GO, A_200, A_202, A_400, A_403, A_404, A_BUSY, A_ASKING, A_HOT, A_422, A_500, ANSWERS,
 };
 
 typedef struct
@@ -2857,7 +3261,13 @@ typedef struct
 	long unconfirmed;           // uploads that did not begin because the running firmware was not confirmed
 	long by_dialog;             // restarts and resets the dialog of the device itself asked for
 	long busy_read, busy_dialog, busy_upload;
+	long taps_on_questions;     // taps while a question of the browser waited that the knob could have confirmed
+	long taps_on_updates;       // ... while the update question showed
+	long heat_refused;          // questions that waited when the heat switched the light off
+	long hot;                   // requests while the heat kept the screen dark
 	long previews, saves, resets, forgotten, settings;
+	long pages_kept[2];         // layouts taken that kept the page shown: the first page, a later one
+	long pages_first[2];        // layouts taken that started at their first page: no page was shown before, none at the position
 	long passwords;             // answers searched for passwords
 	long leftovers;             // questions asked over what an earlier one left behind
 } walk_result_t;
@@ -2925,9 +3335,12 @@ typedef struct
 	bool open;                  // the release
 	uint32_t left_s;            // what would be left of it if it were renewed now
 	bool busy, uploading, asking;
+	bool under_way;             // a fault memory request of the display: sent or accepted, and not ended
+	bool hot;                   // the heat keeps the backlight off
 	dtc_flow_phase_t phase;
 	dtc_flow_send_t to_send;
 	int reads, clears;          // requests of the fault memory handed out
+	int page;                   // the value page shown, or waiting below another screen
 } seen_t;
 
 // What the test knows from the requests it sent and the questions it saw confirmed
@@ -3002,9 +3415,12 @@ static seen_t look(uint64_t at_ms)
 	seen.uploading = app->uploading;
 	seen.asking = access_asking(&app->access, seen.time) != ACCESS_ASK_NONE;
 	seen.phase = app->poll.flow.phase;
+	seen.under_way = seen.phase == DTC_FLOW_READ_SENT || seen.phase == DTC_FLOW_READING || seen.phase == DTC_FLOW_CLEAR_SENT || seen.phase == DTC_FLOW_CLEARING;
+	seen.hot = app->heat == GUARD_HEAT_OFF;
 	seen.to_send = app->poll.flow.to_send;
 	seen.reads = sent[POLL_DTC_READ];
 	seen.clears = sent[POLL_DTC_CLEAR];
+	seen.page = app->nav.page;
 	return seen;
 }
 
@@ -3142,8 +3558,9 @@ typedef enum
 {
 	DEED_REQUEST,
 	DEED_WAIT,
-	DEED_PRESS,     // a short press or a tap: what confirms
-	DEED_OTHER,     // any other input
+	DEED_PRESS,     // a short press of the knob: what confirms
+	DEED_TAP,       // a tap: it confirms nothing
+	DEED_OTHER,     // any other input, and what happens to the board
 } deed_t;
 
 // The state of the last ticket the browser got
@@ -3194,7 +3611,7 @@ static void judge(deed_t deed, const earlier_t *was, uint32_t by_web)
 	{
 		broke(PROMISE_KNOB, "a request refused the question that waited");
 	}
-	if(confirmed && deed != DEED_PRESS) broke(PROMISE_KNOB, "a question was confirmed without a press of the knob");
+	if(confirmed && deed != DEED_PRESS) broke(PROMISE_KNOB, "a question was confirmed without a press of the knob: by a tap, another input, a request or time");
 	if(confirmed)
 	{
 		tally->confirmed[told.asked]++;
@@ -3214,8 +3631,9 @@ static void judge(deed_t deed, const earlier_t *was, uint32_t by_web)
 	if(dialog && was->confirm == NAV_DO_REBOOT) allowed |= APP_EVENT_REBOOT;
 	if(dialog && was->confirm == NAV_DO_PREVIOUS_FIRMWARE && was->previous) allowed |= APP_EVENT_PREVIOUS_FIRMWARE;
 	if(dialog && !confirmed && (events & RESTARTS) != 0) tally->by_dialog++;
-	// An update nobody confirmed asks for the restart, a press says that it is in order
-	if(was->pending && deed != DEED_REQUEST) allowed |= APP_EVENT_REBOOT | APP_EVENT_MARK_VALID;
+	// An update nobody confirmed asks for the restart; a press of the knob says that it is in order, a tap does not
+	if(was->pending && deed != DEED_REQUEST) allowed |= APP_EVENT_REBOOT;
+	if(was->pending && deed == DEED_PRESS) allowed |= APP_EVENT_MARK_VALID;
 	// Settings are changed at the device as well
 	if(deed != DEED_REQUEST)
 	{
@@ -3242,7 +3660,7 @@ static int column(void)
 		case 400: return A_400;
 		case 403: return A_403;
 		case 404: return A_404;
-		case 409: return strcmp(reply, B_BUSY) == 0 ? A_BUSY : A_ASKING;
+		case 409: return strcmp(reply, B_BUSY) == 0 ? A_BUSY : strcmp(reply, B_HOT) == 0 ? A_HOT : A_ASKING;
 		case 422: return A_422;
 		default:  return A_500;
 	}
@@ -3271,13 +3689,14 @@ static bool closed(const seen_t *seen, foretold_t *answer)
 	return true;
 }
 
-// ... and every question: locked, then busy, then asking
+// ... and every question: locked, then busy, then asking, then hot
 static bool unasked(const seen_t *seen, bool busy, foretold_t *answer)
 {
 	if(closed(seen, answer)) return true;
 
 	if(busy) *answer = foretell(409, B_BUSY);
 	else if(seen->asking) *answer = foretell(409, B_ASKING);
+	else if(seen->hot) *answer = foretell(409, B_HOT);
 	else return false;
 	return true;
 }
@@ -3294,6 +3713,8 @@ static void asked_now(const seen_t *seen, access_ask_t question, int network, co
 	if(told.asked != ACCESS_ASK_NONE && !told.over) tally->replaced++;
 	if(app->has_wifi_asked && question != ACCESS_ASK_WIFI) broke(PROMISE_ASKED, "a question that asks for no network left one in the room of the request");
 	if(seen->asking || (seen->uploading && question != ACCESS_ASK_FIRMWARE)) broke(PROMISE_ASKED, "a question was asked while another one waited or an upload ran");
+	if(seen->hot) broke(PROMISE_ASKED, "a question was asked on a screen the heat keeps dark");
+	if(seen->under_way && question == ACCESS_ASK_WIFI) broke(PROMISE_ASKED, "a network was asked for while a fault memory request of the display was under way");
 
 	told.tickets++;
 	told.asked = question;
@@ -3440,6 +3861,7 @@ static void request_deed(void)
 	tally->requests++;
 	if(at < app->clock_ms) tally->back++;
 	if(at > app->clock_ms) tally->ahead++;
+	if(seen.hot) tally->hot++;
 	if(seen.busy && seen.uploading) tally->busy_upload++;
 	else if(seen.busy && app->nav.screen == NAV_DTC_CONFIRM) tally->busy_dialog++;
 	else if(seen.busy) tally->busy_read++;
@@ -3534,11 +3956,13 @@ static void request_deed(void)
 			closed(&seen, &answer);
 			break;
 		case K_WIFI:
-			if(!unasked(&seen, seen.uploading, &answer)) answer = good ? foretell(202, NULL) : foretell(400, B_BODY);
+			if(!unasked(&seen, seen.uploading || seen.under_way, &answer)) answer = good ? foretell(202, NULL) : foretell(400, B_BODY);
 			break;
 		case K_FORGET:
 			if(closed(&seen, &answer)) break;
-			if(!good) answer = foretell(400, B_BODY);
+			// Whatever the body is: the display would leave its network
+			if(seen.under_way) answer = foretell(409, B_BUSY);
+			else if(!good) answer = foretell(400, B_BODY);
 			else if(!told_forget(forgotten)) answer = foretell(404, B_NOT_FOUND);
 			else
 			{
@@ -3565,6 +3989,7 @@ static void request_deed(void)
 				if(!seen.busy) tally->unconfirmed++;
 			}
 			else if(seen.asking) answer = foretell(409, B_ASKING);
+			else if(seen.hot) answer = foretell(409, B_HOT);
 			else answer = foretell(good ? 0 : 422, NULL);
 			break;
 		case K_END:
@@ -3640,7 +4065,18 @@ static void request_deed(void)
 				tally->saves++;
 			}
 			else tally->previews++;
-			if(!in_use(body) || app->nav.page != layout_first_page(&app->layout, &app->poll.catalog)) broke(PROMISE_ANSWER, "a layout that was taken is not in use from its first page");
+			if(!in_use(body)) broke(PROMISE_ANSWER, "a layout that was taken is not in use");
+			// The page shown before stays where the layout shows one at that position; else its first page
+			if(layout_page_shown(&app->layout, seen.page, &app->poll.catalog))
+			{
+				if(app->nav.page != seen.page) broke(PROMISE_ANSWER, "a layout that shows a page at the position shown before left that page");
+				tally->pages_kept[seen.page > 0]++;
+			}
+			else
+			{
+				if(app->nav.page != layout_first_page(&app->layout, &app->poll.catalog)) broke(PROMISE_ANSWER, "a layout without a page at the position shown before is not shown from its first page");
+				tally->pages_first[seen.page >= 0]++;
+			}
 			break;
 		case K_LAYOUT_RESET:
 			told.views = -1;
@@ -3698,6 +4134,7 @@ static void request_deed(void)
 		if(code == 403) tally->uploads_locked++;
 		told.upload = false;
 	}
+	if(forgot && seen.under_way) broke(PROMISE_DTC, "a network was forgotten while a fault memory request of the display was under way");
 	if(code == 202 && leftover) tally->leftovers++;
 	// The events of the request are exactly those its answer stands for
 	if((gathered & WEB_EVENTS) != by_web) broke(PROMISE_EVENTS, "the events of a request are not those of its answer");
@@ -3719,18 +4156,22 @@ static void home(void)
 	}
 }
 
-// The driver has decided to press the knob next
-static bool press_next;
+// The driver has decided to press the knob next, and to tap on the screen before that
+static bool press_next, tap_next;
 
 static void device_deed(void)
 {
 	static web_seen_t found[3] = {{"Werkstatt", -52, true}, {"", -70, true}, {"Freifunk", -88, false}};
-	earlier_t was = earlier();
+	earlier_t was;
 	bool was_uploading = app->uploading;
 	deed_t deed = DEED_OTHER;
-	int what_now = press_next ? 0 : pick(100);
+	int what_now = tap_next ? 14 : press_next ? 0 : pick(100);
 
-	press_next = false;
+	// The heat does not last: while it keeps the screen dark nothing can be done at the display
+	if(app->heat == GUARD_HEAT_OFF && chance(35)) app_temperature(app, 40 + pick(30), true);
+	was = earlier();
+	if(tap_next) tap_next = false;
+	else press_next = false;
 	gathered = 0;
 	if(what_now < 14)
 	{
@@ -3740,9 +4181,15 @@ static void device_deed(void)
 	}
 	else if(what_now < 20)
 	{
+		// On a row, on none, and behind the rows of every screen
 		doing = "tap";
-		deed = DEED_PRESS;
-		tap(pick(7));
+		deed = DEED_TAP;
+		if(app_backlight(app, now) != 0 && !app->uploading)
+		{
+			if(access_asking(&app->access, now) != ACCESS_ASK_NONE && now >= told.asked_ms + ACCESS_ASK_SHOWN_MS) tally->taps_on_questions++;
+			else if(access_asking(&app->access, now) == ACCESS_ASK_NONE && app->update_pending) tally->taps_on_updates++;
+		}
+		tap(pick(9) - 1);
 	}
 	else if(what_now < 26)
 	{
@@ -3771,11 +4218,12 @@ static void device_deed(void)
 	}
 	else if(what_now < 61)
 	{
-		// The driver waits until the question counts, and mostly says yes
+		// The driver waits until the question counts, and mostly says yes - now and then with a finger first
 		doing = "wait for the question";
 		deed = DEED_WAIT;
 		run(1500);
 		press_next = chance(70);
+		tap_next = chance(30);
 	}
 	else if(what_now < 65)
 	{
@@ -3826,11 +4274,24 @@ static void device_deed(void)
 			ask_next = true;
 		}
 	}
-	else if(what_now < 92)
+	else if(what_now < 89)
 	{
 		doing = "time";
 		deed = DEED_WAIT;
 		run(20u * (uint64_t)(1 + pick(100)));
+	}
+	else if(what_now < 92)
+	{
+		// The board gets too hot to keep its light on, mostly while something is asked or arrives
+		bool asked = access_asking(&app->access, now) != ACCESS_ASK_NONE;
+
+		doing = "heat";
+		if(asked || app->uploading || chance(40))
+		{
+			app_temperature(app, GUARD_TEMP_OFF_C + pick(10), true);
+			if(asked) tally->heat_refused++;
+			if(asked && (ticket_now() != ACCESS_TICKET_REFUSED || app->has_wifi_asked || app->ask_detail[0] != '\0')) broke(PROMISE_ASKED, "the heat switched the light off and the question that waited was not refused and dropped");
+		}
 	}
 	else
 	{
@@ -3892,13 +4353,14 @@ static void walk_run(uint32_t number)
 	held();
 
 	press_next = false;
+	tap_next = false;
 	ask_next = false;
 	// Somebody who sends the next firmware before he has confirmed the one that runs
 	upload_next = machine.update_pending && chance(60);
 	if(upload_next) app_do(app, NAV_DO_RELEASE_ON, given(now));
 	for(deed_number = 1; deed_number <= RUN_DEEDS; deed_number++)
 	{
-		if(ask_next || upload_next || (!press_next && chance(62))) request_deed();
+		if(ask_next || upload_next || (!press_next && !tap_next && chance(62))) request_deed();
 		else device_deed();
 		held();
 		// The platform restarts when it has carried out what waits
@@ -3919,11 +4381,13 @@ static void test_random_walk(void)
 		"in every random run nothing changes without the release: no request is accepted, the release stays closed, no question appears, no event is raised",
 		"in every random run a request that is refused leaves everything as it was but the release and the time, and bytes of an upload touch nothing but its percent and its time",
 		"in every random run a reading request and the check of a layout change nothing, not even the time",
-		"in every random run no question is asked while one waits or an upload runs, and the question that waits holds exactly what was sent",
-		"in every random run what a question asks for is carried out only with the press of the knob that confirmed that very question, 1500 ms or more after it was asked",
+		"in every random run no question is asked while one waits, an upload runs or the heat keeps the screen dark, no network while a fault memory request is under way, "
+		"the question that waits holds exactly what was sent, and the heat refuses and drops the one that waits when it switches the light off",
+		"in every random run what a question asks for is carried out only with the press of the knob that confirmed that very question, 1500 ms or more after it was asked - never by a tap, "
+		"and no tap says that an update is in order",
 		"in every random run every event is the one of the request that was answered or of what happened at the device",
 		"in every random run no answer holds a password, stored, asked for or of the own access point",
-		"in every random run no request of the browser starts a read or a clear of the fault memory",
+		"in every random run no request of the browser starts a read or a clear of the fault memory, and none forgets a network while one is under way",
 		"in every random run every answer is JSON as json.h reads it, ends at its length and stays within its room",
 		"in every random run networks, settings and views in use and in the flash are those that were sent and confirmed, also after a restart",
 		"in every random run no byte outside of the app is written",
@@ -3941,14 +4405,14 @@ static void test_random_walk(void)
 		{K_APPLY, A_200, 100}, {K_APPLY, A_400, 50}, {K_APPLY, A_403, 100},
 		{K_SAVE, A_200, 100}, {K_SAVE, A_400, 50}, {K_SAVE, A_403, 100},
 		{K_LAYOUT_RESET, A_200, 100}, {K_LAYOUT_RESET, A_403, 100},
-		{K_WIFI, A_202, 50}, {K_WIFI, A_400, 20}, {K_WIFI, A_403, 100}, {K_WIFI, A_BUSY, 5}, {K_WIFI, A_ASKING, 20},
-		{K_FORGET, A_200, 20}, {K_FORGET, A_400, 20}, {K_FORGET, A_403, 100}, {K_FORGET, A_404, 100},
+		{K_WIFI, A_202, 50}, {K_WIFI, A_400, 20}, {K_WIFI, A_403, 100}, {K_WIFI, A_BUSY, 20}, {K_WIFI, A_ASKING, 20}, {K_WIFI, A_HOT, 5},
+		{K_FORGET, A_200, 20}, {K_FORGET, A_400, 20}, {K_FORGET, A_403, 100}, {K_FORGET, A_404, 100}, {K_FORGET, A_BUSY, 10},
 		{K_SETTINGS, A_200, 100}, {K_SETTINGS, A_400, 50}, {K_SETTINGS, A_403, 100},
 		{K_REBOOT, A_200, 20}, {K_REBOOT, A_403, 100}, {K_REBOOT, A_BUSY, 20},
-		{K_RESET, A_202, 30}, {K_RESET, A_403, 100}, {K_RESET, A_BUSY, 20}, {K_RESET, A_ASKING, 10},
-		{K_BEGIN, A_GO, 30}, {K_BEGIN, A_403, 100}, {K_BEGIN, A_BUSY, 20}, {K_BEGIN, A_ASKING, 5}, {K_BEGIN, A_422, 10},
+		{K_RESET, A_202, 30}, {K_RESET, A_403, 100}, {K_RESET, A_BUSY, 20}, {K_RESET, A_ASKING, 10}, {K_RESET, A_HOT, 3},
+		{K_BEGIN, A_GO, 30}, {K_BEGIN, A_403, 100}, {K_BEGIN, A_BUSY, 20}, {K_BEGIN, A_ASKING, 5}, {K_BEGIN, A_HOT, 3}, {K_BEGIN, A_422, 10},
 		{K_PROGRESS, A_GO, 300},
-		{K_END, A_202, 5}, {K_END, A_500, 200},
+		{K_END, A_202, 5}, {K_END, A_HOT, 1}, {K_END, A_500, 200},
 	};
 	walk_result_t result;
 	int ends[2];
@@ -3988,7 +4452,7 @@ static void test_random_walk(void)
 
 	printf("  random runs: %ld requests (%ld passed to the function alone, %ld refused by web_route(), %ld with a time before the one of the app, %ld ahead of it), %ld inputs, %ld waits, %ld starts\n",
 	       result.requests, result.direct, result.by_route, result.back, result.ahead, result.inputs, result.waits, result.starts);
-	printf("  random runs: answers by kind (go 200 202 400 403 404 busy asking 422 500):");
+	printf("  random runs: answers by kind (go 200 202 400 403 404 busy asking hot 422 500):");
 	for(int kind = 0; kind < KINDS; kind++)
 	{
 		printf(" %s", KIND_NAMES[kind]);
@@ -4001,6 +4465,10 @@ static void test_random_walk(void)
 	       result.closed, result.confirmed[ACCESS_ASK_WIFI], result.confirmed[ACCESS_ASK_FIRMWARE], result.confirmed[ACCESS_ASK_RESET], result.refused, result.expired, result.leftovers,
 	       result.uploads_complete, result.uploads_stalled, result.uploads_broken, result.uploads_locked, result.unconfirmed, result.by_dialog, result.busy_read, result.busy_dialog, result.busy_upload,
 	       result.previews, result.saves, result.resets, result.forgotten, result.settings, result.passwords);
+	printf("  random runs: %ld requests while the heat kept the screen dark, %ld questions that waited when it switched the light off; %ld taps on a question the knob could have confirmed, "
+	       "%ld on the update question\n", result.hot, result.heat_refused, result.taps_on_questions, result.taps_on_updates);
+	printf("  random runs: layouts taken that kept the page shown: the first page %ld, a later one %ld; that started at their first page: no page was shown before %ld, "
+	       "none at the position %ld\n", result.pages_kept[0], result.pages_kept[1], result.pages_first[0], result.pages_first[1]);
 	printf("  random runs: broken promises:");
 	for(int i = 0; i < PROMISES; i++) printf(" %s %ld", PROMISE_NAMES[i], result.broken[i]);
 	printf("\n");
@@ -4026,6 +4494,11 @@ static void test_random_walk(void)
 	      "and restart by the dialog of the device");
 	check(complete && result.previews >= 100 && result.saves >= 100 && result.resets >= 100 && result.forgotten >= 20 && result.settings >= 100 && result.passwords >= 10000,
 	      "the random runs apply, save and reset layouts, forget networks, change settings and search every answer for passwords");
+	check(complete && result.pages_kept[0] >= 50 && result.pages_kept[1] >= 20 && result.pages_first[0] >= 30 && result.pages_first[1] >= 80,
+	      "the random runs apply and save layouts that keep the page shown, the first and a later one, and layouts that start at their first page because none was shown "
+	      "or because they show none at that position");
+	check(complete && result.hot >= 200 && result.heat_refused >= 5 && result.taps_on_questions >= 10 && result.taps_on_updates >= 5,
+	      "the random runs send requests while the heat keeps the screen dark, let it switch the light off under questions that wait, and tap on questions the knob could have confirmed and on the update question");
 }
 
 int main(void)
@@ -4050,6 +4523,7 @@ int main(void)
 	test_wifi_store();
 	test_wifi_story();
 	test_wifi_forget();
+	test_under_way();
 	test_settings();
 	test_reboot();
 	test_reset();
@@ -4059,6 +4533,8 @@ int main(void)
 	test_upload_and_update();
 	test_upload_ends();
 	test_upload_progress();
+	test_heat();
+	test_layout_events();
 	test_frame();
 	test_body_length();
 	test_events_add_up();

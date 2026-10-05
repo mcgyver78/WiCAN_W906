@@ -114,7 +114,8 @@
 // The lock of LVGL is asked for, not waited for: 1 ms is no tick at all at 100 ticks a second, and one tick
 // at 1000.
 #define LVGL_TRY_MS         1
-// The drawing task sleeps as long as LVGL says nothing is due, within these bounds
+// The drawing task sleeps as long as LVGL says nothing is due, within these bounds. At 100 ticks a second
+// (sdkconfig.defaults) the lower one changes nothing: every sleep below a tick is one tick, 10 ms.
 #define LVGL_SLEEP_MIN_MS   5
 #define LVGL_SLEEP_MAX_MS   50
 
@@ -272,7 +273,8 @@ static void screen_task(void *arg)
 		app_encoder(app, counts, now_ms);
 		if(row_waits)
 		{
-			// Also a tap that hit no row (-1): it wakes a dark screen and answers "Update in Ordnung?"
+			// Also a tap that hit no row (-1): it is an input, which wakes a dark screen. It answers no
+			// question (nav.h: under a question a tap does nothing)
 			app_tap(app, row, now_ms);
 			row_waits = false;
 		}
@@ -338,7 +340,9 @@ static void screen_task(void *arg)
 
 		// The next round is due ROUND_MS after this one began, whenever that was. xTaskDelayUntil() keeps to
 		// its own plan instead: after a wake that came late it returns at once the next time, and that would
-		// be two readings within a millisecond, one round after the late one.
+		// be two readings within a millisecond, one round after the late one. Behind a round that took
+		// longer than ROUND_MS the call returns at once and the next round begins one to two ticks later
+		// (the tick count is whole ticks): never two readings back to back.
 		xTaskDelayUntil(&woken, pdMS_TO_TICKS(ROUND_MS));
 		woken = xTaskGetTickCount();
 	}

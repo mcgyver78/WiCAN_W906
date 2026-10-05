@@ -20,7 +20,9 @@
  * The platform: what connects the logic in components/core (app.h, app_web.h) to the device - tasks, the
  * WiFi driver, HTTP in both directions, the flash, the screen. It decides nothing: it passes on what
  * happened and carries out what the app asks for. Everything that can be decided is in the core, where it
- * is tested on the host; this layer can only be built, not tested, until the board is there.
+ * is tested on the host. This layer is run on a PC as well, each file against stand-ins for ESP-IDF, LVGL and
+ * the board (display/host/platform): that shows what its files do with what was read of those, and nothing
+ * of what the board does - nothing here was tested on it.
  *
  * Four tasks and the HTTP server of ESP-IDF:
  *   screen   (screen.c)  reads knob, switch and touch every 20 ms, ticks the app five times a second,

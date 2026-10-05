@@ -189,6 +189,7 @@ static void got_state(poll_t *poll, int status, const char *body, size_t length,
 {
 	wican_state_t state;
 	bool read = status == 200 && wican_state_parse(body, length, &state, work, work_count);
+	bool restarted;
 
 	if(read)
 	{
@@ -201,7 +202,25 @@ static void got_state(poll_t *poll, int status, const char *body, size_t length,
 	}
 
 	if(conn_take_bind(&poll->conn, poll->bound_id, sizeof(poll->bound_id))) poll->events |= POLL_EVENT_BOUND;
-	if(conn_take_restarted(&poll->conn)) forget(poll);
+	restarted = conn_take_restarted(&poll->conn);
+	// conn knows the adapter only since the network was joined. One that restarted while the display was out of
+	// the network is seen here: by the start the catalogue came from, which is kept over the pause. A foreign
+	// adapter gives nothing to the catalogue and is no such start.
+	if(read && !poll->conn.foreign)
+	{
+		if(poll->start == POLL_START_NO_API) restarted = true;
+		if(poll->start == POLL_START_API && (state.boot != poll->start_boot || strcmp(state.id, poll->start_id) != 0)) restarted = true;
+		poll->start = POLL_START_API;
+		strcpy(poll->start_id, state.id);
+		poll->start_boot = state.boot;
+	}
+	else if(status == 404)
+	{
+		// A firmware without the API where one with it answered before
+		if(poll->start == POLL_START_API) restarted = true;
+		poll->start = POLL_START_NO_API;
+	}
+	if(restarted) forget(poll);
 	// Behind the forgetting: this voltage is one of the adapter that answers now. That of a foreign adapter
 	// is no value of the vehicle the display belongs to.
 	if(read && !poll->conn.foreign && state.batt_mv >= 0) battery(poll, state.batt_mv, now_ms, work, work_count);

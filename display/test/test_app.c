@@ -4506,6 +4506,20 @@ static bool chance(int percent)
 	return pick(100) < percent;
 }
 
+/*
+ * Never two rolls among the arguments of one call: C leaves open which argument is worked out first, gcc
+ * takes the last and clang the first, and the runs of the CI were other runs than the ones on a Mac - with a
+ * fault that only one of them met. Where a call needs two, they are rolled before it, in the order gcc had,
+ * which is the one the CI has always run.
+ */
+static void swipe_anywhere(void)
+{
+	int dy = pick(3) - 1;
+	int dx = pick(3) - 1;
+
+	swipe(dx, dy);
+}
+
 /* What the run knows --------------------------------------------------------------------------------- */
 
 // What lies over the screen at a time (nav.h, the order of it)
@@ -5300,6 +5314,16 @@ static void feel(int celsius, bool valid)
 	}
 }
 
+// The configuration the adapter of the run started with. A real one reads it when it starts and runs it
+// until it starts again; the faults of a run also swap it under a running adapter.
+static const char *started_with;
+
+static void adapter_starts(void)
+{
+	adapter_restart(&wican, wican.boot + 1, (uint32_t)(1 + pick(1000)));
+	started_with = wican.config;
+}
+
 // A world in which nothing is wrong: the adapter the display is bound to, awake, with the W906 standing still
 static void calm(void)
 {
@@ -5367,12 +5391,12 @@ static void trouble(void)
 		case 10: wican.swallow = true; break;
 		case 11: wican.no_result = !wican.no_result; break;
 		case 12:
-		case 13: adapter_restart(&wican, wican.boot + 1, (uint32_t)(1 + pick(1000))); break;
+		case 13: adapter_starts(); break;
 		case 14:
 			// Another vehicle
 			wican.config = wican.config == w906_config ? other_config : w906_config;
 			wican.values = wican.config == w906_config ? NULL : other_values;
-			if(chance(70)) adapter_restart(&wican, wican.boot + 1, (uint32_t)(1 + pick(1000)));
+			if(chance(70)) adapter_starts();
 			break;
 		case 15:
 			// Somebody else reads the fault memory
@@ -5523,7 +5547,7 @@ static void hold_in_dialog(void)
 			tap(1);
 			break;
 		case 4:
-			swipe(pick(3) - 1, pick(3) - 1);
+			swipe_anywhere();
 			break;
 		case 5:
 			focus_on(1);
@@ -5576,6 +5600,7 @@ static void intent(void)
 	                                       "{\"brightness\":100,\"reverse\":false,\"standby_s\":60}", "{\"brightness\":4}"};
 	int password = pick(5);
 	int which = pick(25);
+	const char *host;
 	uint32_t ticket;
 	bool ok;
 
@@ -5686,7 +5711,8 @@ static void intent(void)
 			break;
 		case 5:
 			web_begin("the browser asks for a network");
-			ticket = browser_wifi(ssids[pick(COUNT(ssids))], password < COUNT(passwords) ? passwords[password] : NULL, chance(50) ? "" : "192.168.1.50");
+			host = chance(50) ? "" : "192.168.1.50";
+			ticket = browser_wifi(ssids[pick(COUNT(ssids))], password < COUNT(passwords) ? passwords[password] : NULL, host);
 			// A password of four bytes is one net_store() refuses
 			if(ticket != 0) m.wifi_good = password != 3;
 			web_end(0);
@@ -5860,7 +5886,7 @@ static void intent(void)
 				case 1: long_press(); break;
 				case 2: turn(pick(5) - 2); break;
 				case 3: tap(pick(4)); break;
-				default: swipe(pick(3) - 1, pick(3) - 1); break;
+				default: swipe_anywhere(); break;
 			}
 			if(chance(60)) calm();
 			break;
@@ -5877,6 +5903,7 @@ static void intent(void)
 static void one(void)
 {
 	int what_now = pick(100);
+	bool valid;
 
 	// The heat does not last: while it keeps the screen dark nothing else can be done at the display
 	if(m.heat == GUARD_HEAT_OFF && chance(25))
@@ -5913,7 +5940,7 @@ static void one(void)
 	else if(what_now < 49)
 	{
 		doing = "swipe";
-		swipe(pick(3) - 1, pick(3) - 1);
+		swipe_anywhere();
 	}
 	else if(what_now < 52)
 	{
@@ -5947,7 +5974,8 @@ static void one(void)
 	else if(what_now < 73)
 	{
 		doing = "temperature";
-		feel(40 + pick(55), !chance(15));
+		valid = !chance(15);
+		feel(40 + pick(55), valid);
 	}
 	else intent();
 }
@@ -5975,6 +6003,12 @@ static bool heal(void)
 	doing = "the way back";
 	quiet = true;
 	calm();
+	// A healthy adapter runs the configuration it started with. One whose configuration was swapped under
+	// it (trouble(), and calm() has just swapped it back) tells the display nothing: the display keeps the
+	// catalogue of the vehicle before until the adapter starts anew or the network is joined again, and a
+	// display without built-in views then shows the values of that vehicle, which never come. That is no
+	// state a real adapter leaves the display in - it takes up a new configuration with a restart.
+	if(wican.config != started_with) adapter_starts();
 	stride = STEP_MS;
 	switch_pressed = false;
 	switch_ok = true;
@@ -6026,6 +6060,7 @@ static void random_run(uint32_t number, run_result_t *result)
 	if(chance(20)) factory();
 	else garage();
 	calm();
+	started_with = wican.config;
 	if(chance(40))
 	{
 		strcpy(flash.settings, settings[pick(COUNT(settings))]);

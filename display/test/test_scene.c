@@ -4192,6 +4192,11 @@ static uint32_t random_number(void)
 	return random_state;
 }
 
+/*
+ * Never two rolls among the arguments of one call: C leaves open which argument is worked out first, gcc
+ * takes the last and clang the first, and the made-up inputs of the CI were others than the ones on a Mac.
+ * Where a call needs several, they are rolled before it, in the order gcc had: the last argument first.
+ */
 static int pick(int count)
 {
 	return (int)(random_number() % (uint32_t)count);
@@ -4604,13 +4609,20 @@ static void test_made_up(void)
 			const char *wrong;
 			int view = pick(COUNT(VIEWS));
 			int length;
+			const char *name;
+			uint32_t seq, step, total;
+			bool clear;
 
 			stage();
 			// The adapter and the connection
 			adapter.batt_mv = pick(3) == 0 ? -1 : pick(30000);
 			adapter.sleep_in_s = pick(3) - 1;
-			scan((wican_dtc_phase_t)pick(6), 40 + (uint32_t)pick(3), pick(2) == 0, pick(4) == 0 ? random_number() : (uint32_t)pick(20),
-			     pick(4) == 0 ? random_number() : (uint32_t)pick(20), names[pick(COUNT(names))]);
+			name = names[pick(COUNT(names))];
+			total = pick(4) == 0 ? random_number() : (uint32_t)pick(20);
+			step = pick(4) == 0 ? random_number() : (uint32_t)pick(20);
+			clear = pick(2) == 0;
+			seq = 40 + (uint32_t)pick(3);
+			scan((wican_dtc_phase_t)pick(6), seq, clear, step, total, name);
 			if(view != CONN_VIEW_SCAN && view != CONN_VIEW_LIVE && view != CONN_VIEW_ECU_OFFLINE) VIEWS[view].make();
 			else
 			{
@@ -4846,6 +4858,8 @@ static void test_made_up_pages(void)
 			bool shown = false, dash = false, unavailable = false;
 			// The answers come with a pass counter, as those of a firmware with the API, or without one
 			bool counted = pick(2) == 0;
+			uint32_t seq, step;
+			bool clear;
 
 			stage();
 			values_init(&values);
@@ -4893,7 +4907,10 @@ static void test_made_up_pages(void)
 				case 1:
 					// A scan of every kind: queued or running, a read or a clear, asked for over HTTP or not,
 					// the own request or another one, at any step - and a request after it that failed
-					scan(pick(2) == 0 ? WICAN_DTC_QUEUED : WICAN_DTC_RUNNING, 40 + (uint32_t)pick(3), pick(2) == 0, (uint32_t)pick(19), 18, "N30/4 ESP");
+					step = (uint32_t)pick(19);
+					clear = pick(2) == 0;
+					seq = 40 + (uint32_t)pick(3);
+					scan(pick(2) == 0 ? WICAN_DTC_QUEUED : WICAN_DTC_RUNNING, seq, clear, step, 18, "N30/4 ESP");
 					any_adapter();
 					answer(CONN_VIEW_SCAN);
 					if(pick(3) == 0)

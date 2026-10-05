@@ -896,6 +896,12 @@ static void model_start(memory_model_t *model, int reset, bool knob_held, bool *
 
 static uint32_t random_state;
 
+/*
+ * Never two rolls in one expression whose order C leaves open, as on both sides of ^ or of an assignment:
+ * which side is worked out first is the choice of the compiler, and a walk that depends on it would be
+ * another walk with another one. Where an expression needs two, one is rolled before it, in the order gcc
+ * and clang both had: operands from left to right, the right side of an assignment before the left one.
+ */
 static uint32_t random_next(void)
 {
 	random_state = random_state * 1664525u + 1013904223u;
@@ -909,7 +915,9 @@ static uint32_t random_below(uint32_t limit)
 
 static uint32_t random_word(void)
 {
-	return (random_next() << 16) ^ random_next();
+	uint32_t high = random_next();
+
+	return (high << 16) ^ random_next();
 }
 
 #define MEMORY_WALKS    40
@@ -988,7 +996,9 @@ static int memory_walk(uint32_t seed)
 			}
 			else if(kind < 7)
 			{
-				words[random_below(4)] ^= 1u << random_below(32);
+				uint32_t bit = random_below(32);
+
+				words[random_below(4)] ^= 1u << bit;
 			}
 			else if(kind < 8)
 			{

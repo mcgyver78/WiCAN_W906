@@ -1098,6 +1098,11 @@ static bool model_host(const char *host)
 
 static uint32_t random_state;
 
+/*
+ * Never two rolls among the arguments of one call: C leaves open which argument is worked out first, gcc
+ * takes the last and clang the first, and the hosts of the CI were others than the ones on a Mac. Where a
+ * call needs two, they are rolled before it, in the order gcc had: the last argument first.
+ */
 static uint32_t random_below(uint32_t below)
 {
 	random_state = random_state * 1664525u + 1013904223u;
@@ -1217,8 +1222,9 @@ static int scene_hosts(void)
 		if(i % 16 == 0)
 		{
 			char longer[200];
+			const char *port = ports[random_below(COUNT(ports))];
 
-			snprintf(longer, sizeof(longer), "%s%s%s", fronts[random_below(COUNT(fronts))], host, ports[random_below(COUNT(ports))]);
+			snprintf(longer, sizeof(longer), "%s%s%s", fronts[random_below(COUNT(fronts))], host, port);
 			host_tried(longer);
 		}
 	}

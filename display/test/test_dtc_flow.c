@@ -2530,6 +2530,12 @@ typedef struct
 
 static uint32_t walk_random_state;
 
+/*
+ * Never two rolls in one expression whose order C leaves open - among the arguments of one call, or on both
+ * sides of an operator: gcc works out the last argument first and clang the first, and the walks of the CI
+ * were other walks than the ones on a Mac. Where an expression needs two, they are rolled before it, one in
+ * a statement: arguments in the order gcc had (the last one first), operands from left to right, as both did.
+ */
 static uint32_t walk_random(uint32_t below)
 {
 	walk_random_state = walk_random_state * 1664525u + 1013904223u;
@@ -2549,6 +2555,7 @@ static void sim_boot(sim_t *sim, uint32_t boot)
 {
 	// Request numbers begin anywhere: small, around 65536, far up, and shortly before the largest
 	static const uint32_t firsts[] = {1, 1, 65500, 1000000000u, 2147483600u};
+	uint32_t first;
 
 	strcpy(sim->state.id, OWN);
 	sim->state.boot = boot;
@@ -2557,7 +2564,8 @@ static void sim_boot(sim_t *sim, uint32_t boot)
 	sim->state.pids = 35;
 	sim->state.ecu_online = true;
 	sim->state.dtc.supported = true;
-	sim->upcoming = firsts[walk_random(5)] + walk_random(40);
+	first = firsts[walk_random(5)];
+	sim->upcoming = first + walk_random(40);
 }
 
 static bool sim_busy(const sim_t *sim)
@@ -3073,8 +3081,10 @@ static bool walk(uint32_t seed, walk_result_t *result)
 			// Somebody else asks the adapter: over MQTT, or another client over HTTP
 			uint32_t number;
 			const char *reason;
+			bool http = walk_random(3) == 0;
+			bool clear = walk_random(3) == 0;
 
-			sim_post(&sim, walk_random(3) == 0, walk_random(3) == 0, sim.state.dtc.seq, at, &number, &reason);
+			sim_post(&sim, clear, http, sim.state.dtc.seq, at, &number, &reason);
 			what = "other request";
 		}
 		else if(operation < 802)

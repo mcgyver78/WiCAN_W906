@@ -272,6 +272,12 @@ static bool state_is(const wican_state_t *expected)
 
 static uint32_t random_state = 20261003;
 
+/*
+ * Never two rolls in one expression whose order C leaves open, as on both sides of a |: which side is worked
+ * out first is the choice of the compiler, and a number put together from two rolls would be another number
+ * with another one. Where a number needs two, the first is rolled before it - from left to right, the order
+ * gcc and clang both had.
+ */
 static uint32_t random_below(uint32_t limit)
 {
 	random_state = random_state * 1103515245u + 12345u;
@@ -948,7 +954,8 @@ static void test_texts(void)
 // A number up to `highest`: a small one, one at the limit, or any
 static uint32_t random_number(uint32_t highest)
 {
-	uint32_t any = random_below(65536) << 16 | random_below(65536);
+	uint32_t high = random_below(65536);
+	uint32_t any = high << 16 | random_below(65536);
 
 	switch(random_below(4))
 	{

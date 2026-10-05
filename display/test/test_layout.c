@@ -80,6 +80,12 @@ static void random_seed(uint32_t seed)
 	random_state = seed;
 }
 
+/*
+ * Never two rolls in one expression whose order C leaves open - among the arguments of one call, or on both
+ * sides of an operator: gcc works out the last argument first and clang the first, and the numbers of the CI
+ * were others than the ones on a Mac. Where an expression needs two, they are rolled before it, one in a
+ * statement: arguments in the order gcc had (the last one first), operands from left to right, as both did.
+ */
 static uint32_t random_next(void)
 {
 	random_state = random_state * 1664525u + 1013904223u;
@@ -3475,7 +3481,8 @@ static void test_item_text_numbers(void)
 	{
 		static const double scales[] = {1, 0.001, 0.1, 0.5, 2, 10, -1, -0.01, 1000};
 		char wanted[ROOM];
-		double value = (random_below(2000001) - 1000000) / (double[]){1, 4, 10, 1000}[random_below(4)];
+		int whole = random_below(2000001) - 1000000;
+		double value = whole / (double[]){1, 4, 10, 1000}[random_below(4)];
 		double scale = scales[random_below(9)];
 		int decimals = random_below(4);
 
@@ -3854,8 +3861,9 @@ static void test_item_level(void)
 		double scale = (random_below(13) - 6) / 2.0;
 		double value = (random_below(81) - 40) / 4.0;
 		int kind = random_below(6);
+		int decimals = random_below(4);
 
-		make_item((layout_widget_t)random_below(4), random_below(4), scale == 0 ? 1 : scale);
+		make_item((layout_widget_t)random_below(4), decimals, scale == 0 ? 1 : scale);
 		limits[0] = &item.warn_lo;
 		limits[1] = &item.warn_hi;
 		limits[2] = &item.crit_lo;
@@ -4743,7 +4751,9 @@ static void test_to_json_numbers(void)
 	{
 		char fifteen[40], seventeen[40];
 		const char *rule;
-		uint64_t bits = ((uint64_t)random_next() << 40) ^ ((uint64_t)random_next() << 20) ^ random_next();
+		uint64_t high = random_next();
+		uint64_t middle = random_next();
+		uint64_t bits = (high << 40) ^ (middle << 20) ^ random_next();
 		double number, back;
 
 		switch(random_below(4))
@@ -4751,11 +4761,20 @@ static void test_to_json_numbers(void)
 			// Any bit pattern
 			case 0:  memcpy(&number, &bits, sizeof(number)); break;
 			// A number as a human writes it: up to nine digits, up to four of them decimals
-			case 1:  number = (double)(random_below(2000001) - 1000000) / (double[]){1, 10, 100, 1000, 10000}[random_below(5)]; break;
+			case 1:
+				number = (double)(random_below(2000001) - 1000000);
+				number /= (double[]){1, 10, 100, 1000, 10000}[random_below(5)];
+				break;
 			// The result of a division
-			case 2:  number = (double)(random_below(2001) - 1000) / (double)(1 + random_below(1000)); break;
+			case 2:
+				number = (double)(random_below(2001) - 1000);
+				number /= (double)(1 + random_below(1000));
+				break;
 			// Large and small
-			default: number = (double)(random_below(2000001) - 1000000) * pow(10, random_below(601) - 300); break;
+			default:
+				number = (double)(random_below(2000001) - 1000000);
+				number *= pow(10, random_below(601) - 300);
+				break;
 		}
 		if(!isfinite(number)) continue;
 

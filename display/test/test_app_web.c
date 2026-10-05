@@ -3396,6 +3396,19 @@ static bool chance(int percent)
 	return pick(100) < percent;
 }
 
+/*
+ * Never two rolls among the arguments of one call: C leaves open which argument is worked out first, gcc
+ * takes the last and clang the first, and the runs of the CI were other runs than the ones on a Mac. Where a
+ * call needs two, they are rolled before it, in the order gcc had, which is the one the CI has always run.
+ */
+static void swipe_anywhere(void)
+{
+	int dy = pick(3) - 1;
+	int dx = pick(3) - 1;
+
+	swipe(dx, dy);
+}
+
 static void gather(uint32_t events)
 {
 	gathered |= events;
@@ -4204,7 +4217,7 @@ static void device_deed(void)
 	else if(what_now < 41)
 	{
 		doing = "swipe";
-		swipe(pick(3) - 1, pick(3) - 1);
+		swipe_anywhere();
 	}
 	else if(what_now < 51)
 	{

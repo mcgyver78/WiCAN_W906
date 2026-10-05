@@ -2228,6 +2228,12 @@ static void watch_action(watch_t *watch, const link_t *walked, link_do_t action,
 
 static uint32_t walk_random_state;
 
+/*
+ * Never two rolls in one expression whose order C leaves open, as on both sides of a +: which side is worked
+ * out first is the choice of the compiler, and a walk that depends on it would be another walk with another
+ * one. Where an expression needs two, the first is rolled before it - from left to right, the order gcc and
+ * clang both had.
+ */
 static uint32_t walk_random(uint32_t below)
 {
 	walk_random_state = walk_random_state * 1664525u + 1013904223u;
@@ -2396,7 +2402,12 @@ static void walk(uint32_t seed, walk_result_t *result)
 			if(model.running == ACT_JOIN && model.join_for < 15000) left[count++] = 15000 - model.join_for;
 			if(model.silent && model.silent_for < 60000 && model_phase(&model) == LINK_UP && model.queried) left[count++] = 60000 - model.silent_for;
 			if(model.ap_ordered && model.guests == 0 && model.empty_for < 600000 && walk_random(4) == 0) left[count++] = 600000 - model.empty_for;
-			if(count > 0) now = model.latest + left[walk_random((uint32_t)count)] + walk_random(3) - 1;
+			if(count > 0)
+			{
+				uint64_t limit = left[walk_random((uint32_t)count)];
+
+				now = model.latest + limit + walk_random(3) - 1;
+			}
 		}
 		given = now;
 		if(pace >= 85 && pace < 91)

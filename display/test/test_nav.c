@@ -2979,6 +2979,12 @@ static struct
 
 static uint32_t walk_state;
 
+/*
+ * Never two rolls in one expression whose order C leaves open, as on both sides of an assignment: which side
+ * is worked out first is the choice of the compiler, and a walk that depends on it would be another walk
+ * with another one. Where an assignment needs two, its right side is rolled before it - the order gcc and
+ * clang both had.
+ */
 static uint32_t walk_random(uint32_t below)
 {
 	walk_state = walk_state * 1664525u + 1013904223u;
@@ -3013,6 +3019,7 @@ static void change_world(void)
 	static const int lines[] = {0, 0, 1, 1, 2, 3, 3, 4, 5, 8, 13, 220, -1, -9, INT_MIN, INT_MAX, INT_MAX - 3, INT_MAX - 4};
 	static const int brightness[] = {80, 25, 5, 100, 4, 101, 0, -3, 37, 255, INT_MAX, INT_MIN};
 	int *const counts[4] = {&world.list_lines, &world.cleared_lines, &world.old_lines, &world.info_lines};
+	int count;
 
 	switch(walk_random(21))
 	{
@@ -3033,7 +3040,8 @@ static void change_world(void)
 		case 5:
 		case 6:
 		case 7:
-			*counts[walk_random(4)] = lines[walk_random(sizeof(lines) / sizeof(lines[0]))];
+			count = lines[walk_random(sizeof(lines) / sizeof(lines[0]))];
+			*counts[walk_random(4)] = count;
 			break;
 		case 8:
 			// 4: no member of the enum

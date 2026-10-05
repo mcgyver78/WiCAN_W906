@@ -35,6 +35,12 @@ static char huge_text[70000];
 
 static uint32_t random_state = 20261004;
 
+/*
+ * Never two rolls in one expression whose order C leaves open - among the arguments of one call, or on both
+ * sides of an operator: gcc works out the last argument first and clang the first, and the numbers of the CI
+ * were others than the ones on a Mac. Where an expression needs two, they are rolled before it, one in a
+ * statement: arguments in the order gcc had (the last one first), operands from left to right, as both did.
+ */
 static uint32_t rnd(uint32_t below)
 {
 	random_state = random_state * 1664525u + 1013904223u;
@@ -950,13 +956,26 @@ static void test_values_numbers(void)
 			if(kind == 0)
 			{
 				// Any bits
-				uint64_t bits = ((uint64_t)rnd(1 << 16) << 48) | ((uint64_t)rnd(1 << 16) << 32) | ((uint64_t)rnd(1 << 16) << 16) | rnd(1 << 16);
+				uint64_t bits = (uint64_t)rnd(1 << 16) << 48;
 
+				bits |= (uint64_t)rnd(1 << 16) << 32;
+				bits |= (uint64_t)rnd(1 << 16) << 16;
+				bits |= rnd(1 << 16);
 				memcpy(&number, &bits, sizeof(number));
 			}
 			else if(kind == 1) number = ((double)rnd(2000001) - 1000000) / 100;
-			else if(kind == 2) number = ldexp((double)rnd(1 << 24) - (1 << 23), (int)rnd(200) - 100);
-			else number = pow(10, (double)rnd(40) - 20) * (rnd(2) ? 1 : -1) * (1 + rnd(9));
+			else if(kind == 2)
+			{
+				int exponent = (int)rnd(200) - 100;
+
+				number = ldexp((double)rnd(1 << 24) - (1 << 23), exponent);
+			}
+			else
+			{
+				number = pow(10, (double)rnd(40) - 20);
+				number *= rnd(2) ? 1 : -1;
+				number *= 1 + rnd(9);
+			}
 			add_value(name, VALUE_NUMBER, number, 1000);
 		}
 		values_now.values = &values;
@@ -3147,16 +3166,22 @@ static uint32_t random_number(void)
 {
 	static const uint32_t numbers[] = {0, 1, 9, 10, 99, 100, 4294967295u, 2147483648u, 1000000000, 999999999, 12345, 65536};
 	uint32_t pick = rnd(16);
+	uint32_t high;
 
-	return pick < 12 ? numbers[pick] : (rnd(1 << 16) << 16) | rnd(1 << 16);
+	if(pick < 12) return numbers[pick];
+	high = rnd(1 << 16);
+	return (high << 16) | rnd(1 << 16);
 }
 
 static int random_int(void)
 {
 	static const int numbers[] = {0, 1, -1, INT_MIN, INT_MAX, -40, 85, -100, -9, -10, 10, 9};
 	uint32_t pick = rnd(16);
+	uint32_t high;
 
-	return pick < 12 ? numbers[pick] : (int)((rnd(1 << 16) << 16) | rnd(1 << 16));
+	if(pick < 12) return numbers[pick];
+	high = rnd(1 << 16);
+	return (int)((high << 16) | rnd(1 << 16));
 }
 
 static void test_random_info(void)
@@ -3230,12 +3255,13 @@ static void test_random_values(void)
 			const char *name = random_text();
 			double number = rnd(8) == 0 ? (rnd(2) ? HUGE_VAL : NAN) : numbers[rnd(14)];
 			uint64_t age = ages[rnd(9)];
+			uint64_t seen_ms;
 
 			// A name is at most 32 bytes
 			if(name == NULL || strlen(name) > 32) name = "PLAIN_NAME";
 			// Sometimes the clock stepped back behind the time the value was seen
-			add_value(name, kind < 6 ? VALUE_NUMBER : kind < 8 ? VALUE_ON : kind == 8 ? VALUE_OFF : (value_kind_t)(3 + rnd(3)), number,
-			          rnd(10) == 0 ? now_ms + age : now_ms - age);
+			seen_ms = rnd(10) == 0 ? now_ms + age : now_ms - age;
+			add_value(name, kind < 6 ? VALUE_NUMBER : kind < 8 ? VALUE_ON : kind == 8 ? VALUE_OFF : (value_kind_t)(3 + rnd(3)), number, seen_ms);
 		}
 		model_values(&values, view, now_ms);
 		values_now.values = &values;

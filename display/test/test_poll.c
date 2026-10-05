@@ -4004,6 +4004,12 @@ typedef struct
 
 static uint32_t walk_seed;
 
+/*
+ * Never two rolls in one expression whose order C leaves open - among the arguments of one call, or on both
+ * sides of an operator: gcc works out the last argument first and clang the first, and the walks of the CI
+ * were other walks than the ones on a Mac. Where an expression needs two, they are rolled before it, one in
+ * a statement: arguments in the order gcc had (the last one first), operands from left to right, as both did.
+ */
 static uint32_t walk_random(uint32_t range)
 {
 	walk_seed = walk_seed * 1664525u + 1013904223u;
@@ -4067,7 +4073,12 @@ static void walk_change(uint64_t world)
 
 	adapter_catch_up(&wican, world);
 	if(change < 30) walk_heal();
-	else if(change < 38) adapter_restart(&wican, wican.boot % 1000000 + 1 + walk_random(3), firsts[walk_random(5)], world);
+	else if(change < 38)
+	{
+		uint32_t first = firsts[walk_random(5)];
+
+		adapter_restart(&wican, wican.boot % 1000000 + 1 + walk_random(3), first, world);
+	}
 	else if(change < 44) wican.dead = true;
 	else if(change < 49) wican.api = false;
 	else if(change < 54) strcpy(wican.id, strcmp(walk_own(), OTHER) == 0 ? OWN : OTHER);
@@ -4079,7 +4090,13 @@ static void walk_change(uint64_t world)
 	else if(change < 78) wican.sleep_in_s = 0;
 	else if(change < 81) wican.batt_mv = volts[walk_random(4)];
 	else if(change < 86) wican.memory = walk_random(3);
-	else if(change < 97) adapter_request(&wican, walk_random(3) == 0, walk_random(2) == 0, wican.seq, world, &number, &reason);
+	else if(change < 97)
+	{
+		bool http = walk_random(2) == 0;
+		bool clear = walk_random(3) == 0;
+
+		adapter_request(&wican, clear, http, wican.seq, world, &number, &reason);
+	}
 	else wican.pickup_ms = wican.pickup_ms == PICKUP_MS ? 25000 : PICKUP_MS;
 }
 
@@ -4343,7 +4360,12 @@ static bool walk(uint32_t seed, walk_result_t *result)
 		if(step < 700) world += walk_random(200);
 		else if(step < 900) world += 200 + walk_random(800);
 		else if(step < 970) world += 1000 + walk_random(3000);
-		else if(step < 990) world += limits[walk_random(9)] - 1 + walk_random(3);
+		else if(step < 990)
+		{
+			uint32_t limit = limits[walk_random(9)];
+
+			world += limit - 1 + walk_random(3);
+		}
 		else if(step < 993 && poll.flow.list_end_ms + 600000 > world) world = poll.flow.list_end_ms + 599999 + walk_random(3);
 		else if(step < 996 && poll.catalog_guard.seen_since_ms + 30000 > world) world = poll.catalog_guard.seen_since_ms + 29999 + walk_random(3);
 		else if(step < 1000 && poll.conn.next_round_ms > world) world = poll.conn.next_round_ms - 1 + walk_random(3);

@@ -16,6 +16,12 @@
 
 static uint32_t random_state = 20261003;
 
+/*
+ * Never two rolls in one expression whose order C leaves open, as on both sides of | or ^: which side is
+ * worked out first is the choice of the compiler, and a number put together from several rolls would be
+ * another number with another one. Where a number needs several rolls, they are rolled before it, one in a
+ * statement, from left to right - the order gcc and clang both had.
+ */
 static uint32_t random_next(void)
 {
 	random_state = random_state * 1664525u + 1013904223u;
@@ -316,13 +322,17 @@ static void test_number_model(void)
 	for(i = 0; i < 200000; i++)
 	{
 		int64_t limit, range = 10;
+		uint64_t high, middle, low;
 		int digits;
 
 		decimals = (int)(random_next() % 4);
 		limit = limits[decimals];
 		digits = 1 + (int)(random_next() % 15);
 		while(--digits > 0 && range < limit) range *= 10;
-		number = (int64_t)((((uint64_t)random_next() << 40) | ((uint64_t)random_next() << 16) | random_next()) % (uint64_t)range);
+		high = random_next();
+		middle = random_next();
+		low = random_next();
+		number = (int64_t)(((high << 40) | (middle << 16) | low) % (uint64_t)range);
 		if(random_next() % 2) number = -number;
 		if(!model_agrees((double)number / scales[decimals], decimals, number, &shown)) wrong++;
 
@@ -358,6 +368,7 @@ static void test_number_model(void)
 	for(i = 0; i < 200000; i++)
 	{
 		static const int64_t fives[4] = {1, 5, 25, 125};
+		uint64_t high, low;
 		int64_t odd;
 		int bits;
 		double value;
@@ -365,7 +376,9 @@ static void test_number_model(void)
 		decimals = (int)(random_next() % 4);
 		// Up to 39 bits in front of the comma: below 2^39, which is below 1e12
 		bits = 1 + (int)(random_next() % (39 + decimals + 1));
-		odd = (int64_t)((((uint64_t)random_next() << 24) | random_next()) & ((1ull << bits) - 1)) | 1;
+		high = random_next();
+		low = random_next();
+		odd = (int64_t)(((high << 24) | low) & ((1ull << bits) - 1)) | 1;
 		value = ldexp((double)odd, -(decimals + 1));
 		number = odd * fives[decimals] / 2 + 1;
 		if(random_next() % 2)
@@ -382,13 +395,16 @@ static void test_number_model(void)
 	wrong = 0;
 	for(i = 0; i < 200000; i++)
 	{
+		uint64_t high, low;
 		int64_t odd;
 		int bits;
 		double value;
 
 		decimals = (int)(random_next() % 4);
 		bits = 1 + (int)(random_next() % (39 + decimals + 1));
-		odd = (int64_t)((((uint64_t)random_next() << 24) | random_next()) & ((1ull << bits) - 1)) | 1;
+		high = random_next();
+		low = random_next();
+		odd = (int64_t)(((high << 24) | low) & ((1ull << bits) - 1)) | 1;
 		value = ldexp((double)odd, -(decimals + 1));
 		value = nextafter(value, random_next() % 2 ? 0 : 1e12);
 		if(random_next() % 2) value = -value;
@@ -416,7 +432,10 @@ static void test_number_model(void)
 	wrong = 0;
 	for(i = 0; i < 200000; i++)
 	{
-		double value = ldexp((double)(((uint64_t)random_next() << 29) ^ ((uint64_t)random_next() << 8) ^ random_next()), -53);
+		uint64_t high = random_next();
+		uint64_t middle = random_next();
+		uint64_t low = random_next();
+		double value = ldexp((double)((high << 29) ^ (middle << 8) ^ low), -53);
 
 		// A number below 1 times 2^-52 to 2^39, which is below 1e12
 		value = ldexp(value, (int)(random_next() % 92) - 52);

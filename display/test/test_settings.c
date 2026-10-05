@@ -1268,6 +1268,11 @@ typedef struct
 static const char *const known[5] = {"brightness", "night", "night_mode", "reverse", "standby_s"};
 static uint32_t random_state;
 
+/*
+ * Never two rolls among the arguments of one call: C leaves open which argument is worked out first, gcc
+ * takes the last and clang the first, and the texts of the CI were others than the ones on a Mac. Where a
+ * call needs two, they are rolled before it, in the order gcc had: the last argument first.
+ */
 static uint32_t rnd(uint32_t below)
 {
 	random_state = random_state * 1664525u + 1013904223u;
@@ -1349,8 +1354,11 @@ static bool model_walk(uint32_t seed, int steps)
 			}
 			else
 			{
-				length += (size_t)snprintf(text + length, sizeof(text) - length, "%s%s\"%s\"%s:%s", i ? "," : "", rnd(5) == 0 ? "\n" : "",
-				                           known[list[i].name], rnd(5) == 0 ? " " : "", value);
+				const char *behind = rnd(5) == 0 ? " " : "";
+				const char *before = rnd(5) == 0 ? "\n" : "";
+
+				length += (size_t)snprintf(text + length, sizeof(text) - length, "%s%s\"%s\"%s:%s", i ? "," : "", before, known[list[i].name],
+				                           behind, value);
 			}
 		}
 		// A text that is no JSON object at all, in three ways

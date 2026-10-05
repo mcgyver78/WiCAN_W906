@@ -315,6 +315,11 @@ static void expect_base(void)
 
 static uint32_t random_state = 20261003;
 
+/*
+ * Never two rolls among the arguments of one call: C leaves open which argument is worked out first, gcc
+ * takes the last and clang the first, and the made-up results of the CI were others than the ones on a Mac.
+ * Where a call needs two, they are rolled before it, in the order gcc had: the last argument first.
+ */
 static uint32_t random_below(uint32_t limit)
 {
 	random_state = random_state * 1103515245u + 12345u;
@@ -1247,10 +1252,13 @@ static struct
 static void make_result(int units, const int *codes, bool varied)
 {
 	int sequence = 0;
+	uint32_t dtc_count = varied ? random_below(1000) : 7;
+	uint32_t duration_ms = varied ? random_below(100000) : 31500;
+	bool clear = varied && random_below(2) == 1;
 
 	made_length = 0;
 	memset(&made_sum, 0, sizeof(made_sum));
-	expect_begin(varied && random_below(2) == 1, varied ? random_below(100000) : 31500, varied ? random_below(1000) : 7);
+	expect_begin(clear, duration_ms, dtc_count);
 	put("{\"state\":\"done\",\"action\":\"%s\",\"duration_ms\":%lu,\"dtc_count\":%lu,\"ecus\":[", expected.clear ? "clear" : "read",
 	    (unsigned long)expected.duration_ms, (unsigned long)expected.dtc_count);
 

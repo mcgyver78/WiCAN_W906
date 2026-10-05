@@ -4510,7 +4510,8 @@ static bool chance(int percent)
  * Never two rolls among the arguments of one call: C leaves open which argument is worked out first, gcc
  * takes the last and clang the first, and the runs of the CI were other runs than the ones on a Mac - with a
  * fault that only one of them met. Where a call needs two, they are rolled before it, in the order gcc had,
- * which is the one the CI has always run.
+ * which is the one the CI has always run. The same holds for a roll on each side of an assignment
+ * (a[pick(n)] = pick(m): gcc takes the index first, clang the right side - measured 2026-10-05).
  */
 static void swipe_anywhere(void)
 {

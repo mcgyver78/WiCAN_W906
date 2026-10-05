@@ -1,0 +1,1568 @@
+<!doctype html>
+<!--
+The page of the WiCAN display: one file, nothing loaded from anywhere (the display is often in a network
+without internet). display/tools/test_page.py holds it to three rules:
+- Nothing received or read is ever made into HTML: el() builds every node from properties and text.
+- Every request goes through api(), which adds the header the display asks of a change.
+- Every path is written out where it is used, to be held against display/API.md.
+-->
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:; base-uri 'none'; form-action 'none'">
+<link rel="icon" href="data:,">
+<title>WiCAN-Display</title>
+<style>
+:root{--bg:#f3f4f6;--card:#fff;--fg:#1a1d21;--dim:#5b6470;--line:#c5cbd3;--acc:#0a5cad;--ok:#146c2e;--bad:#b3261e;--note:#7a4f00;color-scheme:light dark}
+@media(prefers-color-scheme:dark){:root{--bg:#121416;--card:#1d2125;--fg:#e6e8eb;--dim:#9aa4af;--line:#3a424b;--acc:#7ab8ff;--ok:#7bd38f;--bad:#ff8a80;--note:#f0c04a}}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header{position:sticky;top:0;z-index:2;padding:6px 12px;background:var(--card);border-bottom:1px solid var(--line)}
+h1{margin:0;font-size:1rem}
+h2{margin:22px 0 6px;font-size:1.05rem}
+p{margin:6px 0}
+.bar{font-weight:600}
+.free,.ok{color:var(--ok)}
+.off,.bad{color:var(--bad)}
+.dim{color:var(--dim)}
+.note{color:var(--note)}
+nav{display:flex;background:var(--card);border-bottom:1px solid var(--line)}
+nav button{flex:1;min-height:48px;padding:4px 2px;border:0;border-radius:0;background:none}
+nav .cur{box-shadow:inset 0 -3px var(--acc);font-weight:600}
+main{max-width:1100px;margin:0 auto;padding:10px 12px 24px}
+button,.btn,input,select{font:inherit;color:inherit}
+button,.btn{display:inline-block;min-height:44px;padding:9px 12px;border:1px solid var(--line);border-radius:8px;background:var(--card);cursor:pointer}
+button:disabled{opacity:.45;cursor:default}
+input,select{max-width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--card)}
+input[type=checkbox]{width:22px;height:22px;vertical-align:middle}
+input[type=range]{padding:0}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.4 ui-monospace,Menlo,Consolas,monospace}
+label.f,label.c{display:block;margin:8px 0}
+label.f input,label.f select{display:block;width:100%;margin-top:2px}
+.row{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0;align-items:center}
+.row>label.f{flex:1 1 130px;margin:0}
+.ops{float:right;display:flex;gap:8px;margin-left:8px}
+details>div{clear:both}
+.box{margin:6px 0;padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--card)}
+.box.cur{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc)}
+.grow{flex:1 1 140px;min-width:0}
+.sq{min-width:44px;padding:9px 4px}
+.msg{padding:8px;border-left:4px solid;background:var(--card)}
+.hint{display:block;font-size:.9rem}
+.wrong{border-color:var(--bad)!important}
+.cat{display:flex;width:100%;gap:8px;margin:4px 0;text-align:left;overflow-wrap:anywhere}
+.cat strong{flex:1 1 55%}
+.cat span{text-align:right}
+.used strong::after{content:" ✓"}
+summary{cursor:pointer;padding:6px 0;overflow-wrap:anywhere}
+.vh{position:absolute;width:1px;height:1px;opacity:0}
+.btn:focus-within{outline:2px solid var(--acc)}
+dl{display:grid;grid-template-columns:auto 1fr;gap:2px 12px;margin:0}
+dt{color:var(--dim)}
+dd{margin:0;overflow-wrap:anywhere}
+progress{width:100%}
+.ask{position:fixed;top:0;left:0;right:0;bottom:0;z-index:3;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(0,0,0,.6)}
+.ask>div{max-width:420px;padding:16px;border-radius:12px;background:var(--card)}
+.big{font-size:1.25rem;font-weight:600}
+@media(max-width:700px){nav{position:fixed;left:0;right:0;bottom:0;z-index:2;border-top:1px solid var(--line);border-bottom:0}main{padding-bottom:76px}}
+@media(min-width:900px){.cols{display:grid;grid-template-columns:3fr 2fr;gap:24px}}
+</style>
+</head>
+<body>
+<header>
+	<h1>WiCAN-Display</h1>
+	<p id="bar" class="bar">Verbinde mit dem Display …</p>
+	<p id="stale" class="note" hidden><span id="staletext"></span> <button id="reload">Seite neu laden</button></p>
+</header>
+<nav>
+	<button data-tab="views" class="cur">Ansichten</button>
+	<button data-tab="wifi">WLAN</button>
+	<button data-tab="dtc">Fehler&shy;speicher</button>
+	<button data-tab="device">Gerät</button>
+</nav>
+<main>
+<section id="views">
+	<p id="vhead" class="dim">Die Ansichten sind noch nicht geladen.</p>
+	<label class="f">Name der Ansichten <input id="lname" maxlength="32" data-path="name" disabled></label>
+	<div class="row">
+		<button id="apply" class="chg">Am Display ansehen</button>
+		<button id="save" class="chg">Speichern</button>
+		<button id="discard" disabled>Verwerfen</button>
+		<button id="export">Export</button>
+		<label class="btn">Import<input type="file" id="import" accept=".json" class="vh"></label>
+		<button id="reset" class="chg">Standard laden</button>
+	</div>
+	<p class="why dim"></p>
+	<p id="vmsg" class="msg" hidden></p>
+	<div class="cols">
+		<div>
+			<h2 data-path="pages">Seiten</h2>
+			<div id="pages"></div>
+			<button id="newpage">Neue Seite</button>
+			<h2 id="ihead">Werte</h2>
+			<div id="items"></div>
+		</div>
+		<div>
+			<h2>Verfügbare Werte</h2>
+			<p id="chead" class="dim"></p>
+			<div id="catalog"></div>
+		</div>
+	</div>
+</section>
+<section id="wifi" hidden>
+	<p id="wnow"></p>
+	<h2>Gespeicherte Netze</h2>
+	<p class="dim">Das Display nimmt das erste der Liste, das in Reichweite ist. Ein neues kommt an die erste Stelle; bei einem fünften fällt das letzte heraus.</p>
+	<div id="profiles"></div>
+	<h2>Netze in Reichweite</h2>
+	<div id="seen"></div>
+	<button id="wload">Neu laden</button>
+	<h2>Netz speichern</h2>
+	<label class="f">Name des Netzes (SSID) <input id="ssid" maxlength="32" autocomplete="off" autocapitalize="none" spellcheck="false"></label>
+	<label class="f">Passwort <input id="pass" type="password" maxlength="64" autocomplete="new-password"></label>
+	<label class="c"><input type="checkbox" id="passshow"> Passwort zeigen</label>
+	<p class="dim">Leer: Das gespeicherte Passwort dieses Netzes bleibt; bei einem neuen Netz heißt leer „offenes Netz“. Das Display speichert das Passwort, ohne es auszuprobieren.</p>
+	<label class="f">Adresse des WiCAN-Adapters in diesem Netz <input id="host" maxlength="39" placeholder="leer = selbst finden" autocomplete="off" autocapitalize="none" spellcheck="false"></label>
+	<button id="wstore" class="chg">Speichern (am Display bestätigen)</button>
+	<p class="why dim"></p>
+	<p id="wmsg" class="msg" hidden></p>
+</section>
+<section id="dtc" hidden>
+	<p>Lesen und Löschen des Fehlerspeichers geht nur am Display mit dem Knopf, nicht über diese Seite.</p>
+	<button id="dload">Neu laden</button>
+	<p id="dmsg" class="msg" hidden></p>
+	<pre id="dtext"></pre>
+	<button id="dcopy">Text kopieren</button>
+</section>
+<section id="device" hidden>
+	<h2>Gerät</h2>
+	<dl id="info"></dl>
+	<h2>Einstellungen</h2>
+	<label class="f">Helligkeit am Tag: <span id="brightnessnow"></span> % <input type="range" id="brightness" min="5" max="100" class="chg"></label>
+	<label class="f">Helligkeit im Nachtmodus: <span id="nightnow"></span> % <input type="range" id="night" min="5" max="100" class="chg"></label>
+	<label class="c"><input type="checkbox" id="night_mode" class="chg"> Nachtmodus</label>
+	<label class="c"><input type="checkbox" id="reverse" class="chg"> Drehrichtung des Knopfs umkehren</label>
+	<label class="f">Bildschirm aus nach Sekunden ohne Eingabe, wenn es nichts zu zeigen gibt (0 = nie, höchstens 3600) <input type="number" id="standby_s" min="0" max="3600" step="1" class="chg"></label>
+	<p class="why dim"></p>
+	<p id="smsg" class="msg" hidden></p>
+	<h2>Neustart</h2>
+	<div class="row">
+		<button id="reboot" class="chg">Display neu starten</button>
+		<button id="factory" class="chg">Werkseinstellungen …</button>
+	</div>
+	<p class="dim">Die Werkseinstellungen löschen WLAN, Kopplung mit dem Adapter und Einstellungen; die Ansichten bleiben.</p>
+	<p id="rmsg" class="msg" hidden></p>
+	<h2>Firmware</h2>
+	<label class="f">Firmware-Datei (wican-display.bin) <input type="file" id="fw" accept=".bin"></label>
+	<p id="fwinfo"></p>
+	<button id="fwsend" class="chg">Übertragen</button>
+	<progress id="fwbar" max="100" value="0" hidden></progress>
+	<p class="why dim"></p>
+	<p id="fmsg" class="msg" hidden></p>
+	<p class="dim">Nach der Übertragung fragt das Display nach dem Knopf und startet neu. Dann fragt es „Update in Ordnung?“ – ohne Antwort binnen 5 Minuten läuft wieder die vorherige Version.</p>
+</section>
+</main>
+<div id="ask" class="ask" hidden>
+	<div>
+		<p id="askwhat"></p>
+		<p id="askhint" class="big"></p>
+		<p id="askleft"></p>
+		<button id="askclose" hidden>Schließen</button>
+	</div>
+</div>
+<script>
+"use strict";
+
+// The limits of components/core/layout.h
+const LAYOUT_BYTES = 16384;
+const PAGES_MAX = 12;
+const ITEMS_MAX = 6;
+const MAP_MAX = 8;
+
+// The words of the display in German. A word that is not listed is shown as it came, see word().
+const VIEWS = {
+	live: "Live-Werte", no_wifi: "WiCAN nicht gefunden – schläft, stromlos oder außer Reichweite",
+	connecting: "Verbinde mit WiCAN …", no_answer: "WiCAN antwortet nicht", foreign: "Fremdes WiCAN – nicht gekoppelt",
+	no_api: "WiCAN-Firmware ohne Display-API – nur Live-Werte", autopid_off: "AutoPID nicht aktiv", starting: "WiCAN startet …",
+	scan: "Live-Werte angehalten (Fehlerspeicher-Scan)", ecu_offline: "Zündung aus – Motorsteuergerät offline"
+};
+const SOURCES = {stored: "gespeichert", builtin: "eingebaut", generated: "aus dem Katalog erzeugt", preview: "Vorschau"};
+// The refusals of display/API.md
+const REFUSALS = {
+	locked: "Der Web-Zugriff ist nicht frei. Am Display: Menü > Web-Zugriff freigeben.",
+	busy: "Das Display ist beschäftigt (Fehlerspeicher, Löschdialog oder Firmware-Empfang). Gleich noch einmal versuchen.",
+	asking: "Am Display wartet noch eine Frage auf den Knopf. Dort antworten oder eine Minute warten.",
+	body: "Das Display nimmt diese Angaben nicht an.",
+	too_large: "Das ist zu groß für das Display.",
+	upload: "Die Übertragung ist abgebrochen, oder das Display hat sie nach 30 Sekunden ohne Daten beendet. Die laufende Firmware ist unverändert.",
+	too_short: "Die Datei ist zu kurz für eine Firmware.",
+	no_image: "Die Datei ist keine Firmware für den ESP32.",
+	wrong_chip: "Die Firmware ist für einen anderen Chip gebaut als den ESP32-S3 des Displays.",
+	no_description: "Der Datei fehlt die Beschreibung, an der das Display seine Firmware erkennt.",
+	wrong_project: "Das ist die Firmware eines anderen Geräts, zum Beispiel die des WiCAN-Adapters."
+};
+// The texts of the layout check (components/core/layout.c). What only a file written by hand can get wrong
+// keeps the words of the display.
+const PROBLEMS = {
+	"text too long": "länger als 16384 Bytes",
+	"not valid JSON": "kein gültiges JSON",
+	"not wican-display-layout": "keine Ansichten für das WiCAN-Display",
+	"layout of a newer display": "Ansichten eines neueren Displays",
+	"missing": "fehlt",
+	"empty": "leer",
+	"not a text": "kein Text",
+	"not a number": "keine Zahl",
+	"not finite": "die Zahl ist zu groß",
+	"too many pages": "mehr als 12 Seiten",
+	"too many items": "mehr als 6 Werte",
+	"too many entries": "mehr als 8 Texte",
+	"too long": "zu lang (Titel, Beschriftung 24 Bytes, Einheit 8, Name 32, Wert 11, Text 23; ein Umlaut zählt 2)",
+	"control character": "enthält ein Steuerzeichen",
+	"not an integer 0 to 3": "nur 0 bis 3",
+	"zero": "darf nicht 0 sein",
+	"min is not below max": "Min muss kleiner als Max sein",
+	"unknown widget, shown as number": "unbekannte Darstellung, wird als Zahl gezeigt",
+	"arc or bar without min and max, shown as number": "Bogen und Balken brauchen Min und Max, sonst wird eine Zahl gezeigt",
+	"state without map, shown as number": "Text je Wert braucht Texte, sonst wird eine Zahl gezeigt"
+};
+const SETTINGS = ["brightness", "night", "night_mode", "reverse", "standby_s"];
+
+const S = {
+	info: null, // the last answer of GET /api/info
+	tried: false, // the first request for it is over
+	linked: false, // the last was answered
+	until: 0, // when the release ends, Date.now()
+	tab: "views",
+	catalog: {},
+	catalogText: "",
+	values: {},
+	view: "",
+	layout: null, // what the editor holds, see adopt()
+	loaded: null, // the text the editor started from: "Verwerfen" brings it back
+	base: "", // layoutText() of it: the editor is changed if its text is another
+	shown: null, // the text the display shows as a preview of this page
+	page: 0,
+	item: null, // the value whose fields are open
+	timer: 0,
+	sending: null, // the request of a firmware upload
+	file: null, // the firmware the page may send, and its version
+	version: "",
+	settings: "", // of the display, as last put into the form
+	wifi: {}
+};
+
+const $ = id => document.getElementById(id);
+// Names come from the network: one of them may be "constructor"
+const has = (object, name) => Object.prototype.hasOwnProperty.call(object, name);
+const isObject = value => value !== null && typeof value === "object" && !Array.isArray(value);
+// A member that has to be an object, also where an answer is not what API.md shows
+const part = (object, name) => isObject(object) && isObject(object[name]) ? object[name] : {};
+const text = value => typeof value === "string" ? value : typeof value === "number" ? String(value) : "";
+const word = (table, key) => has(table, key) ? table[key] : text(key);
+const bytes = value => new Blob([value]).size;
+const all = selector => document.querySelectorAll(selector);
+const listen = (id, type, handler) => $(id).addEventListener(type, handler);
+
+// The one way anything gets into the page: properties and text nodes, never markup. props: the
+// properties of the node, or only its class
+function el(tag, props, kids)
+{
+	const node = document.createElement(tag);
+
+	if(typeof props === "string") props = {className: props};
+	Object.keys(props || {}).forEach(name => { node[name] = props[name]; });
+	(kids || []).forEach(kid => node.appendChild(typeof kid === "string" ? document.createTextNode(kid) : kid));
+	return node;
+}
+
+function button(label, title, click, classes)
+{
+	const node = el("button", {title: title, className: classes || ""}, [label]);
+
+	node.addEventListener("click", click);
+	return node;
+}
+
+function clear(node)
+{
+	while(node.firstChild) node.removeChild(node.firstChild);
+	return node;
+}
+
+function tell(id, message, kind)
+{
+	$(id).textContent = message || "";
+	$(id).className = "msg " + (kind || "");
+	$(id).hidden = !message;
+}
+
+// Every request of the page. It never fails: without an answer the status is 0.
+function api(method, path, body, progress)
+{
+	return new Promise(done =>
+	{
+		const xhr = new XMLHttpRequest();
+		const none = () => done({status: 0, body: {}, text: ""});
+
+		xhr.open(method, path);
+		// The display refuses every change without this header, and a page of another origin cannot send it
+		if(method !== "GET") xhr.setRequestHeader("X-Display", "1");
+		if(progress)
+		{
+			// A firmware: megabytes over a slow link. The display itself ends an upload that stalls.
+			xhr.setRequestHeader("Content-Type", "application/octet-stream");
+			xhr.upload.addEventListener("progress", progress);
+			S.sending = xhr;
+		}
+		else
+		{
+			// CHECK: a guess until the WiFi of the board is measured - 16 KB of layout have to pass in it
+			xhr.timeout = 10000;
+		}
+		xhr.addEventListener("load", () =>
+		{
+			let data = null;
+
+			try
+			{
+				data = JSON.parse(xhr.responseText);
+			}
+			catch(error)
+			{
+				// The page of another device, or half an answer: an answer without content
+			}
+			done({status: xhr.status, body: isObject(data) ? data : {}, text: xhr.responseText});
+		});
+		xhr.addEventListener("error", none);
+		xhr.addEventListener("timeout", none);
+		xhr.addEventListener("abort", none);
+		xhr.send(body === undefined ? null : body);
+	});
+}
+
+// What an answer that is not the expected one means. changing: without an answer nobody knows whether
+// the request changed something.
+function said(r, changing)
+{
+	if(r.status === 0) return "Keine Antwort vom Display." + (changing ? " Ob die Änderung ankam, ist offen: Verbindung prüfen, nachsehen, wenn nötig wiederholen." : "");
+	if(has(REFUSALS, r.body.error)) return REFUSALS[r.body.error];
+	return "Unerwartete Antwort des Displays (" + r.status + " " + text(r.body.error) + "). Seite neu laden: Sie passt vielleicht nicht zu seiner Firmware.";
+}
+
+// A refusal, told where the request was made. That the release has ended is no error of the page: it is
+// said as that, and the bar at the top follows at once.
+function refused(id, r, changing, details)
+{
+	tell(id, said(r, changing) + (r.body.error === "body" && details ? " " + details : ""), r.body.error === "locked" ? "note" : "bad");
+	if(r.body.error === "locked") refresh();
+}
+
+// ---- The connection and the release ----
+
+const left = () => Math.ceil((S.until - Date.now()) / 1000);
+
+function bar()
+{
+	const seconds = left();
+	let kind = "bar";
+	let message = "Nur lesen. Zum Ändern am Display: Menü > Web-Zugriff";
+
+	// Until the first request is over the bar keeps the text it started with
+	if(!S.tried) return;
+	if(S.sending) message = "Firmware wird übertragen …";
+	else if(!S.linked)
+	{
+		message = "Keine Verbindung zum Display – die Seite versucht es weiter, der Editor behält seinen Inhalt.";
+		kind = "bar off";
+	}
+	else if(seconds > 0)
+	{
+		message = "Web-Zugriff frei, noch " + Math.floor(seconds / 60) + ":" + String(seconds % 60).padStart(2, "0");
+		kind = "bar free";
+	}
+	$("bar").textContent = message;
+	$("bar").className = kind;
+}
+
+// What changes something needs the release. Without it the buttons are off and say why.
+function gate()
+{
+	const why = !S.linked ? "keine Verbindung zum Display" : left() <= 0 ? "erst am Display freigeben: Menü > Web-Zugriff" : "";
+
+	all(".chg").forEach(node =>
+	{
+		node.disabled = why !== "" || !!node.dataset.why;
+		node.title = why || node.dataset.why || "";
+	});
+	all(".why").forEach(node => { node.textContent = why && "Ändern ist gesperrt – " + why + "."; });
+}
+
+async function refresh()
+{
+	const r = await api("GET", "/api/info");
+	const info = r.body;
+	const before = S.info;
+
+	S.tried = true;
+	S.linked = r.status === 200 && info.project === "wican-display";
+	if(S.linked)
+	{
+		S.info = info;
+		S.until = part(info, "release").open === true ? Date.now() + Number(part(info, "release").left_s) * 1000 : 0;
+	}
+	bar();
+	gate();
+	if(!S.linked) return;
+	device();
+
+	if(before && (info.version !== before.version || info.git !== before.git))
+	{
+		// The page in the browser is the one of the firmware before
+		$("staletext").textContent = "Das Display läuft jetzt mit Firmware " + text(info.version) + ". Diese Seite stammt noch von der vorherigen.";
+		$("stale").hidden = false;
+	}
+	if(!S.layout) await loadLayout();
+	else if(before && info.up < before.up) await restarted();
+	if(S.layout) head();
+	if(!before || part(info, "wican").view !== part(before, "wican").view) loadCatalog();
+}
+
+async function poll()
+{
+	// CHECK: read in ESP-IDF, not seen on the board - its HTTP server has one task, so while a firmware is
+	// sent the display serves nothing else, and asking would only look like a lost connection
+	if(!S.sending)
+	{
+		await refresh();
+		if(S.linked && S.tab === "views") await loadValues();
+	}
+	setTimeout(poll, 3000);
+}
+
+// The display started anew: a preview is over, and it shows what is stored again
+async function restarted()
+{
+	let r;
+
+	if(layoutText(S.layout) === S.base)
+	{
+		if(await loadLayout()) tell("vmsg", "Das Display hat neu gestartet. Die Ansichten wurden neu geladen.", "note");
+		return;
+	}
+	r = await api("GET", "/api/layout");
+	if(r.status === 200 && adopt(r.text))
+	{
+		S.loaded = r.text;
+		S.base = layoutText(adopt(r.text));
+	}
+	S.shown = null;
+	tell("vmsg", "Das Display hat neu gestartet, eine Vorschau ist damit beendet. Die Änderungen im Editor sind noch da.", "note");
+}
+
+function show(tab)
+{
+	S.tab = tab;
+	all("section").forEach(node => { node.hidden = node.id !== tab; });
+	all("nav button").forEach(node => { node.className = node.dataset.tab === tab ? "cur" : ""; });
+	if(tab === "views") loadCatalog();
+	if(tab === "wifi") loadWifi();
+	if(tab === "dtc") loadLists();
+}
+
+// ---- A question the display asks at its knob ----
+
+// asked: the answer 202. then(state) is called when the question is over: "confirmed", "refused",
+// "expired", or "unknown" and "" if the display has restarted or no longer answers - which is what the
+// page sees of a confirmed firmware or factory reset.
+function knob(asked, what, then)
+{
+	const id = String(asked.ticket);
+	const ends = {
+		confirmed: "Bestätigt.",
+		refused: "Abgelehnt: am Display lang gedrückt, oder der Web-Zugriff endete. Nichts wurde geändert.",
+		expired: "Niemand hat den Knopf gedrückt. Nichts wurde geändert.",
+		unknown: "Das Display kennt die Frage nicht mehr – es hat inzwischen neu gestartet."
+	};
+	let silent = 0;
+
+	const over = (state, message) =>
+	{
+		$("askhint").textContent = message;
+		$("askleft").textContent = "";
+		$("askclose").hidden = false;
+		then(state);
+	};
+	const wait = async () =>
+	{
+		const r = await api("GET", "/api/ticket?id=" + id);
+		const state = r.status === 200 ? text(r.body.state) : "";
+
+		// Closed by hand while the display was silent
+		if($("ask").hidden) return;
+		if(state === "waiting")
+		{
+			silent = 0;
+			$("askleft").textContent = "Noch " + text(r.body.left_s) + " s. Drücken = ja, lang drücken = nein.";
+			setTimeout(wait, 1000);
+		}
+		else if(has(ends, state)) over(state, ends[state]);
+		else if(r.status === 0 && ++silent < 3)
+		{
+			$("askleft").textContent = "Das Display antwortet gerade nicht …";
+			$("askclose").hidden = false;
+			setTimeout(wait, 1500);
+		}
+		else over("", r.status === 0 ? "Das Display antwortet nicht mehr. Wurde der Knopf gedrückt, startet es gerade neu; sonst die Verbindung prüfen." : said(r));
+	};
+
+	$("askwhat").textContent = what;
+	$("askhint").textContent = text(asked.hint) || "Am Display bestätigen: Knopf drücken";
+	$("askleft").textContent = "";
+	$("askclose").hidden = true;
+	$("ask").hidden = false;
+	// The number goes into a path: nothing but digits may
+	if(/^[0-9]{1,10}$/.test(id)) wait();
+	else over("", "Unerwartete Antwort des Displays.");
+}
+
+// ---- Ansichten: the editor ----
+
+// The layout of a text as the editor holds it: the object of the text itself, so that members this page
+// does not know stay in it. Only the texts of a state widget become a list of pairs, which can be edited
+// one by one. null if the text is none the editor can hold.
+function adopt(json)
+{
+	let layout = null;
+
+	try
+	{
+		layout = JSON.parse(json);
+	}
+	catch(error)
+	{
+		return null;
+	}
+	if(!isObject(layout) || !Array.isArray(layout.pages)) return null;
+
+	for(const page of layout.pages)
+	{
+		if(!isObject(page) || !Array.isArray(page.items) || !page.items.every(isObject)) return null;
+
+		page.items.forEach(item =>
+		{
+			const texts = item.map;
+
+			item.map = isObject(texts) ? Object.keys(texts).map(raw => [raw, text(texts[raw])]) : [];
+		});
+	}
+	return layout;
+}
+
+// JSON of an object with one member written last, as the text given for it (none if that is empty)
+function written(object, last, value)
+{
+	const rest = {};
+	let head;
+
+	Object.keys(object).forEach(name => { if(name !== last) rest[name] = object[name]; });
+	head = JSON.stringify(rest);
+	return value === "" ? head : head.slice(0, -1) + (head.length > 2 ? "," : "") + JSON.stringify(last) + ":" + value + "}";
+}
+
+// The text of a layout as the page sends it: a line for each page and each value, as in display/layouts,
+// so that an export can be read and compared
+function layoutText(layout)
+{
+	const pair = entry => JSON.stringify(entry[0]) + ":" + JSON.stringify(entry[1]);
+	const value = item => "\n    " + written(item, "map", item.map.length > 0 ? "{" + item.map.map(pair).join(",") + "}" : "");
+
+	return written(layout, "pages", "[" + layout.pages.map(page => "\n  " + written(page, "items", "[" + page.items.map(value).join(",") + "]")).join(",") + "]");
+}
+
+// Not loaded yet: the catalogue holds nothing but the battery voltage of the adapter
+const catalogLoaded = () => Object.keys(S.catalog).some(name => name !== "@BATT_V");
+
+function unmark()
+{
+	all("#views .hint").forEach(node => node.remove());
+	all("#views .wrong").forEach(node => node.classList.remove("wrong"));
+}
+
+// Writes a note of the display next to the field its path names. jump: the page that holds the field is
+// opened for it - not while somebody is typing somewhere else.
+function mark(path, message, jump, kind)
+{
+	const found = /^pages\[(\d+)\]/.exec(path);
+	let field = null;
+
+	if(jump && found && Number(found[1]) < S.layout.pages.length && Number(found[1]) !== S.page)
+	{
+		S.page = Number(found[1]);
+		S.item = null;
+		draw();
+	}
+	all("#views [data-path]").forEach(node => { if(node.dataset.path === path) field = node; });
+	if(!field) return;
+
+	if(field.closest("details")) field.closest("details").open = true;
+	if(kind === "bad") field.classList.add("wrong");
+	field.parentNode.insertBefore(el("small", {className: "hint " + kind}, [message]), field.nextSibling);
+}
+
+// What the display answered to a layout, shown. Returns true if it took the layout.
+function report(r, jump, done, changing)
+{
+	const b = r.body;
+	let message = done + " " + text(b.pages) + " Seiten, " + text(b.items) + " Werte.";
+
+	unmark();
+	if(r.status === 200 && b.ok === true)
+	{
+		if(b.warnings > 0)
+		{
+			message += " Hinweis" + (b.warnings > 1 ? "e: " + b.warnings + ", der erste" : "") + " – " + text(b.warning_path) + ": " + word(PROBLEMS, b.warning) + ".";
+			mark(text(b.warning_path), word(PROBLEMS, b.warning), jump, "note");
+		}
+		if(Array.isArray(b.unknown) && b.unknown.length > 0) message += " Nicht im Katalog des Adapters: " + b.unknown.map(text).join(", ") + " – das Display zeigt dafür „n. v.“.";
+		tell("vmsg", message, b.warnings > 0 ? "note" : "ok");
+		return true;
+	}
+	if(r.status === 400 && b.ok === false)
+	{
+		tell("vmsg", "Das Display nimmt die Ansichten so nicht an – " + (text(b.path) || "der ganze Text") + ": " + word(PROBLEMS, b.problem) + ".", "bad");
+		mark(text(b.path), word(PROBLEMS, b.problem), jump, "bad");
+	}
+	else refused("vmsg", r, changing);
+	return false;
+}
+
+// What the page can tell without the display: "" if the text may be sent
+function unfit(json)
+{
+	if(bytes(json) > LAYOUT_BYTES) return "Die Ansichten sind größer als " + LAYOUT_BYTES + " Bytes: Das Display nimmt sie so nicht. Werte oder Seiten entfernen.";
+	// Of two texts for the same value the display takes the first, a browser that reads them back the last
+	return S.layout.pages.some(page => page.items.some(item => new Set(item.map.map(entry => entry[0])).size < item.map.length))
+		? "In den Texten eines Werts steht ein Wert doppelt. Einen davon ändern." : "";
+}
+
+// "Prüfen" happens by itself: the check needs no release, and it names the field
+async function check()
+{
+	const json = layoutText(S.layout);
+	let r;
+
+	if(!S.linked) return;
+	if(unfit(json))
+	{
+		unmark();
+		tell("vmsg", unfit(json), "bad");
+		return;
+	}
+	r = await api("PUT", "/api/layout?mode=check", json);
+	// An answer to a text that has changed since says nothing about the editor
+	if(json === layoutText(S.layout)) report(r, false, "Geprüft:");
+}
+
+// The layout was edited: what shows its state follows, and the display checks it when the typing pauses
+function changed()
+{
+	head();
+	clearTimeout(S.timer);
+	S.timer = setTimeout(check, 1500);
+}
+
+function head()
+{
+	const json = layoutText(S.layout);
+	const layout = part(S.info, "layout");
+
+	$("vhead").textContent = "Am Display: „" + text(layout.name) + "“ (" + word(SOURCES, layout.source) + "). Hier im Editor: " + (json !== S.base ? "geändert" : "wie geladen")
+		+ (S.shown !== null ? ", als Vorschau am Display" : "") + ". " + bytes(json) + " von " + LAYOUT_BYTES + " Bytes.";
+	$("discard").disabled = S.loaded === null || (json === S.base && S.shown === null);
+	$("newpage").disabled = S.layout.pages.length >= PAGES_MAX;
+}
+
+function draw()
+{
+	$("lname").value = text(S.layout.name);
+	drawPages();
+	drawItems();
+	drawCatalog();
+	head();
+}
+
+// A field that edits the layout: what it changes, then everything that follows from a change
+const edits = (node, type, change) => node.addEventListener(type, () =>
+{
+	change();
+	changed();
+});
+
+// A member of the layout that is left out when it says nothing
+function setMember(object, name, value)
+{
+	if(value === "" || value === false) delete object[name];
+	else object[name] = value;
+}
+
+function drawPages()
+{
+	const pages = S.layout.pages;
+	const box = clear($("pages"));
+	const moved = (p, by) =>
+	{
+		pages.splice(p + by, 0, pages.splice(p, 1)[0]);
+		S.page = S.page === p ? p + by : S.page === p + by ? p : S.page;
+		draw();
+		changed();
+	};
+
+	pages.forEach((page, p) =>
+	{
+		const path = "pages[" + p + "]";
+		const title = el("input", {value: text(page.title), maxLength: 24, placeholder: "Titel", className: "grow"});
+		const hide = el("input", {type: "checkbox", checked: page.hidden === true});
+		const up = button("▲", "Seite nach oben", () => moved(p, -1), "sq");
+		const down = button("▼", "Seite nach unten", () => moved(p, 1), "sq");
+		const row = el("div", {className: "box row" + (p === S.page ? " cur" : "")}, [
+			button(String(p + 1), "Seite bearbeiten", () =>
+			{
+				S.page = p;
+				S.item = null;
+				draw();
+			}, "sq"),
+			title,
+			el("span", "dim", [page.items.length + (page.items.length === 1 ? " Wert" : " Werte")]),
+			el("label", {}, [hide, " verborgen"]),
+			up,
+			down,
+			button("✕", "Seite löschen", () =>
+			{
+				if(page.items.length > 0 && !confirm("Die Seite „" + text(page.title) + "“ mit ihren " + page.items.length + " Werten löschen?")) return;
+				pages.splice(p, 1);
+				S.page = Math.max(0, Math.min(S.page > p ? S.page - 1 : S.page, pages.length - 1));
+				S.item = null;
+				draw();
+				changed();
+			}, "sq")
+		]);
+
+		row.dataset.path = path;
+		title.dataset.path = path + ".title";
+		hide.dataset.path = path + ".hidden";
+		up.disabled = p === 0;
+		down.disabled = p === pages.length - 1;
+		edits(title, "input", () =>
+		{
+			setMember(page, "title", title.value);
+			if(p === S.page) itemsHead();
+		});
+		edits(hide, "change", () => setMember(page, "hidden", hide.checked));
+		box.appendChild(row);
+	});
+}
+
+function itemsHead()
+{
+	const page = S.layout.pages[S.page];
+
+	$("ihead").textContent = page ? "Werte der Seite " + (S.page + 1) + (text(page.title) ? " „" + page.title + "“" : "") + " (" + page.items.length + " von " + ITEMS_MAX + ")"
+		: "Noch keine Seite: „Neue Seite“ legt eine an.";
+}
+
+// A field of a value that is a number, or not there. What is typed and is no number goes to the display
+// as null, and its check names the field.
+function numberField(item, name, path, label)
+{
+	const input = el("input", {type: "number", step: "any", value: typeof item[name] === "number" ? String(item[name]) : ""});
+
+	input.dataset.path = path + "." + name;
+	edits(input, "input", () =>
+	{
+		if(input.value !== "") item[name] = Number(input.value);
+		else if(input.validity.badInput) item[name] = NaN;
+		else delete item[name];
+	});
+	return el("label", "f", [label, input]);
+}
+
+function choice(options, value)
+{
+	const select = el("select", {}, Object.keys(options).map(name => el("option", {value: name}, [options[name]])));
+
+	select.value = value;
+	return select;
+}
+
+// The texts of a state widget
+function mapEditor(item, path)
+{
+	const box = el("div", "box");
+	const fill = () =>
+	{
+		const more = button("Text hinzufügen", "", () =>
+		{
+			item.map.push(["", ""]);
+			fill();
+			changed();
+		});
+
+		clear(box).appendChild(el("p", "dim", ["Links der Wert, wie der Adapter ihn liefert (1, on, off), rechts der Text dafür. * steht für jeden anderen Wert."]));
+		item.map.forEach((entry, e) =>
+		{
+			const raw = el("input", {value: entry[0], maxLength: 11, placeholder: "Wert", size: 6});
+			const shown = el("input", {value: entry[1], maxLength: 23, placeholder: "Text", className: "grow"});
+			const row = el("div", "row", [raw, shown, button("✕", "Text entfernen", () =>
+			{
+				item.map.splice(e, 1);
+				fill();
+				changed();
+			}, "sq")]);
+
+			row.dataset.path = path + ".map[" + e + "]";
+			edits(raw, "input", () => { entry[0] = raw.value; });
+			edits(shown, "input", () => { entry[1] = shown.value; });
+			box.appendChild(row);
+		});
+		more.disabled = item.map.length >= MAP_MAX;
+		box.appendChild(more);
+	};
+
+	box.dataset.path = path + ".map";
+	fill();
+	return box;
+}
+
+// The fields of a value. relabel: the line above them shows the label as well.
+function fields(item, path, relabel)
+{
+	const known = text(part(S.catalog, item.key).unit);
+	const label = el("input", {value: text(item.label), maxLength: 24, placeholder: "leer: aus dem Schlüssel gebildet"});
+	const own = el("input", {type: "checkbox", checked: has(item, "unit")});
+	const unit = el("input", {value: text(item.unit), maxLength: 8});
+	const dec = choice({0: "0", 1: "1", 2: "2", 3: "3"}, text(has(item, "dec") ? item.dec : 0));
+	const widget = choice({number: "Zahl", arc: "Bogen", bar: "Balken", state: "Text je Wert"}, has(item, "widget") ? text(item.widget) : "number");
+	const texts = mapEditor(item, path);
+	// Without the member the display shows the unit of the catalogue; with an empty one, none
+	const units = () =>
+	{
+		unit.disabled = !own.checked;
+		unit.placeholder = own.checked ? "keine" : known;
+	};
+
+	label.dataset.path = path + ".label";
+	unit.dataset.path = path + ".unit";
+	dec.dataset.path = path + ".dec";
+	widget.dataset.path = path + ".widget";
+	texts.hidden = item.widget !== "state" && item.map.length === 0;
+	units();
+
+	edits(label, "input", () =>
+	{
+		setMember(item, "label", label.value);
+		relabel();
+	});
+	edits(own, "change", () =>
+	{
+		if(own.checked) item.unit = unit.value;
+		else delete item.unit;
+		units();
+	});
+	edits(unit, "input", () => { item.unit = unit.value; });
+	edits(dec, "change", () => { item.dec = Number(dec.value); });
+	edits(widget, "change", () =>
+	{
+		item.widget = widget.value;
+		texts.hidden = item.widget !== "state" && item.map.length === 0;
+	});
+
+	return el("div", {}, [
+		el("label", "f", ["Beschriftung", label]),
+		el("label", "c", [own, " eigene Einheit statt der des Katalogs"]),
+		el("label", "f", ["Einheit", unit]),
+		el("div", "row", [
+			el("label", "f", ["Nachkommastellen", dec]),
+			el("label", "f", ["Darstellung", widget]),
+			numberField(item, "scale", path, "Faktor (leer = 1)")
+		]),
+		texts,
+		el("div", "row", [numberField(item, "min", path, "Min (Bogen, Balken)"), numberField(item, "max", path, "Max (Bogen, Balken)")]),
+		el("p", "dim", ["Grenzen gelten für den gezeigten Wert, also nach dem Faktor."]),
+		el("div", "row", [
+			numberField(item, "warn_lo", path, "Warnung bis"),
+			numberField(item, "warn_hi", path, "Warnung ab"),
+			numberField(item, "crit_lo", path, "Alarm bis"),
+			numberField(item, "crit_hi", path, "Alarm ab")
+		])
+	]);
+}
+
+function drawItems()
+{
+	const page = S.layout.pages[S.page];
+	const box = clear($("items"));
+	const moved = (item, to) =>
+	{
+		page.items.splice(page.items.indexOf(item), 1);
+		if(to >= 0) page.items.splice(to, 0, item);
+		S.item = to >= 0 ? item : null;
+		draw();
+		changed();
+	};
+
+	itemsHead();
+	$("ihead").dataset.path = "pages[" + S.page + "].items";
+	if(!page) return;
+
+	page.items.forEach((item, i) =>
+	{
+		const path = "pages[" + S.page + "].items[" + i + "]";
+		const key = el("strong", {}, [text(item.key)]);
+		const label = el("span", {}, [text(item.label)]);
+		const more = el("details", {open: item === S.item}, [
+			el("summary", {}, [key, " ", label, " · ", el("span", {className: "live", key: text(item.key)}),
+				catalogLoaded() && !has(S.catalog, item.key) ? el("span", "note", [" · nicht im Katalog: das Display zeigt „n. v.“"]) : ""]),
+			fields(item, path, () => { label.textContent = text(item.label); })
+		]);
+		const up = button("▲", "Wert nach oben", () => moved(item, i - 1), "sq");
+		const down = button("▼", "Wert nach unten", () => moved(item, i + 1), "sq");
+		const row = el("div", "box", [el("div", "ops", [up, down, button("✕", "Wert entfernen", () => moved(item, -1), "sq")]), more]);
+
+		row.dataset.path = path;
+		key.dataset.path = path + ".key";
+		up.disabled = i === 0;
+		down.disabled = i === page.items.length - 1;
+		more.addEventListener("toggle", () =>
+		{
+			if(more.open) S.item = item;
+			else if(S.item === item) S.item = null;
+		});
+		box.appendChild(row);
+	});
+	live();
+}
+
+// The values the adapter can deliver. A tap puts one on the page that is open.
+function drawCatalog()
+{
+	const page = S.layout.pages[S.page];
+	const used = new Set();
+	const box = clear($("catalog"));
+
+	S.layout.pages.forEach(each => each.items.forEach(item => used.add(item.key)));
+	Object.keys(S.catalog).forEach(name =>
+	{
+		const add = button("", "", () =>
+		{
+			S.item = {key: name, map: []};
+			page.items.push(S.item);
+			draw();
+			changed();
+		}, "cat" + (used.has(name) ? " used" : ""));
+
+		add.appendChild(el("strong", {}, [name]));
+		add.appendChild(el("span", {className: "live", key: name}));
+		add.disabled = !page || page.items.length >= ITEMS_MAX;
+		box.appendChild(add);
+	});
+	live();
+}
+
+// The current values, wherever one is shown
+function live()
+{
+	const page = S.layout.pages[S.page];
+
+	all(".live").forEach(node =>
+	{
+		const value = has(S.values, node.key) && isObject(S.values[node.key]) ? S.values[node.key] : {};
+		const unit = text(part(S.catalog, node.key).unit);
+		let shown = "–";
+
+		if(typeof value.v === "number") shown = String(value.v).replace(".", ",") + (unit ? " " + unit : "");
+		else if(value.v === "on" || value.v === "off") shown = value.v === "on" ? "an" : "aus";
+		node.textContent = shown;
+		node.classList.toggle("dim", value.age === "old");
+	});
+	$("chead").textContent = (!page ? "Erst eine Seite anlegen." : page.items.length >= ITEMS_MAX ? "Die Seite ist voll (" + ITEMS_MAX + " Werte)." : "Antippen setzt den Wert auf Seite " + (S.page + 1) + ".")
+		+ " ✓ = schon auf einer Seite. Adapter: " + (word(VIEWS, S.view) || "–") + ".";
+}
+
+async function loadCatalog()
+{
+	const r = await api("GET", "/api/catalog");
+
+	// Without an answer the list stays as it was; the bar tells about a lost connection
+	if(r.status !== 200 || r.text === S.catalogText) return;
+	S.catalogText = r.text;
+	S.catalog = r.body;
+	if(!S.layout) return;
+	drawCatalog();
+	// Not under the fingers of somebody who is typing there
+	if(!$("items").contains(document.activeElement)) drawItems();
+}
+
+async function loadValues()
+{
+	const r = await api("GET", "/api/values");
+
+	if(r.status !== 200) return;
+	S.values = part(r.body, "values");
+	S.view = text(r.body.view);
+	if(S.layout) live();
+}
+
+// Takes a layout as what the editor holds
+function take(layout)
+{
+	S.layout = layout;
+	$("lname").disabled = false;
+	S.page = 0;
+	S.item = null;
+	clearTimeout(S.timer);
+	unmark();
+	draw();
+}
+
+async function loadLayout()
+{
+	const r = await api("GET", "/api/layout");
+	const layout = r.status === 200 ? adopt(r.text) : null;
+
+	if(!layout)
+	{
+		// Views that have no text (500), or a text no browser can hold: the editor starts empty and says so
+		if(r.status === 0) return false;
+		if(!S.layout) take({format: "wican-display-layout", v: 1, pages: []});
+		tell("vmsg", r.status === 200 || r.status === 500 ? "Das Display hat keinen Text seiner Ansichten, den diese Seite lesen kann. Neu anlegen oder importieren." : said(r), "bad");
+		return false;
+	}
+	S.loaded = r.text;
+	S.base = layoutText(layout);
+	S.shown = null;
+	take(layout);
+	tell("vmsg");
+	return true;
+}
+
+async function send(mode)
+{
+	const json = layoutText(S.layout);
+	let r;
+
+	clearTimeout(S.timer);
+	if(unfit(json))
+	{
+		tell("vmsg", unfit(json), "bad");
+		return;
+	}
+	r = await api("PUT", "/api/layout?mode=check", json);
+	if(!report(r, true, "Geprüft:")) return;
+
+	r = mode === "save" ? await api("PUT", "/api/layout?mode=save", json) : await api("PUT", "/api/layout?mode=apply", json);
+	if(!report(r, true, mode === "save" ? "Gespeichert:" : "Das Display zeigt die Ansichten jetzt ab ihrer ersten Seite, gespeichert sind sie noch nicht:", true)) return;
+
+	if(mode === "save")
+	{
+		S.loaded = json;
+		S.base = json;
+		S.shown = null;
+	}
+	else S.shown = json;
+	await refresh();
+}
+
+// Back to the text the editor started from; if the display shows a preview of this page, there as well
+async function discard()
+{
+	const r = S.shown !== null ? await api("PUT", "/api/layout?mode=apply", S.loaded) : null;
+
+	take(adopt(S.loaded));
+	if(!r) tell("vmsg", "Die Änderungen im Editor sind verworfen.", "ok");
+	else if(r.status === 200)
+	{
+		S.shown = null;
+		tell("vmsg", "Verworfen: Das Display zeigt wieder die Ansichten von vorher.", "ok");
+	}
+	else tell("vmsg", "Im Editor verworfen, aber das Display zeigt noch die Vorschau: " + said(r, true) + " Auch ein Neustart des Displays beendet sie.", r.body.error === "locked" ? "note" : "bad");
+	await refresh();
+}
+
+function exportFile()
+{
+	const json = S.loaded !== null && layoutText(S.layout) === S.base ? S.loaded : layoutText(S.layout);
+	const link = el("a", {download: "wican-display-ansichten.json", href: URL.createObjectURL(new Blob([json], {type: "application/json"}))});
+
+	document.body.appendChild(link);
+	link.click();
+	link.remove();
+	setTimeout(() => URL.revokeObjectURL(link.href), 10000);
+}
+
+// A file: the display checks it before it replaces what the editor holds
+function importFile()
+{
+	const file = $("import").files[0];
+	const reader = new FileReader();
+
+	if(!file) return;
+	$("import").value = "";
+	if(file.size > LAYOUT_BYTES)
+	{
+		tell("vmsg", "Die Datei wurde nicht übernommen: Sie ist größer als " + LAYOUT_BYTES + " Bytes.", "bad");
+		return;
+	}
+	reader.addEventListener("error", () => tell("vmsg", "Die Datei lässt sich nicht lesen.", "bad"));
+	reader.addEventListener("load", async () =>
+	{
+		const json = text(reader.result);
+		const layout = adopt(json);
+		const r = await api("PUT", "/api/layout?mode=check", json);
+		let why = "";
+
+		if(r.status === 400 && r.body.ok === false) why = " – " + (text(r.body.path) || "der ganze Text") + ": " + word(PROBLEMS, r.body.problem) + ".";
+		else if(r.status !== 200 || r.body.ok !== true) why = ", weil das Display sie nicht prüfen konnte. " + said(r);
+		else if(!layout) why = ": Diese Seite kann sie nicht lesen.";
+
+		if(why) tell("vmsg", "Die Datei wurde nicht übernommen" + why, "bad");
+		else if(!S.layout || layoutText(S.layout) === S.base || confirm("Die Änderungen im Editor durch die Datei ersetzen?"))
+		{
+			take(layout);
+			report(r, false, "Datei übernommen, noch nicht am Display:");
+		}
+	});
+	reader.readAsText(file);
+}
+
+async function resetLayout()
+{
+	let r;
+
+	if(!confirm("Die am Display gespeicherten Ansichten löschen und die eingebauten laden? Was hier im Editor steht, geht verloren.")) return;
+	r = await api("POST", "/api/layout/reset");
+	if(r.status !== 200)
+	{
+		refused("vmsg", r, true);
+		return;
+	}
+	if(await loadLayout()) tell("vmsg", "Standard geladen: " + text(r.body.pages) + " Seiten, " + text(r.body.items) + " Werte.", "ok");
+	await refresh();
+}
+
+// ---- WLAN ----
+
+const profiles = () => Array.isArray(S.wifi.profiles) ? S.wifi.profiles.filter(isObject) : [];
+
+function drawWifi()
+{
+	const now = text(S.wifi.current);
+	const own = part(S.info, "wifi");
+	const stored = profiles();
+	const seen = Array.isArray(S.wifi.seen) ? S.wifi.seen.filter(isObject) : [];
+	const fill = (ssid, host) =>
+	{
+		$("ssid").value = ssid;
+		$("host").value = host;
+		$("pass").value = "";
+		$("pass").focus();
+	};
+
+	$("wnow").textContent = (now ? "Das Display ist im Netz „" + now + "“" + (text(own.ip) ? " (Adresse " + own.ip + ", " + text(own.rssi) + " dBm)." : ".") : "Das Display ist in keinem Netz.")
+		+ (own.ap === true ? " Sein eigener Hotspot „" + text(own.ap_ssid) + "“ ist an; das Passwort dafür steht am Display unter Menü > Web-Zugriff." : "");
+
+	clear($("profiles"));
+	if(stored.length === 0) $("profiles").appendChild(el("p", "dim", ["Kein Netz gespeichert: Das Display öffnet seinen eigenen Hotspot."]));
+	stored.forEach(profile =>
+	{
+		const ssid = text(profile.ssid);
+		const forget = button("Vergessen", "", async () =>
+		{
+			let r;
+
+			if(!confirm("Das Netz „" + ssid + "“ vergessen? Das Display verlässt dabei sein Netz und sucht neu: Diese Seite erreicht es dann kurz oder gar nicht mehr."
+				+ (stored.length === 1 ? " Es ist das letzte Netz, danach bleibt nur der eigene Hotspot des Displays." : ""))) return;
+			r = await api("POST", "/api/wifi/forget", JSON.stringify({ssid: ssid}));
+			if(r.status === 200) tell("wmsg", "„" + ssid + "“ ist vergessen.", "ok");
+			else if(r.status === 404) tell("wmsg", "„" + ssid + "“ war am Display nicht mehr gespeichert.", "note");
+			else refused("wmsg", r, true);
+			loadWifi();
+		}, "chg");
+
+		$("profiles").appendChild(el("div", "box", [
+			el("div", "row", [
+				el("strong", "grow", [ssid + (ssid === now ? " (verbunden)" : "")]),
+				button("Ändern", "", () => fill(ssid, text(profile.host))),
+				forget
+			]),
+			el("p", "dim", [(profile.password === true ? "Passwort gespeichert" : "ohne Passwort (offenes Netz)") + " · Adapter: " + (text(profile.host) || "selbst finden")
+				+ (profile.wican_ap === true ? " · Hotspot eines WiCAN" : "")]),
+			profile.factory === true ? el("p", "bad", ["Achtung, Werkspasswort des WiCAN: Jeder kennt es, und der Adapter nimmt Befehle von jedem in seinem Netz an. Im WiCAN ändern."]) : ""
+		]));
+	});
+
+	clear($("seen"));
+	if(seen.length === 0) $("seen").appendChild(el("p", "dim", ["Das Display hat bei seiner letzten Suche kein Netz gesehen."]));
+	seen.forEach(network =>
+	{
+		const ssid = text(network.ssid);
+		const pick = button("", "", () => fill(ssid, ""), "cat");
+
+		pick.appendChild(el("strong", {}, [ssid]));
+		pick.appendChild(el("span", {}, [text(network.rssi) + " dBm · " + (network.secure === true ? "verschlüsselt" : "offen") + (stored.some(profile => profile.ssid === ssid) ? " · gespeichert" : "")]));
+		$("seen").appendChild(pick);
+	});
+	gate();
+}
+
+async function loadWifi()
+{
+	const r = await api("GET", "/api/wifi");
+
+	if(r.status !== 200)
+	{
+		tell("wmsg", said(r), "bad");
+		return;
+	}
+	S.wifi = r.body;
+	drawWifi();
+}
+
+async function storeWifi()
+{
+	const ssid = $("ssid").value;
+	const password = $("pass").value;
+	const request = {ssid: ssid, host: $("host").value.trim()};
+	const stored = profiles();
+	const known = stored.some(profile => profile.ssid === ssid);
+	let r;
+
+	if(ssid === "" || bytes(ssid) > 32 || bytes(request.host) > 39 || (password !== "" && (bytes(password) < 8 || bytes(password) > 64)))
+	{
+		tell("wmsg", "Das geht so nicht: Der Name des Netzes hat 1 bis 32 Bytes, ein Passwort 8 bis 64 (leer für ein offenes Netz), die Adresse höchstens 39.", "bad");
+		return;
+	}
+	// Without the member the display keeps the password it has stored for this network
+	if(password !== "") request.password = password;
+
+	r = await api("POST", "/api/wifi", JSON.stringify(request));
+	$("pass").value = "";
+	if(r.status !== 202)
+	{
+		refused("wmsg", r, true, "Name 1 bis 32 Bytes, Passwort leer oder 8 bis 64, Adresse bis 39, keine Steuerzeichen.");
+		return;
+	}
+	tell("wmsg");
+	knob(r.body, "WLAN „" + ssid + "“ speichern" + (password !== "" ? "" : known ? " (Passwort bleibt)" : " (offenes Netz, ohne Passwort)"), state =>
+	{
+		if(state === "confirmed") tell("wmsg", "„" + ssid + "“ ist gespeichert. Das Display sucht sein Netz jetzt neu; wechselt es, hat es eine andere Adresse.", "ok");
+		loadWifi();
+	});
+}
+
+// ---- Fehlerspeicher: look only ----
+
+// The words the display uses for the status of a control unit (components/core/dtc_view.h)
+function unitStatus(status)
+{
+	if(status === "ok") return "";
+	if(/^nrc_[0-9A-Fa-f]{2}$/.test(status)) return "abgelehnt (NRC " + status.slice(4).toUpperCase() + ")";
+	return {no_response: "keine Antwort", pending_timeout: "Antwort ausstehend", incomplete: "unvollständig"}[status] || "unbekannter Status";
+}
+
+// One list as lines of text, in the words of the display
+function listed(lines, title, result)
+{
+	const units = isObject(result) && Array.isArray(result.ecus) ? result.ecus.filter(isObject) : [];
+	const clean = [];
+
+	lines.push(title);
+	if(!isObject(result)) lines.push("Keine Liste.");
+	else lines.push(text(result.dtc_count) + " Fehler - " + units.length + " Steuergeräte · " + Math.round(Number(result.duration_ms) / 1000) + " s");
+	units.forEach(unit =>
+	{
+		const codes = Array.isArray(unit.dtcs) ? unit.dtcs.filter(isObject) : [];
+		const status = unitStatus(text(unit.status));
+		const more = Number(unit.dtcs_omitted) > 0 ? Number(unit.dtcs_omitted) : 0;
+
+		if(codes.length === 0 && more === 0 && status === "")
+		{
+			clean.push(text(unit.name));
+			return;
+		}
+		lines.push(text(unit.name) + " - " + text(unit.id) + " · " + text(unit.protocol) + (status && " · " + status)
+			+ (unit.cleared === true ? " · gelöscht" : unit.cleared === false ? " · Löschen nicht bestätigt" : ""));
+		codes.forEach(code => lines.push("  " + text(code.code) + (code.active === true ? " - aktiv" : code.active === false ? " - gespeichert" : text(code.status) && " - Status " + code.status)));
+		if(more > 0) lines.push("  " + more + (more === 1 ? " Code" : " Codes") + " nicht übertragen");
+	});
+	if(clean.length > 0) lines.push(clean.length + (clean.length === 1 ? " Steuergerät" : " Steuergeräte") + " ohne Fehler: " + clean.join(", "));
+	lines.push("");
+}
+
+async function loadLists()
+{
+	const r = await api("GET", "/api/dtc/last");
+	const age = Number(r.body.read_age_s);
+	const lines = ["WiCAN-Display, Fehlerspeicher, " + new Date().toLocaleString("de-DE"), ""];
+
+	// Without an answer the lists stay as they were loaded
+	tell("dmsg", r.status !== 200 && said(r), "bad");
+	if(r.status !== 200) return;
+	listed(lines, "Letzte Liste" + (isObject(r.body.read) ? ", gelesen vor " + (age >= 120 ? Math.round(age / 60) + " min" : age + " s") : ""), r.body.read);
+	listed(lines, "Liste vor dem letzten Löschen", r.body.before_clear);
+	$("dtext").textContent = lines.join("\n");
+}
+
+function copyLists()
+{
+	// The clipboard of a page without TLS is reached only this way
+	getSelection().selectAllChildren($("dtext"));
+	tell("dmsg", document.execCommand("copy") ? "Der Text ist kopiert." : "Der Text ist markiert: jetzt mit „Kopieren“ übernehmen.", "ok");
+}
+
+// ---- Gerät ----
+
+function device()
+{
+	const info = S.info;
+	const wifi = part(info, "wifi");
+	const wican = part(info, "wican");
+	const http = part(info, "http");
+	const up = Number(info.up);
+	const kb = count => Math.round(Number(count) / 1024) + " KB";
+	const rows = [
+		["Firmware", text(info.version) + " (" + text(info.git) + "), Platz " + text(info.slot)],
+		["Läuft seit", Math.floor(up / 3600) + " h " + Math.floor(up % 3600 / 60) + " min, letzter Neustart: " + text(info.reset)],
+		["Speicher", kb(info.heap) + " frei (kleinster Stand " + kb(info.heap_min) + "), PSRAM " + kb(info.psram) + " (" + kb(info.psram_min) + ")"],
+		["Temperatur", text(info.temp_c) + " °C" + ({dim: ", zu warm: Licht gedimmt", off: ", zu warm: Licht aus"}[info.heat] || "")],
+		["WLAN", (text(wifi.ssid) ? "„" + wifi.ssid + "“, " + text(wifi.ip) + ", " + text(wifi.rssi) + " dBm" : "in keinem Netz") + (wifi.ap === true ? "; eigener Hotspot „" + text(wifi.ap_ssid) + "“ an" : "")],
+		["Adapter", word(VIEWS, wican.view) + " · Adresse " + (text(wican.host) || "–") + " · ID " + (text(wican.id) || "–") + " · Firmware " + (text(wican.fw) || "–")],
+		["Abfragen", text(http.ok) + " beantwortet, " + text(http.failed) + " Fehler, " + text(http.reconnects) + " Neuverbindungen"]
+	];
+	const box = clear($("info"));
+
+	if(info.safe_mode === true) rows.unshift(["Sicherer Modus", "Das Display nutzt die eingebauten Ansichten, die gespeicherten liest es nicht."]);
+	if(info.rolled_back === true) rows.unshift(["Update", "nicht übernommen – die vorherige Version läuft"]);
+	if(info.update_pending === true) rows.unshift(["Update", "Am Display wartet „Update in Ordnung?“. Bis dahin nimmt es keine neue Firmware an; ohne Antwort läuft bald wieder die vorherige Version."]);
+	rows.forEach(row =>
+	{
+		box.appendChild(el("dt", {}, [row[0]]));
+		box.appendChild(el("dd", {}, [row[1]]));
+	});
+
+	// The form follows the display when the settings changed there, not while somebody is setting them here
+	if(isObject(info.settings) && JSON.stringify(info.settings) !== S.settings) fillSettings(info.settings);
+	uploadGate();
+}
+
+function fillSettings(settings)
+{
+	S.settings = JSON.stringify(settings);
+	SETTINGS.forEach(name =>
+	{
+		if($(name).type === "checkbox") $(name).checked = settings[name] === true;
+		else $(name).value = text(settings[name]);
+	});
+	$("brightnessnow").textContent = $("brightness").value;
+	$("nightnow").textContent = $("night").value;
+}
+
+async function setting(name)
+{
+	const input = $(name);
+	const request = {};
+	let r = null;
+
+	request[name] = input.type === "checkbox" ? input.checked : Number(input.value);
+	// An emptied field is no 0
+	if(input.value !== "") r = await api("POST", "/api/settings", JSON.stringify(request));
+	if(r && r.status !== 200) refused("smsg", r, true, "Helligkeit 5 bis 100, Bildschirm aus 0 bis 3600 Sekunden, ganze Zahlen.");
+	else tell("smsg");
+	fillSettings(r && r.status === 200 ? r.body : JSON.parse(S.settings || "{}"));
+}
+
+async function reboot()
+{
+	let r;
+
+	if(!confirm("Das Display neu starten? Vorschau und Web-Zugriff enden damit.")) return;
+	r = await api("POST", "/api/reboot");
+	if(r.status === 200) tell("rmsg", "Das Display startet neu. Die Seite findet es von selbst wieder; der Web-Zugriff ist danach neu freizugeben.", "ok");
+	else refused("rmsg", r, true);
+}
+
+async function factory()
+{
+	let r;
+
+	if(!confirm("WLAN, Kopplung mit dem Adapter und Einstellungen löschen? Das Display ist danach nur über seinen eigenen Hotspot zu erreichen.")) return;
+	r = await api("POST", "/api/reset");
+	if(r.status !== 202)
+	{
+		refused("rmsg", r, true);
+		return;
+	}
+	knob(r.body, "Werkseinstellungen", state =>
+	{
+		if(state !== "refused" && state !== "expired") tell("rmsg", "Nach dem Druck auf den Knopf setzt sich das Display zurück, startet neu und öffnet seinen eigenen Hotspot. In diesem Netz erreicht die Seite es nicht mehr.", "note");
+	});
+}
+
+// The first bytes of a firmware file as the display will judge them (components/core/ota_check.h): magic
+// 0xE9, chip id at 12, the description at 32 with the version at +16 and the project name at +48
+function image(head)
+{
+	const field = at =>
+	{
+		let end = at;
+
+		while(end < at + 32 && head[end] !== 0) end++;
+		return end < at + 32 ? new TextDecoder().decode(head.subarray(at, end)) : null;
+	};
+	const version = head.length >= 112 ? field(48) : null;
+	const project = head.length >= 112 ? field(80) : null;
+
+	if(head.length < 112) return {refusal: "too_short"};
+	if(head[0] !== 0xE9) return {refusal: "no_image"};
+	if((head[12] | head[13] << 8) !== 9) return {refusal: "wrong_chip"};
+	if(head[32] !== 0x32 || head[33] !== 0x54 || head[34] !== 0xCD || head[35] !== 0xAB || version === null || project === null) return {refusal: "no_description"};
+	return {refusal: project === "wican-display" ? "" : "wrong_project", project: project, version: version};
+}
+
+function picked()
+{
+	const file = $("fw").files[0];
+	const reader = new FileReader();
+
+	S.file = null;
+	$("fwinfo").textContent = "";
+	tell("fmsg");
+	uploadGate();
+	if(!file) return;
+
+	reader.addEventListener("error", () => tell("fmsg", "Die Datei lässt sich nicht lesen.", "bad"));
+	reader.addEventListener("load", () =>
+	{
+		const seen = image(new Uint8Array(reader.result));
+
+		$("fwinfo").textContent = "Datei: " + file.name + ", " + file.size + " Bytes" + (seen.project !== undefined ? " · Projekt: " + seen.project + " · Version: " + seen.version : "") + ".";
+		if(seen.refusal) tell("fmsg", REFUSALS[seen.refusal] + " Die Datei wird nicht gesendet.", "bad");
+		else
+		{
+			S.file = file;
+			S.version = seen.version;
+		}
+		uploadGate();
+	});
+	reader.readAsArrayBuffer(file.slice(0, 112));
+}
+
+// The upload needs more than the release: a file the page has looked at, and a firmware that is confirmed
+function uploadGate()
+{
+	$("fwsend").dataset.why = S.sending ? "Die Übertragung läuft" : !S.file ? "erst eine Firmware-Datei des Displays wählen"
+		: part(S, "info").update_pending === true ? "erst am Display „Update in Ordnung?“ bestätigen" : "";
+	gate();
+}
+
+async function upload()
+{
+	let r;
+
+	$("fwbar").hidden = false;
+	$("fwbar").value = 0;
+	tell("fmsg", "Die Firmware wird übertragen. Das Display nimmt solange nichts anderes an.", "note");
+	r = api("POST", "/api/ota", S.file, event =>
+	{
+		if(event.lengthComputable) $("fwbar").value = Math.floor(event.loaded * 100 / event.total);
+	});
+	uploadGate();
+	bar();
+	r = await r;
+	S.sending = null;
+	$("fwbar").hidden = true;
+	uploadGate();
+	bar();
+
+	if(r.status === 202)
+	{
+		tell("fmsg", "Die Firmware ist beim Display.", "ok");
+		knob(r.body, "Firmware " + S.version + " installieren", state =>
+		{
+			if(state === "refused" || state === "expired") tell("fmsg", "Die Firmware wurde nicht installiert; die laufende ist unverändert.", "note");
+			else tell("fmsg", "Nach dem Druck auf den Knopf startet das Display mit der neuen Firmware. Dort dann „Update in Ordnung?“ bestätigen.", "note");
+		});
+	}
+	else if(r.status === 0) tell("fmsg", "Die Verbindung ist beim Übertragen abgerissen. Die laufende Firmware ist unverändert.", "bad");
+	else if(r.status === 422) tell("fmsg", "Das Display lehnt die Datei ab, nichts wurde gelöscht. " + said(r), "bad");
+	else if(r.status === 413) tell("fmsg", "Die Datei ist leer oder größer als der Platz des Displays für seine Firmware.", "bad");
+	else if(r.body.error === "locked")
+	{
+		tell("fmsg", "Für ein Update muss der Web-Zugriff noch 5 Minuten frei sein: am Display unter Menü > Web-Zugriff neu freigeben.", "note");
+		refresh();
+	}
+	else refused("fmsg", r, true);
+}
+
+// ---- The start ----
+
+// What a button does, by its id. Without views there is nothing to send or to add to.
+const CLICKS = {
+	reload: () => location.reload(),
+	askclose: () => { $("ask").hidden = true; },
+	apply: () => S.layout && send("apply"),
+	save: () => S.layout && send("save"),
+	discard: discard,
+	export: () => S.layout && exportFile(),
+	reset: resetLayout,
+	newpage: () =>
+	{
+		if(!S.layout) return;
+		S.layout.pages.push({items: []});
+		S.page = S.layout.pages.length - 1;
+		S.item = null;
+		draw();
+		changed();
+	},
+	wload: loadWifi,
+	wstore: storeWifi,
+	dload: loadLists,
+	dcopy: copyLists,
+	reboot: reboot,
+	factory: factory,
+	fwsend: () => S.file && upload()
+};
+
+all("nav button").forEach(node => node.addEventListener("click", () => show(node.dataset.tab)));
+Object.keys(CLICKS).forEach(id => listen(id, "click", CLICKS[id]));
+
+edits($("lname"), "input", () => setMember(S.layout, "name", $("lname").value));
+listen("import", "change", importFile);
+listen("passshow", "change", () => { $("pass").type = $("passshow").checked ? "text" : "password"; });
+
+SETTINGS.forEach(name => listen(name, "change", () => setting(name)));
+listen("brightness", "input", () => { $("brightnessnow").textContent = $("brightness").value; });
+listen("night", "input", () => { $("nightnow").textContent = $("night").value; });
+listen("fw", "change", picked);
+
+// Somebody who leaves with changes that are nowhere but in this page is asked first
+window.addEventListener("beforeunload", event =>
+{
+	if(S.layout && layoutText(S.layout) !== S.base)
+	{
+		event.preventDefault();
+		event.returnValue = "";
+	}
+});
+
+setInterval(() =>
+{
+	bar();
+	gate();
+}, 1000);
+uploadGate();
+poll();
+</script>
+</body>
+</html>

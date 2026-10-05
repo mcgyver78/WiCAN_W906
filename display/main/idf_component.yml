@@ -1,0 +1,6 @@
+# Managed components of the platform, each at an exact version (the build must not change by itself).
+dependencies:
+  # Attaches LVGL to the RGB panel and runs its timer task. 2.9.0 asks for lvgl >=8,<10 and idf >=5.2;
+  # LVGL itself is pinned in components/ui/idf_component.yml
+  espressif/esp_lvgl_port: "==2.9.0"
+  espressif/mdns: "==1.13.1"    # net.c: the name wican-display.local and the query for _wican._tcp; asks for idf >=5.0

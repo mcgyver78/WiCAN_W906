@@ -1,6 +1,14 @@
-# Managed components of the platform, each at an exact version (the build must not change by itself).
+# Managed components of the display, each at an exact version (the build must not change by itself).
+# All of them are named HERE, also the one components/ui needs: with LVGL pinned in a manifest of its own next
+# to esp_lvgl_port (which asks for lvgl >=8,<10) the component manager solved LVGL twice and replaced 9.5.0.
 dependencies:
-  # Attaches LVGL to the RGB panel and runs its timer task. 2.9.0 asks for lvgl >=8,<10 and idf >=5.2;
-  # LVGL itself is pinned in components/ui/idf_component.yml
+  # The drawing code (components/ui) and the headless renderer (display/host, which reads the version from
+  # this line) are written against exactly this version. 9.6.0 would pull in freetype, libjpeg-turbo, libpng
+  # and lz4.
+  lvgl/lvgl:
+    version: "==9.5.0"
+    public: true
+  # Attaches LVGL to the RGB panel and runs its timer task. 2.9.0 asks for lvgl >=8,<10 and idf >=5.2
   espressif/esp_lvgl_port: "==2.9.0"
-  espressif/mdns: "==1.13.1"    # net.c: the name wican-display.local and the query for _wican._tcp; asks for idf >=5.0
+  # net.c: the name wican-display.local and the query for _wican._tcp; asks for idf >=5.0
+  espressif/mdns: "==1.13.1"

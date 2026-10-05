@@ -61,9 +61,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: LVGL at the version of the firmware
-        # The one version is named in display/components/ui/idf_component.yml
+        # The one version is named in display/main/idf_component.yml
         run: |
-          version=$(sed -n 's/^ *version: "==\(.*\)"$/\1/p' display/components/ui/idf_component.yml)
+          version=$(sed -n 's/^ *version: "==\(.*\)"$/\1/p' display/main/idf_component.yml)
           test -n "$version"
           git clone --depth 1 --branch "v$version" https://github.com/lvgl/lvgl.git "$RUNNER_TEMP/lvgl"
       - name: Render and check the screens

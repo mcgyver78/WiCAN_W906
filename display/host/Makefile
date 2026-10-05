@@ -1,7 +1,7 @@
 # The screens of the display, drawn on a PC without a display and checked (render.c).
 #
 # LVGL comes from a checkout of its repository at the version the firmware is built with
-# (display/components/ui/idf_component.yml):
+# (display/main/idf_component.yml):
 #
 #   git clone --depth 1 --branch v9.5.0 https://github.com/lvgl/lvgl.git
 #   make LVGL=<that directory>      builds LVGL and the renderer, runs it, leaves the pictures in build/out/

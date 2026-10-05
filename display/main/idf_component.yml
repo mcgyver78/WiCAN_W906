@@ -4,15 +4,11 @@ dependencies:
   # The drawing code (components/ui) and the headless renderer (display/host, which reads the version from
   # this line) are written against exactly this version. 9.6.0 would pull in freetype, libjpeg-turbo, libpng
   # and lz4.
-  # registry_url is spelt out because esp_lvgl_port names it for ITS lvgl dependency (">=8,<10"): without the
-  # same words here the component manager took the two for components of different registries, solved LVGL a
-  # second time, fetched 9.6.0~1 over 9.5.0 and the font file the drawing code embeds was gone (seen in the
-  # CI on 2026-10-05).
+  # NOT here: espressif/esp_lvgl_port. With it the component manager solved LVGL a second time (the port
+  # names the registry of its lvgl dependency, ">=8,<10") and fetched 9.6.0~1 over 9.5.0: the font file the
+  # drawing code embeds was gone (CI, 2026-10-05). main/screen.c attaches LVGL to the panel itself.
   lvgl/lvgl:
     version: "==9.5.0"
     public: true
-    registry_url: "https://components.espressif.com"
-  # Attaches LVGL to the RGB panel and runs its timer task. 2.9.0 asks for lvgl >=8,<10 and idf >=5.2
-  espressif/esp_lvgl_port: "==2.9.0"
   # net.c: the name wican-display.local and the query for _wican._tcp; asks for idf >=5.0
   espressif/mdns: "==1.13.1"

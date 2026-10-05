@@ -11,10 +11,15 @@
 #include "ui_layout.h"
 
 /*
- * Every text has its place, given by the kind of the scene and by nothing in the text itself, so that
- * nothing moves when a value changes. A text that is too wide for its place gets the next smaller font,
- * and when the smallest is still too wide it is cut and ends with an ellipsis. How wide a place is follows
- * from the circle: a line near the top or the bottom is shorter than one in the middle.
+ * Every text has its place, given by the kind of the scene and not by the text itself. A text that is too
+ * wide for its place gets the next smaller font, and when the smallest is still too wide it is cut and ends
+ * with an ellipsis. How wide a place is follows from the circle: a line near the top or the bottom is
+ * shorter than one in the middle.
+ *
+ * What changes while somebody looks at it must not change its size on the way: the font of a value is
+ * chosen for a number of four digits, whatever is shown (wide()), and all rows to choose from have one
+ * font. What still moves: a value and its unit are centred together, so both shift by half a digit when
+ * the number gets a digit more, and a number of five digits and more may need a smaller font.
  */
 
 #define CX                  240
@@ -50,12 +55,21 @@
 #define MORE_BELOW          "▼"
 
 // Value pages
-#define VALUES_TITLE_TOP    62      // low enough to stand inside the gauge of a page with one value
+#define VALUES_TITLE_TOP    56
+#define GAUGE_TITLE_TOP     62      // inside the gauge of a page with one value the top is narrow
+#define TITLE_GAP           15      // below the line of the title: the capitals of the first label begin 25 px
+                                    // below the line the title stands on, twice as far as a label is from
+                                    // its own value
+#define LABEL_GAP           8       // from the line a label stands on down to the digits of its value, and
+                                    // an eighth of the height of the digits on top: 12 px at 48, 18 at 120
+#define DIGITS              "0000"  // the number every value has room for, see wide()
 #define NOTE_BOTTOM         426     // the dots of the pages run along the edge below it
-#define NOTE_ROWS           3
+#define NOTE_ROWS           3       // scene.h speaks of two; "WiCAN-Firmware ohne Display-API – nur
+                                    // Live-Werte" needs three down here, where the circle is narrow
 #define VALUES_BOTTOM       430
 #define BAR_HEIGHT          8
-#define BAR_GAP             6
+#define BAR_BELOW           6       // with the room between two rows more than above a bar: it belongs to
+                                    // the value over it
 #define BAR_WIDTH           200
 #define CELL_GAP            16
 #define GRID_ROWS           3
@@ -81,6 +95,7 @@
 // Screens of text
 #define TITLE_TOP           62
 #define ARC_TITLE_TOP       96      // inside an arc the top is narrow: "Fehlerspeicher löschen" has to fit
+#define PROGRESS_FONT       UI_FONT_32  // the lines below the number of a request under way
 #define CHOICE_TITLE_TOP    76
 #define MIDDLE_BOTTOM       418
 #define LINE_GAP            8       // between two lines of the scene, so that it is seen where one ends
@@ -319,10 +334,9 @@ static void put_ring(const ring_t *ring)
 }
 
 // One line at the top of a screen, empty or not: it always takes the first text of the screen
-static void put_title(const char *field, int top, uint32_t color)
+static void put_title(const char *field, int top, ui_font_t font, uint32_t color)
 {
 	char text[UI_TEXT_SIZE];
-	ui_font_t font = UI_FONT_28;
 
 	text_of(text, field, SCENE_TEXT_SIZE);
 	if(ui_font_width(font, text) > 2 * room(top, top + ui_font_height(font))) font = UI_FONT_24;
@@ -364,6 +378,54 @@ static int put_note(const char *field, int edge, bool from_bottom, int max_rows)
  * Value pages
  */
 
+// From the top of a line down to the top of its digits and capital letters
+static int lead(ui_font_t font)
+{
+	return ui_font_ascent(font) - ui_font_cap(font);
+}
+
+// From the line a number stands on down to where something else may begin: its comma reaches half way to
+// the bottom of the line, and a little air
+static int below(ui_font_t font)
+{
+	return (ui_font_height(font) - ui_font_ascent(font)) / 2 + 4;
+}
+
+// The width a value is given when the font for its place is chosen: at least that of four digits, so that
+// the font follows from the place and the unit and not from the number shown at the moment. (The digits
+// of the font all have the same width.) 999 and 1000 hPa have one size this way; 99999 km do not grow.
+static int wide(ui_font_t font, const char *value)
+{
+	int width = ui_font_width(font, value), digits = ui_font_width(font, DIGITS);
+
+	return width > digits ? width : digits;
+}
+
+// How a label and the value below it stand, from the top of the label down
+typedef struct
+{
+	int line;       // the line the value and its unit stand on
+	int under;      // where a bar or a unit below the value begins
+	int height;
+} cell_t;
+
+// tight: the value is a number. Digits leave the top of their line empty, and the larger the font the more,
+// so the label is not placed by the height of the lines but by what is seen: LABEL_GAP below the line it
+// stands on the digits begin. The text of a state widget may have an accent up there and letters that
+// reach below the line, and gets both lines whole.
+static cell_t cell_of(ui_font_t label_font, ui_font_t value_font, bool tight, bool bar)
+{
+	int descent = ui_font_height(value_font) - ui_font_ascent(value_font);
+	int digits = ui_font_cap(value_font);
+	cell_t cell;
+
+	cell.line = tight ? ui_font_ascent(label_font) + LABEL_GAP + digits / 8 + digits :
+	            ui_font_height(label_font) + ui_font_ascent(value_font);
+	cell.under = cell.line + (tight ? below(value_font) : descent);
+	cell.height = bar ? cell.under + BAR_HEIGHT + BAR_BELOW : cell.line + descent;
+	return cell;
+}
+
 // The bar of a bar widget: how far the value lies between its limits
 static void put_bar(const scene_item_t *item, int centre, int top, int width)
 {
@@ -379,87 +441,109 @@ static void put_single(const scene_item_t *item, int top, int bottom)
 {
 	char label[UI_TEXT_SIZE], value[UI_TEXT_SIZE], unit[UI_TEXT_SIZE];
 	bool bar = item->widget == LAYOUT_WIDGET_BAR;
-	int label_height = ui_font_height(UI_FONT_28), unit_height = ui_font_height(UI_FONT_36);
-	int rest, y, space;
+	bool tight = item->widget != LAYOUT_WIDGET_STATE;
+	int unit_top = 0, bar_top = 0, y = top, value_top = top, space;
 	ui_font_t font, small;
 
 	text_of(label, item->label, sizeof(item->label));
 	text_of(value, item->text, sizeof(item->text));
 	text_of(unit, item->unit, sizeof(item->unit));
-	rest = label_height + (unit[0] != '\0' ? unit_height : 0) + (bar ? BAR_GAP + BAR_HEIGHT : 0);
 
-	// The largest font with which the value fits
-	for(font = UI_FONT_120; font < UI_FONT_24; font++)
+	// The largest font with which the value fits, and a number of four digits in its place
+	for(font = UI_FONT_120;; font++)
 	{
-		int height = rest + ui_font_height(font);
+		// The unit stands as close below the value as the value below its label, the bar below both
+		cell_t cell = cell_of(UI_FONT_28, font, tight, false);
+		int height = cell.height;
 
-		if(height > bottom - top) continue;
-		y = centred(top, bottom, height) + label_height;
-		if(ui_font_width(font, value) <= 2 * room(y, y + ui_font_height(font))) break;
+		unit_top = cell.under - lead(UI_FONT_36);
+		bar_top = cell.under;
+		if(unit[0] != '\0')
+		{
+			height = unit_top + ui_font_height(UI_FONT_36);
+			bar_top = unit_top + ui_font_ascent(UI_FONT_36) + below(UI_FONT_36);
+		}
+		if(bar) height = bar_top + BAR_HEIGHT;
+
+		y = centred(top, bottom, height);
+		value_top = y + cell.line - ui_font_ascent(font);
+		if(font == UI_FONT_24) break;
+		if(height <= bottom - top && wide(font, value) <= 2 * room(value_top, value_top + ui_font_height(font))) break;
 	}
-	y = centred(top, bottom, rest + ui_font_height(font));
 
 	small = UI_FONT_28;
-	space = 2 * room(y, y + label_height);
+	space = 2 * room(y, y + ui_font_height(UI_FONT_28));
 	if(ui_font_width(small, label) > space) small = UI_FONT_24;
 	fit(label, small, space);
-	put_centred(UI_LAYER_SCREEN, label, small, y + label_height - ui_font_height(small), COLOR_LABEL);
-	y += label_height;
+	put_centred(UI_LAYER_SCREEN, label, small, y + ui_font_ascent(UI_FONT_28) - ui_font_ascent(small), COLOR_LABEL);
 
-	fit(value, font, 2 * room(y, y + ui_font_height(font)));
-	put_centred(UI_LAYER_SCREEN, value, font, y, tone_color(item->tone));
-	y += ui_font_height(font);
+	fit(value, font, 2 * room(value_top, value_top + ui_font_height(font)));
+	put_centred(UI_LAYER_SCREEN, value, font, value_top, tone_color(item->tone));
 
-	space = 2 * room(y, y + unit_height);
+	space = 2 * room(y + unit_top, y + unit_top + ui_font_height(UI_FONT_36));
 	for(small = UI_FONT_36; small < UI_FONT_24 && ui_font_width(small, unit) > space; small++);
 	fit(unit, small, space);
-	put_centred(UI_LAYER_SCREEN, unit, small, y, COLOR_LABEL);
-	if(unit[0] != '\0') y += unit_height;
+	put_centred(UI_LAYER_SCREEN, unit, small, y + unit_top + ui_font_ascent(UI_FONT_36) - ui_font_ascent(small),
+	            COLOR_LABEL);
 
-	if(bar) put_bar(item, CX, y + BAR_GAP, BAR_WIDTH);
+	if(bar) put_bar(item, CX, y + bar_top, BAR_WIDTH);
+}
+
+// The font for a value in a cell `width` wide: the largest from `first` down with which a number of four
+// digits fits in front of the unit
+static ui_font_t cell_font(const scene_item_t *item, int width, ui_font_t first, ui_font_t unit_font)
+{
+	char value[UI_TEXT_SIZE], unit[UI_TEXT_SIZE];
+	int unit_width;
+	ui_font_t font;
+
+	text_of(value, item->text, sizeof(item->text));
+	text_of(unit, item->unit, sizeof(item->unit));
+	unit_width = unit[0] != '\0' ? ui_font_height(unit_font) / 4 + ui_font_width(unit_font, unit) : 0;
+	for(font = first; font < UI_FONT_24 && wide(font, value) + unit_width > width; font++);
+	return font;
 }
 
 // One of several values of a page: the label, below it the value with its unit behind it, and the bar of
-// an arc or bar widget (an arc has no room around one value among several)
-static void put_cell(const scene_item_t *item, int centre, int top, int width, ui_font_t label_font,
-                     ui_font_t value_font, ui_font_t unit_font)
+// an arc or bar widget (an arc has no room around one value among several). `cell` and the fonts are
+// those of the row.
+static void put_cell(const scene_item_t *item, int centre, int top, int width, const cell_t *cell,
+                     ui_font_t label_font, ui_font_t font, ui_font_t unit_font)
 {
 	char label[UI_TEXT_SIZE], value[UI_TEXT_SIZE], unit[UI_TEXT_SIZE];
 	int gap = ui_font_height(unit_font) / 4;
-	int value_width, unit_width, left, y;
-	ui_font_t font = label_font;
+	int value_width, unit_width, left;
+	ui_font_t small = label_font;
 
 	text_of(label, item->label, sizeof(item->label));
 	text_of(value, item->text, sizeof(item->text));
 	text_of(unit, item->unit, sizeof(item->unit));
 
-	if(ui_font_width(font, label) > width) font = UI_FONT_24;
-	fit(label, font, width);
-	ui_put_text(UI_LAYER_SCREEN, label, font, centre - ui_font_width(font, label) / 2,
-	            top + ui_font_height(label_font) - ui_font_height(font), false, COLOR_LABEL);
+	if(ui_font_width(small, label) > width) small = UI_FONT_24;
+	fit(label, small, width);
+	ui_put_text(UI_LAYER_SCREEN, label, small, centre - ui_font_width(small, label) / 2,
+	            top + ui_font_ascent(label_font) - ui_font_ascent(small), false, COLOR_LABEL);
 
 	unit_width = unit[0] != '\0' ? gap + ui_font_width(unit_font, unit) : 0;
-	for(font = value_font; font < UI_FONT_24 && ui_font_width(font, value) + unit_width > width; font++);
 	if(ui_font_width(font, value) + unit_width > width)
 	{
-		// Not even the smallest font: the unit gives way before a digit of the value does
+		// Too wide in the smallest font: the unit gives way before a digit of the value does
 		fit(value, font, width);
 		fit(unit, unit_font, width - ui_font_width(font, value) - gap);
 		unit_width = unit[0] != '\0' ? gap + ui_font_width(unit_font, unit) : 0;
 	}
 	value_width = ui_font_width(font, value);
 
-	// Both stand on the same line
+	// Both stand on the line of the row
 	left = centre - (value_width + unit_width) / 2;
-	y = top + ui_font_height(label_font) + (ui_font_height(value_font) - ui_font_height(font)) / 2;
-	ui_put_text(UI_LAYER_SCREEN, value, font, left, y, false, tone_color(item->tone));
-	ui_put_text(UI_LAYER_SCREEN, unit, unit_font, left + value_width + gap,
-	            y + ui_font_ascent(font) - ui_font_ascent(unit_font), false, COLOR_LABEL);
+	ui_put_text(UI_LAYER_SCREEN, value, font, left, top + cell->line - ui_font_ascent(font), false,
+	            tone_color(item->tone));
+	ui_put_text(UI_LAYER_SCREEN, unit, unit_font, left + value_width + gap, top + cell->line - ui_font_ascent(unit_font),
+	            false, COLOR_LABEL);
 
 	if(item->widget == LAYOUT_WIDGET_ARC || item->widget == LAYOUT_WIDGET_BAR)
 	{
-		put_bar(item, centre, top + ui_font_height(label_font) + ui_font_height(value_font) + BAR_GAP,
-		        width < BAR_WIDTH ? width : BAR_WIDTH);
+		put_bar(item, centre, top + cell->under, width < BAR_WIDTH ? width : BAR_WIDTH);
 	}
 }
 
@@ -482,18 +566,21 @@ static void put_grid(const scene_item_t *items, int count, int top, int bottom)
 		{UI_FONT_28, UI_FONT_24, UI_FONT_24},
 	};
 	const int sets = (int)(sizeof(fonts) / sizeof(fonts[0]));
-	bool large[GRID_ROWS] = {false}, bars[GRID_ROWS] = {false};
-	int heights[GRID_ROWS] = {0};
+	bool large[GRID_ROWS] = {false}, bars[GRID_ROWS] = {false}, tight[GRID_ROWS] = {false};
+	cell_t row_cells[GRID_ROWS] = {{0, 0, 0}};
 	int rows = 0, first = 0, set, total, y;
 
 	while(rows < GRID_ROWS && cells[count][rows] > 0)
 	{
 		large[rows] = cells[count][rows] == 1 && (rows == 0 || count == 2);
+		// The values of a row stand on one line, so one text among them decides for the row
+		tight[rows] = true;
 		for(int i = 0; i < cells[count][rows]; i++)
 		{
 			layout_widget_t widget = items[first + i].widget;
 
 			if(widget == LAYOUT_WIDGET_ARC || widget == LAYOUT_WIDGET_BAR) bars[rows] = true;
+			if(widget == LAYOUT_WIDGET_STATE) tight[rows] = false;
 		}
 		first += cells[count][rows];
 		rows++;
@@ -504,10 +591,9 @@ static void put_grid(const scene_item_t *items, int count, int top, int bottom)
 		total = (rows - 1) * GRID_GAP;
 		for(int row = 0; row < rows; row++)
 		{
-			heights[row] = ui_font_height(large[row] ? fonts[set][2] : UI_FONT_24) +
-			               ui_font_height(large[row] ? fonts[set][0] : fonts[set][1]) +
-			               (bars[row] ? BAR_GAP + BAR_HEIGHT : 0);
-			total += heights[row];
+			row_cells[row] = cell_of(large[row] ? fonts[set][2] : UI_FONT_24, large[row] ? fonts[set][0] : fonts[set][1],
+			                         tight[row], bars[row]);
+			total += row_cells[row].height;
 		}
 		if(total <= bottom - top || set == sets - 1) break;
 	}
@@ -517,17 +603,32 @@ static void put_grid(const scene_item_t *items, int count, int top, int bottom)
 	for(int row = 0; row < rows; row++)
 	{
 		int in_row = cells[count][row];
-		int width = (2 * room(y, y + heights[row]) - (in_row - 1) * CELL_GAP) / in_row;
+		int width = (2 * room(y, y + row_cells[row].height) - (in_row - 1) * CELL_GAP) / in_row;
+		ui_font_t label_font = large[row] ? fonts[set][2] : UI_FONT_24;
 		ui_font_t value_font = large[row] ? fonts[set][0] : fonts[set][1];
+		ui_font_t unit_font = value_font == UI_FONT_80 ? UI_FONT_28 : UI_FONT_24;
+		ui_font_t font = value_font;
+		cell_t cell;
 
+		// One font for the values of a row: the one its narrowest fit needs. Two sizes side by side
+		// would look like a mistake.
 		for(int i = 0; i < in_row; i++)
 		{
-			put_cell(&items[first + i], CX + (2 * i - (in_row - 1)) * (width + CELL_GAP) / 2, y, width,
-			         large[row] ? fonts[set][2] : UI_FONT_24, value_font,
-			         value_font == UI_FONT_80 ? UI_FONT_28 : UI_FONT_24);
+			ui_font_t needed = cell_font(&items[first + i], width, value_font, unit_font);
+
+			if(needed > font) font = needed;
+		}
+		// The row keeps its height. A smaller font stands where its own size puts it: as close to the
+		// labels as any value, the room it does not need below it. A unit is never larger than its value.
+		cell = cell_of(label_font, font, tight[row], bars[row]);
+		if(unit_font < font) unit_font = font;
+		for(int i = 0; i < in_row; i++)
+		{
+			put_cell(&items[first + i], CX + (2 * i - (in_row - 1)) * (width + CELL_GAP) / 2, y, width, &cell, label_font,
+			         font, unit_font);
 		}
 		first += in_row;
-		y += heights[row] + GRID_GAP;
+		y += row_cells[row].height + GRID_GAP;
 	}
 }
 
@@ -555,13 +656,16 @@ static void put_values(const scene_t *scene)
 {
 	int count = within(scene->item_count, 0, LAYOUT_ITEMS_MAX);
 	bool gauge = count == 1 && scene->items[0].widget == LAYOUT_WIDGET_ARC;
-	int top = VALUES_TITLE_TOP + ui_font_height(UI_FONT_28) + 4;
+	int title_top = gauge ? GAUGE_TITLE_TOP : VALUES_TITLE_TOP;
+	int top = title_top + ui_font_height(UI_FONT_24) + TITLE_GAP;
 	int bottom = VALUES_BOTTOM;
 
 	shape = gauge ? SHAPE_GAUGE : SHAPE_OPEN;
 	if(gauge) put_gauge(scene->items[0].permille, tone_color(scene->items[0].tone));
 
-	put_title(scene->title, VALUES_TITLE_TOP, COLOR_LABEL);
+	// The title names the page, not a value: smaller than a label, and further from the first label than
+	// that is from its value, so that the two are not read as one block
+	put_title(scene->title, title_top, UI_FONT_24, COLOR_LABEL);
 	if(scene->note[0] != '\0') bottom = put_note(scene->note, NOTE_BOTTOM, true, NOTE_ROWS) - 4;
 
 	if(count == 1) put_single(&scene->items[0], top, bottom);
@@ -574,6 +678,12 @@ static void put_values(const scene_t *scene)
 
 // One row of a list. All rows have the same place between `left` and `left + width`, wherever they stand:
 // a row does not change its looks while the list moves under the focus.
+//
+// What can be chosen has one font, 28 px: the largest with which every text of the core fits the 336 px of a
+// row together with its detail ("Drehrichtung" with "umgekehrt" 334 px, "Freigabe" with "an – noch 10:00"
+// 331 px, "Liste vor dem Löschen" 318 px; in 32 px they are 358, 348 and 363 px). With the largest font
+// that fits each row, as it was, one row of a menu was smaller than the others, and "Drehrichtung" changed
+// its size when it was pressed. 32 px for all need shorter texts in scene.c.
 static void put_row(const scene_row_t *source, int left, int top, int width, int height)
 {
 	char text[UI_TEXT_SIZE], detail[UI_TEXT_SIZE];
@@ -587,7 +697,7 @@ static void put_row(const scene_row_t *source, int left, int top, int width, int
 	int detail_width, behind, y;
 	bool one;
 	uint32_t ink = source->enabled ? COLOR_WHITE : COLOR_DIM, pale = COLOR_LABEL;
-	ui_font_t first = head ? UI_FONT_36 : source->kind == SCENE_ROW_ACTION ? UI_FONT_32 : UI_FONT_28, font;
+	ui_font_t first = head ? UI_FONT_36 : UI_FONT_28, font;
 
 	// The focus: a white bar with dark text on it
 	if(source->focus)
@@ -654,34 +764,64 @@ static void put_list(const scene_t *scene)
 	int rows = within(scene->row_count, 0, SCENE_ROWS_MAX);
 	int lines = within(scene->line_count, 0, SCENE_LINES_MAX);
 	int line_height = ui_font_height(UI_FONT_24);
-	int lines_height = lines * line_height + (lines > 0 && rows > 0 ? 4 : 0);
-	int pitch = ROW_HEIGHT;
-	int half, y;
+	int taken[SCENE_LINES_MAX] = {0};   // rows of text each line gets: one, or two for one that is too wide
+	int band = LIST_BOTTOM - LIST_TOP;
+	int lines_height = 0, pitch = ROW_HEIGHT, y = LIST_TOP, half;
+	bool grown;
 
 	shape = SHAPE_OPEN;
 	half = room(LIST_TOP, LIST_BOTTOM);
 
-	put_title(scene->title, LIST_TITLE_TOP, COLOR_LABEL);
+	put_title(scene->title, LIST_TITLE_TOP, UI_FONT_28, COLOR_LABEL);
 	put_centred(UI_LAYER_SCREEN, scene->first > 0 ? MORE_ABOVE : "", UI_FONT_24, HINT_ABOVE_TOP, COLOR_LABEL);
 	put_centred(UI_LAYER_SCREEN, scene->first + rows < scene->total ? MORE_BELOW : "", UI_FONT_24, HINT_BELOW_TOP,
 	            COLOR_LABEL);
 	if(scene->note[0] != '\0') put_note(scene->note, LIST_BOTTOM + 3, false, LIST_NOTE_ROWS);
 
-	// More lines and rows than the screen has room for: the rows become lower
-	if(rows > 0 && lines_height + rows * pitch > LIST_BOTTOM - LIST_TOP)
+	// Where the lines stand depends on how many rows of text they take, and how much a row of text holds on
+	// where it stands. So every line begins with one row, and one that is too wide where it comes to stand
+	// gets a second ("Letzter Auftrag fehlgeschlagen" above the four rows of the fault memory), as long as
+	// that leaves the rows of the list the height of a line. Then all is placed again.
+	for(int i = 0; i < lines; i++) taken[i] = 1;
+	do
 	{
-		pitch = (LIST_BOTTOM - LIST_TOP - lines_height) / rows;
+		int count = 0, at;
+
+		for(int i = 0; i < lines; i++) count += taken[i];
+		lines_height = count * line_height + (lines > 0 && rows > 0 ? 4 : 0);
+
+		// More lines and rows than the screen has room for: the rows become lower
+		pitch = ROW_HEIGHT;
+		if(rows > 0 && lines_height + rows * pitch > band) pitch = (band - lines_height) / rows;
+		y = LIST_TOP + (band - lines_height - rows * pitch) / 2;
+
+		grown = false;
+		at = y;
+		for(int i = 0; i < lines; i++)
+		{
+			char text[UI_TEXT_SIZE];
+
+			text_of(text, scene->lines[i], sizeof(scene->lines[i]));
+			if(taken[i] == 1 && ui_font_width(UI_FONT_24, text) > 2 * room(at, at + line_height) &&
+			   band - lines_height - line_height >= rows * line_height)
+			{
+				taken[i] = 2;
+				grown = true;
+				break;
+			}
+			at += taken[i] * line_height;
+		}
 	}
-	y = LIST_TOP + (LIST_BOTTOM - LIST_TOP - lines_height - rows * pitch) / 2;
+	while(grown);
 
 	for(int i = 0; i < lines; i++)
 	{
 		char text[UI_TEXT_SIZE];
 
 		text_of(text, scene->lines[i], sizeof(scene->lines[i]));
-		fit(text, UI_FONT_24, 2 * room(y, y + line_height));
+		flow(text, UI_FONT_24, y, 0, taken[i], true);
 		put_centred(UI_LAYER_SCREEN, text, UI_FONT_24, y, COLOR_WHITE);
-		y += line_height;
+		y += taken[i] * line_height;
 	}
 	if(lines > 0 && rows > 0) y += 4;
 
@@ -826,22 +966,28 @@ static int options_top(const middle_t *middle, ui_font_t font, int rows, int top
 	return top + middle_height(middle, font, rows, false) - OPTION_HEIGHT;
 }
 
+// The big text of a progress or a level, in a place as high as its largest font
+static void put_big(const middle_t *middle, int top)
+{
+	char text[UI_TEXT_SIZE];
+	int big_height = ui_font_height(UI_FONT_80);
+	int space = 2 * room(top, top + big_height);
+	ui_font_t big;
+
+	text_of(text, middle->big, SCENE_SHORT_SIZE);
+	for(big = UI_FONT_80; big < UI_FONT_36 && ui_font_width(big, text) > space; big++);
+	fit(text, big, space);
+	put_centred(middle->layer, text, big, top + (big_height - ui_font_height(big)) / 2, COLOR_WHITE);
+}
+
 static void draw_middle(const middle_t *middle, ui_font_t font, int rows, bool stacked, bool cut)
 {
 	int top = centred(middle->top, middle->bottom, middle_height(middle, font, rows, stacked));
 
 	if(middle->big != NULL)
 	{
-		char text[UI_TEXT_SIZE];
-		int big_height = ui_font_height(UI_FONT_80);
-		int space = 2 * room(top, top + big_height);
-		ui_font_t big;
-
-		text_of(text, middle->big, SCENE_SHORT_SIZE);
-		for(big = UI_FONT_80; big < UI_FONT_36 && ui_font_width(big, text) > space; big++);
-		fit(text, big, space);
-		put_centred(middle->layer, text, big, top + (big_height - ui_font_height(big)) / 2, COLOR_WHITE);
-		top += big_height;
+		put_big(middle, top);
+		top += ui_font_height(UI_FONT_80);
 	}
 
 	put_lines(middle, font, top, rows, cut, true);
@@ -902,7 +1048,7 @@ static void put_frame(const scene_t *scene, int title_top, uint32_t title_color,
 	middle->top = title_top;
 	middle->bottom = MIDDLE_BOTTOM;
 
-	put_title(scene->title, title_top, title_color);
+	put_title(scene->title, title_top, UI_FONT_28, title_color);
 	if(scene->title[0] != '\0') middle->top = title_top + ui_font_height(UI_FONT_28) + 4;
 	if(scene->note[0] != '\0') middle->bottom = put_note(scene->note, NOTE_BOTTOM, true, NOTE_ROWS) - 6;
 }
@@ -917,14 +1063,47 @@ static void put_notice(const scene_t *scene)
 	put_middle(&middle);
 }
 
+// The lines of a progress from `top` on, each with the room of two rows. Returns false if one of them needs
+// more; only with `draw` anything is put.
+static bool put_slots(const middle_t *middle, int top, bool draw)
+{
+	int height = ui_font_height(PROGRESS_FONT);
+
+	for(int i = 0; i < middle->line_count; i++)
+	{
+		char text[UI_TEXT_SIZE];
+		int y = top + i * (2 * height + LINE_GAP);
+
+		text_of(text, middle->lines[i], SCENE_TEXT_SIZE);
+		if(flow(text, PROGRESS_FONT, y, 0, 2, false) == 0) return false;
+		if(draw) put_centred(middle->layer, text, PROGRESS_FONT, y, COLOR_WHITE);
+	}
+	return true;
+}
+
 static void put_progress_screen(const scene_t *scene)
 {
 	middle_t middle = {.big = scene->big, .lines = scene->lines,
 	                   .line_count = within(scene->line_count, 0, SCENE_LINES_MAX)};
+	int big_height = ui_font_height(UI_FONT_80);
+	int height = big_height + middle.line_count * (2 * ui_font_height(PROGRESS_FONT) + LINE_GAP) - LINE_GAP;
+	int top;
 
 	shape = SHAPE_ARC;
 	put_progress(UI_LAYER_SCREEN, ARC_RADIUS, ARC_WIDTH, scene->permille);
 	put_frame(scene, ARC_TITLE_TOP, COLOR_LABEL, &middle);
+
+	// While a request runs the name of the control unit changes every two seconds, and one name in two
+	// rows ("Collision Prevention Assist") must not change the font of all lines or move the line below
+	// it: every line has the room of two rows in one font. What does not fit that way is laid out like
+	// every other text.
+	top = centred(middle.top, middle.bottom, height);
+	if(middle.line_count > 0 && height <= middle.bottom - middle.top && put_slots(&middle, top + big_height, false))
+	{
+		put_big(&middle, top);
+		put_slots(&middle, top + big_height, true);
+		return;
+	}
 	put_middle(&middle);
 }
 

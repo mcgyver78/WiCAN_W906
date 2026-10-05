@@ -71,3 +71,9 @@ CONFIG_LV_LOG_PRINTF=y
 # Not the examples and demos that come with LVGL: hundreds of files nobody calls
 CONFIG_LV_BUILD_EXAMPLES=n
 CONFIG_LV_BUILD_DEMOS=n
+# A failed assertion of LVGL (memory that ran out, a pointer that is NULL) is to end in abort() and so in a
+# restart. Left to itself LVGL stands still in "while(1);": the task that met it turns for ever and keeps
+# the lock of LVGL, the picture stands, and nothing restarts the device. The Kconfig of LVGL 9.5.0 has a
+# symbol only for the header that declares the handler; the handler itself is a definition for the compiler,
+# set for the sources of LVGL in components/ui/CMakeLists.txt.
+CONFIG_LV_ASSERT_HANDLER_INCLUDE="stdlib.h"

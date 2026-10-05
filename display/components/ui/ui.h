@@ -24,24 +24,29 @@
  * The look, in short. Black ground, white values, grey labels; an old value and an action that is not
  * offered are darker grey; amber and red mean warning and alarm and are used for nothing else. The ring of
  * the scene is a band of 6 px at the edge. Whatever else is shown stays 8 px away from the edge.
- *   values    title at the top, the dots of the pages along the lower edge, the note above them. One value:
- *             label, value and unit below each other, an arc widget as a gauge around them, a bar widget as
- *             a bar below. Two: one above the other. Three to five: the first large, the others below it
- *             in rows of two. Six: three rows of two. Among several values the unit stands behind the
- *             value, and arc and bar widgets both get a bar.
- *   list      title, the lines of the scene, the rows, the note; a mark at the very top or bottom if there
- *             are more rows that way. The row in focus is a white bar with dark text. The detail of an
- *             action or a sub row stands at the right edge of its row; that of a line or a head row below
- *             its text, as it does wherever both do not fit on one line. A head row has a mark at its left
- *             edge, a sub row is indented.
+ *   values    title at the top, in the smallest font and set apart from the first label; the dots of the
+ *             pages along the lower edge, the note above them. One value: label, value and unit below each
+ *             other, an arc widget as a gauge around them, a bar widget as a bar below. Two: one above the
+ *             other. Three to five: the first large, the others below it in rows of two. Six: three rows
+ *             of two. Among several values the unit stands behind the value, and arc and bar widgets both
+ *             get a bar. A label stands close above its value, a bar close below it. The font of a value
+ *             is that of its place (for four digits and the unit), not of the number shown.
+ *   list      title, the lines of the scene (one that is too wide in two rows), the rows, the note; a mark
+ *             at the very top or bottom if there are more rows that way. The row in focus is a white bar
+ *             with dark text. All that can be chosen has one font. The detail of an action or a sub row
+ *             stands at the right edge of its row; that of a line or a head row below its text, as it does
+ *             wherever both do not fit on one line. A head row has a mark at its left edge, a sub row is
+ *             indented.
  *   notice, progress, choice, level
  *             title, note, and between them, centred: the big text, the lines (in as many rows as the circle
  *             makes of them), the two options. Progress and the hold of a choice are a ring that fills from
- *             the top, a level is a gauge. The option in focus is white with dark text.
+ *             the top, a level is a gauge. The option in focus is white with dark text. The lines of a
+ *             progress have fixed places of two rows each: the name of the control unit changes all the time.
  *   overlay   a dark panel over everything but the ring, with its lines; an upload with a ring that fills.
  * The dots of the pages are shown on values and notices, the kinds the value pages are made of.
  *
- * display/host/render.c draws every kind of screen on a PC and checks the result; the CI keeps the pictures.
+ * display/host/render.c draws every kind of screen and every scene in the fixtures of the core on a PC and
+ * checks the result; the CI keeps the pictures.
  */
 
 // Builds the objects on the active screen of the display, once: 53 boxes, arcs and labels that are never

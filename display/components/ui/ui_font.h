@@ -29,9 +29,9 @@ typedef enum
 	UI_FONT_120,    // the one value of a page
 	UI_FONT_80,     // the first value of a page, the big text of a progress or a level
 	UI_FONT_48,     // the other values
-	UI_FONT_36,
-	UI_FONT_32,     // rows of a list
-	UI_FONT_28,     // labels, titles
+	UI_FONT_36,     // the head of a list, lines of text
+	UI_FONT_32,     // the answers of a question, lines of text
+	UI_FONT_28,     // labels, titles, rows of a list
 	UI_FONT_24,     // the smallest that is read at arm's length: details, notes, what found no room larger
 	UI_FONT_COUNT,
 } ui_font_t;
@@ -49,6 +49,9 @@ int ui_font_height(ui_font_t font);
 
 // From the top of a line down to the line the letters stand on
 int ui_font_ascent(ui_font_t font);
+
+// Height of a digit and of a capital letter without an accent: what a number takes of its line
+int ui_font_cap(ui_font_t font);
 
 // Width of a text; of its widest line if it has line breaks
 int ui_font_width(ui_font_t font, const char *text);

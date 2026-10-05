@@ -15,7 +15,7 @@
  * firmware, line by line, so that the pictures made here are the ones the device draws: whoever changes
  * one of the two files changes the other. What neither names keeps the default of LVGL. The defaults of
  * lv_conf_internal.h (used here) and of Kconfig (used by the firmware) are the same for what ui.c uses,
- * with one exception that is put right below.
+ * with two exceptions that are put right below: how colours are mixed, and where a text may be broken.
  */
 
 // RGB565, as the panel is wired
@@ -23,6 +23,11 @@
 
 // The default of Kconfig for 16 bit; lv_conf_internal.h alone would take 0
 #define LV_COLOR_MIX_ROUND_OFS          128
+
+// The default of Kconfig; lv_conf_internal.h alone would break a text behind "]" as well. Without effect
+// as long as ui.c gives no label a width (LVGL then breaks nothing by itself), and the same on both sides
+// if it ever does.
+#define LV_TXT_BREAK_CHARS              " ,.;:-_)}"
 
 // The allocator of LVGL with a small pool of its own, and room for the 512 KB that are added after
 // lv_init(): by the firmware from the PSRAM, by render.c from an array
@@ -50,11 +55,9 @@
 #define LV_BUILD_EXAMPLES               0
 #define LV_BUILD_DEMOS                  0
 
-/*
- * Only here
- */
-
-// A failed assertion ends the run instead of hanging it
+// A failed assertion of LVGL (memory that ran out, a pointer that is NULL) ends the program: here the run
+// fails, the device restarts. Left to itself LVGL would stand still in a loop for ever. Kconfig has a
+// symbol for the header only, so the firmware gets the second line from components/ui/CMakeLists.txt.
 #define LV_ASSERT_HANDLER_INCLUDE       <stdlib.h>
 #define LV_ASSERT_HANDLER               abort();
 

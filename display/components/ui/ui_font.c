@@ -35,6 +35,12 @@ static const struct
 	[UI_FONT_24] = {24, 72},
 };
 
+// Of DejaVuSans.ttf: the outlines of "H", "1", "4" and "7" end 1493 units above the line they stand on (the
+// round digits reach 27 units further), and 2048 units are the size of the font (its table head). The file
+// has no table that names the height of its capitals.
+#define CAP_UNITS   1493
+#define EM_UNITS    2048
+
 static const lv_font_t *fonts[UI_FONT_COUNT];
 
 void ui_font_init(void)
@@ -70,6 +76,11 @@ int ui_font_ascent(ui_font_t font)
 	const lv_font_t *lv = ui_font_lv(font);
 
 	return (int)(lv->line_height - lv->base_line);
+}
+
+int ui_font_cap(ui_font_t font)
+{
+	return (sizes[(unsigned)font < UI_FONT_COUNT ? font : UI_FONT_24].size * CAP_UNITS + EM_UNITS / 2) / EM_UNITS;
 }
 
 int ui_font_width(ui_font_t font, const char *text)

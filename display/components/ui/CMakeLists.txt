@@ -11,3 +11,16 @@ idf_component_register(SRCS "ui.c" "ui_layout.c" "ui_font.c"
 idf_component_get_property(lvgl_dir lvgl__lvgl COMPONENT_DIR)
 message(STATUS "LVGL for the fonts: ${lvgl_dir}")
 target_add_binary_data(${COMPONENT_LIB} "${lvgl_dir}/scripts/built_in_font/DejaVuSans.ttf" BINARY)
+
+# A failed assertion of LVGL ends in abort(), which restarts the device, not in the loop without end LVGL
+# has for it: lv_conf_internal.h makes LV_ASSERT_HANDLER "while(1);" unless it is defined, and the Kconfig of
+# 9.5.0 has no symbol for it (sdkconfig.defaults names the header, <stdlib.h>). The definition has to reach
+# the sources of LVGL, which are another component. Its target exists here: ESP-IDF adds what a component
+# requires before the component itself (tools/cmake/build.cmake, __build_expand_requirements).
+#
+# lv_assert.h puts the macro in front of a "}" and adds no semicolon, so it has to be a whole statement. One
+# without a semicolon of its own: CMake keeps compile definitions as a list, whose separator is the
+# semicolon, and one inside a definition would cut it in two. So abort() is called where the condition of
+# an if is worked out.
+idf_component_get_property(lvgl_lib lvgl__lvgl COMPONENT_LIB)
+target_compile_definitions(${lvgl_lib} PRIVATE "LV_ASSERT_HANDLER=if((abort(),0)){}")

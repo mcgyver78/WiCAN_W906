@@ -54,8 +54,9 @@ jobs:
         run: python redproof.py --shard ${{ matrix.part }}/8
         working-directory: display/test
 
-  # Every kind of screen, drawn by LVGL without a display and checked (display/host/render.c). The log shows
-  # each screen as text; the pictures are kept, because whether a screen reads well is seen, not tested.
+  # Every kind of screen, and every scene the core makes in its host tests (display/test/fixtures), drawn by
+  # LVGL without a display and checked (display/host/render.c). The log shows the screens as text; the
+  # pictures are kept, because whether a screen reads well is seen, not tested.
   ui-render:
     runs-on: ubuntu-latest
     steps:

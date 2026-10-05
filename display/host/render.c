@@ -13,40 +13,59 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdarg.h>
+#include <limits.h>
 #include <math.h>
 #include "lvgl.h"
 #include "ui.h"
 
 /*
- * Draws every kind of screen without a display and looks at what came out. LVGL renders into a buffer of
- * 480 x 480 pixels in the memory, with the configuration of the firmware (lv_conf.h); the scenes are
- * filled in by hand below, one for everything that looks different.
+ * Draws the screens without a display and looks at what came out. LVGL renders into a buffer of 480 x 480
+ * pixels in the memory, with the configuration of the firmware (lv_conf.h). Two kinds of scenes are shown:
+ * those filled in by hand below, one for everything that looks different, with the longest texts a scene
+ * can hold; and those the core makes, read back from the files its host tests keep (read_scene()).
  *
- *   render [directory]      writes <name>.png into the directory (default: out), prints every screen as
- *                           text into the log, and ends with status 1 if a check failed
+ *   render [directory [scene.txt ...]]
+ *                           writes <name>.png into the directory (default: out) and prints the screen as
+ *                           text into the log for every scene made by hand, and for a scene of the core if
+ *                           something is wrong with it; ends with status 1 if a check failed, with 2 if a
+ *                           file cannot be read
  *
  * For every screen:
- *   - nothing but the ring reaches outside the circle of radius 236
+ *   - every text has its place within the circle of radius 232, every bar, arc and box within 233; the
+ *     ring fills its band from 234 to 240 and reaches nowhere else
  *   - no two texts overlap, and no text lies half on a bar, an arc or a box
  *   - every text stands out from what it stands on, and nothing shows through an overlay
  *   - every text of the scene is on the screen, whole; for the screens marked `may_cut`, which hold more
- *     than a screen can show, every text is at least the beginning of one of the scene, with an ellipsis
+ *     than a screen can show, every text is at least the beginning of one of the scene, with an ellipsis.
+ *     A scene of the core is never one of those. The labels of known_cut are the exception, each by name.
  *   - a list shows the marks for more rows exactly when there are more
  *   - ui_row_at() names the right row at the middle of every row and of both options, and none elsewhere
- *   - the ring is where the scene says: sampled all around
+ *   - the row and the option in focus have the white bar and no other has; an action that is not offered
+ *     is grey, every other row white; all actions of all screens have one font
+ *   - as many dots as there are pages, and the one of the page shown is filled
+ *   - gauge, arc of a request, ring of the hold, arc of an upload and the bars are filled as far as the
+ *     scene says, from where they begin; a bar has the colour of the tone of its value
+ *   - the value of every item is white, grey, amber or red as its tone says; the ring has its colour
+ *   - the title of a value page is set apart from the label of the first value (check_title())
  *   - LVGL did not complain (a character the font does not have, memory)
- *   - the screen looks the same whatever was shown before it: all are drawn a second time in reverse order
+ *   - the screen looks the same whatever was shown before it: all made by hand are drawn a second time in
+ *     reverse order
+ * and for the pairs of `steady`: no text changes its font or its height with a value.
  * The parts are looked at one by one: all others are hidden, the screen is rendered and the pixels that
  * are lit are the part. So the checks see what a person sees, not the boxes LVGL reckons with.
  *
- * What it cannot tell: whether a screen reads well, whether a colour is the right one (only the ring is
- * looked at for that, and a text for being bright or dark enough against its ground), and how any of it
- * looks on the panel. For that there are the pictures, and in the end the device.
+ * What it cannot tell: whether a screen reads well and whether its fonts are large enough (only that they
+ * do not change), whether a grey is the right grey, whether a value and its unit stand where they should
+ * within their place, and how any of it looks on the panel. For that there are the pictures, and in the end
+ * the device.
  */
 
 #define SIZE            480
 #define CENTRE          240
-#define R_LIMIT         236
+#define R_TEXT          232             // every text stays 8 px away from the edge of the circle
+#define R_SHAPE         233             // bars, arcs and the panel that lies over a screen; the ring begins at 234
+#define RING_INSIDE     234
+#define RING_OUTSIDE    240
 #define CONTRAST        60              // of 255: what the brightest pixel of a text has to differ from its ground
 #define ART_COLUMNS     96
 #define ART_ROWS        48
@@ -281,6 +300,16 @@ static void values_four(scene_t *scene)
 	item(scene, "Fahrpedal", "13", "%", SCENE_TONE_NORMAL, LAYOUT_WIDGET_BAR, 125);
 }
 
+// The same page at speed: a digit more, and nothing else may change (check_steady())
+static void values_four_fast(scene_t *scene)
+{
+	values_four(scene);
+	PUT(scene->items[0].text, "2150");
+	scene->items[0].permille = 430;
+	PUT(scene->items[3].text, "100");
+	scene->items[3].permille = 1000;
+}
+
 static void values_five(scene_t *scene)
 {
 	fresh(scene, SCENE_VALUES, "Abgas");
@@ -295,6 +324,15 @@ static void values_five(scene_t *scene)
 static void values_six(scene_t *scene)
 {
 	motor(scene);
+}
+
+// The same above 1000 1/min. With its unit a number of four digits needs a smaller font in this place than
+// one of three: the place has that font from the start (check_steady())
+static void values_six_fast(scene_t *scene)
+{
+	motor(scene);
+	PUT(scene->items[0].text, "1012");
+	scene->items[0].permille = 202;
 }
 
 static void values_six_alarm(scene_t *scene)
@@ -352,17 +390,74 @@ static void values_four_hot(scene_t *scene)
 	PUT(scene->note, "Zu heiß – Anzeige gedimmt");
 }
 
-// A page of the built-in layout as it is: among six values there is no room for labels of twenty letters
-static void values_six_long_labels(scene_t *scene)
+// The pages of the built-in layout (display/layouts/w906_default.json) with six and with five values, as
+// they are: the labels are those of the file
+static void page_ladeluft(scene_t *scene)
 {
 	fresh(scene, SCENE_VALUES, "Ladeluft");
 	dots(scene, 1, 7);
 	item(scene, "Ladedruck", "1013", "hPa", SCENE_TONE_NORMAL, LAYOUT_WIDGET_NUMBER, -1);
-	item(scene, "Ladedruck Niederdruck", "1004", "hPa", SCENE_TONE_NORMAL, LAYOUT_WIDGET_NUMBER, -1);
-	item(scene, "Ladeluft vor Kühler", "64", "°C", SCENE_TONE_NORMAL, LAYOUT_WIDGET_NUMBER, -1);
-	item(scene, "Ladeluft nach Kühler", "31", "°C", SCENE_TONE_NORMAL, LAYOUT_WIDGET_NUMBER, -1);
+	item(scene, "Ladedruck ND", "1004", "hPa", SCENE_TONE_NORMAL, LAYOUT_WIDGET_NUMBER, -1);
+	item(scene, "Luft vor LLK", "64", "°C", SCENE_TONE_NORMAL, LAYOUT_WIDGET_NUMBER, -1);
+	item(scene, "Luft nach LLK", "31", "°C", SCENE_TONE_NORMAL, LAYOUT_WIDGET_NUMBER, -1);
 	item(scene, "Ansaugluft", "24", "°C", SCENE_TONE_NORMAL, LAYOUT_WIDGET_NUMBER, -1);
 	item(scene, "Wastegate", "37", "%", SCENE_TONE_NORMAL, LAYOUT_WIDGET_NUMBER, -1);
+}
+
+static void page_abgas(scene_t *scene)
+{
+	fresh(scene, SCENE_VALUES, "Abgas");
+	dots(scene, 2, 7);
+	item(scene, "vor Turbo", "412", "°C", SCENE_TONE_NORMAL, LAYOUT_WIDGET_NUMBER, -1);
+	item(scene, "AGR-Kühler", "118", "°C", SCENE_TONE_NORMAL, LAYOUT_WIDGET_NUMBER, -1);
+	item(scene, "vor Kat", "301", "°C", SCENE_TONE_NORMAL, LAYOUT_WIDGET_NUMBER, -1);
+	item(scene, "vor DPF", "289", "°C", SCENE_TONE_NORMAL, LAYOUT_WIDGET_NUMBER, -1);
+	item(scene, "vor SCR", "244", "°C", SCENE_TONE_NORMAL, LAYOUT_WIDGET_NUMBER, -1);
+	item(scene, "Gegendruck", "1087", "hPa", SCENE_TONE_NORMAL, LAYOUT_WIDGET_NUMBER, -1);
+}
+
+static void page_dpf(scene_t *scene)
+{
+	fresh(scene, SCENE_VALUES, "DPF");
+	dots(scene, 3, 7);
+	item(scene, "Ruß gemessen", "11,3", "g", SCENE_TONE_NORMAL, LAYOUT_WIDGET_NUMBER, -1);
+	item(scene, "Ruß berechnet", "12,8", "g", SCENE_TONE_NORMAL, LAYOUT_WIDGET_NUMBER, -1);
+	item(scene, "Asche", "31,0", "g", SCENE_TONE_NORMAL, LAYOUT_WIDGET_NUMBER, -1);
+	item(scene, "Differenzdruck", "14", "hPa", SCENE_TONE_NORMAL, LAYOUT_WIDGET_NUMBER, -1);
+	item(scene, "km seit Reg.", "412", "km", SCENE_TONE_NORMAL, LAYOUT_WIDGET_NUMBER, -1);
+	item(scene, "Regeneration", "inaktiv", "", SCENE_TONE_NORMAL, LAYOUT_WIDGET_STATE, -1);
+}
+
+static void page_kraftstoff(scene_t *scene)
+{
+	fresh(scene, SCENE_VALUES, "Kraftstoff");
+	dots(scene, 4, 7);
+	item(scene, "Raildruck", "312", "bar", SCENE_TONE_NORMAL, LAYOUT_WIDGET_NUMBER, -1);
+	item(scene, "Einspritzmenge", "8,4", "mg", SCENE_TONE_NORMAL, LAYOUT_WIDGET_NUMBER, -1);
+	item(scene, "Temperatur", "38", "°C", SCENE_TONE_NORMAL, LAYOUT_WIDGET_NUMBER, -1);
+	item(scene, "Tankinhalt", "43", "L", SCENE_TONE_NORMAL, LAYOUT_WIDGET_NUMBER, -1);
+	item(scene, "Lambda", "1,34", "", SCENE_TONE_NORMAL, LAYOUT_WIDGET_NUMBER, -1);
+	item(scene, "Luft je Hub", "478", "mg", SCENE_TONE_NORMAL, LAYOUT_WIDGET_NUMBER, -1);
+}
+
+// Two pressures of four digits in the lowest row, the narrowest
+static void page_agr(scene_t *scene)
+{
+	fresh(scene, SCENE_VALUES, "AGR/Luft");
+	dots(scene, 5, 7);
+	item(scene, "AGR-Rate", "23", "%", SCENE_TONE_NORMAL, LAYOUT_WIDGET_NUMBER, -1);
+	item(scene, "AGR-Ventil", "31", "%", SCENE_TONE_NORMAL, LAYOUT_WIDGET_NUMBER, -1);
+	item(scene, "Drosselklappe", "88", "%", SCENE_TONE_NORMAL, LAYOUT_WIDGET_NUMBER, -1);
+	item(scene, "Ansaugdruck", "1004", "hPa", SCENE_TONE_NORMAL, LAYOUT_WIDGET_NUMBER, -1);
+	item(scene, "Luftdruck", "1013", "hPa", SCENE_TONE_NORMAL, LAYOUT_WIDGET_NUMBER, -1);
+}
+
+// The same with one digit fewer: nothing but the digit may change, see check_steady()
+static void page_agr_low(scene_t *scene)
+{
+	page_agr(scene);
+	PUT(scene->items[3].text, "999");
+	PUT(scene->items[4].text, "998");
 }
 
 static void values_longest(scene_t *scene)
@@ -488,16 +583,39 @@ static void list_menu_end(scene_t *scene)
 	row(scene, SCENE_ROW_ACTION, "Zurück", "", true, true);
 }
 
-// Four rows, the focus on an action that is not offered, and the longest reason for it
-static void list_dtc_blocked(scene_t *scene)
+// The start of the fault memory: a line that says where things stand, and four rows
+static void dtc_start(scene_t *scene, const char *state, bool read, bool list, int focus, const char *note)
 {
 	fresh(scene, SCENE_LIST, "Fehlerspeicher");
 	window(scene, 0, 4);
-	row(scene, SCENE_ROW_ACTION, "Lesen", "", false, true);
-	row(scene, SCENE_ROW_ACTION, "Liste ansehen", "", false, false);
-	row(scene, SCENE_ROW_ACTION, "Zuletzt gelöscht", "", true, false);
-	row(scene, SCENE_ROW_ACTION, "Zurück", "", true, false);
-	PUT(scene->note, "Zündung aus – Motorsteuergerät offline");
+	line(scene, state);
+	row(scene, SCENE_ROW_ACTION, "Lesen", "", read, focus == 0);
+	row(scene, SCENE_ROW_ACTION, "Liste ansehen", "", list, focus == 1);
+	row(scene, SCENE_ROW_ACTION, "Liste vor dem Löschen", "", true, focus == 2);
+	row(scene, SCENE_ROW_ACTION, "Zurück", "", true, focus == 3);
+	PUT(scene->note, note);
+}
+
+// The focus on an action that is not offered, and the longest reason for it
+static void list_dtc_blocked(scene_t *scene)
+{
+	dtc_start(scene, "Noch nicht gelesen", false, false, 0, "Zündung aus – Motorsteuergerät offline");
+}
+
+// The lines too long for the place above four rows: they take two rows of text
+static void list_dtc_failed(scene_t *scene)
+{
+	dtc_start(scene, "Letzter Auftrag fehlgeschlagen", true, true, 1, "");
+}
+
+static void list_dtc_unknown(scene_t *scene)
+{
+	dtc_start(scene, "Stand des Löschens unbekannt", false, true, 1, "Motor läuft – nur bei Motor aus");
+}
+
+static void list_dtc_many(scene_t *scene)
+{
+	dtc_start(scene, "165 Fehler in 18 Steuergeräten", true, true, 2, "");
 }
 
 static void list_dtc_top(scene_t *scene)
@@ -549,7 +667,7 @@ static void list_cleared(scene_t *scene)
 
 static void list_old(scene_t *scene)
 {
-	fresh(scene, SCENE_LIST, "Zuletzt gelöscht");
+	fresh(scene, SCENE_LIST, "Vor dem Löschen");
 	window(scene, 9, 14);
 	row(scene, SCENE_ROW_LINE, "ESP", "784 · 1 Fehler", true, false);
 	row(scene, SCENE_ROW_SUB, "U0100-87", "gespeichert", true, false);
@@ -567,6 +685,13 @@ static void list_web(scene_t *scene)
 	line(scene, "Passwort: geheim1234");
 	row(scene, SCENE_ROW_ACTION, "Freigabe", "an – noch 9:12", true, true);
 	row(scene, SCENE_ROW_ACTION, "Zurück", "", true, false);
+}
+
+// The same at the moment the release begins: the longest detail of all rows (check_steady())
+static void list_web_begun(scene_t *scene)
+{
+	list_web(scene);
+	PUT(scene->rows[0].detail, "an – noch 10:00");
 }
 
 // Lines without a detail that are too long for one line
@@ -590,6 +715,13 @@ static void list_settings(scene_t *scene)
 	row(scene, SCENE_ROW_ACTION, "Neustart", "", true, false);
 	row(scene, SCENE_ROW_ACTION, "Vorherige Version", "", false, false);
 	row(scene, SCENE_ROW_ACTION, "Werkseinstellungen", "", true, true);
+}
+
+// The same after a press on the first row: a shorter detail (check_steady())
+static void list_settings_normal(scene_t *scene)
+{
+	list_settings(scene);
+	PUT(scene->rows[0].detail, "normal");
 }
 
 static void list_empty(scene_t *scene)
@@ -630,20 +762,26 @@ static void progress_sent(scene_t *scene)
 	line(scene, "ca. 35 s – Live-Werte pausieren");
 }
 
+// Never with the ring of the scan: the screen has an arc of its own (scene.h)
 static void progress_running(scene_t *scene)
 {
 	fresh(scene, SCENE_PROGRESS, "Fehlerspeicher löschen");
-	ring(scene, RING_PROGRESS, 277);
 	PUT(scene->big, "5/18");
 	scene->permille = 277;
 	line(scene, "Collision Prevention Assist");
 	line(scene, "ca. 35 s – Live-Werte pausieren");
 }
 
+// The same with a name that fits one row: nothing else may change (check_steady())
+static void progress_running_short(scene_t *scene)
+{
+	progress_running(scene);
+	PUT(scene->lines[0], "Motorelektronik");
+}
+
 static void progress_done(scene_t *scene)
 {
 	fresh(scene, SCENE_PROGRESS, "Fehlerspeicher lesen");
-	ring(scene, RING_PROGRESS, 1000);
 	PUT(scene->big, "18/18");
 	scene->permille = 1000;
 	line(scene, "Radio");
@@ -817,14 +955,21 @@ static const screen_t screens[] =
 	{"values_two", values_two, false},
 	{"values_three", values_three, false},
 	{"values_four", values_four, false},
+	{"values_four_fast", values_four_fast, false},
 	{"values_four_hot", values_four_hot, false},
 	{"values_five", values_five, false},
 	{"values_six", values_six, false},
+	{"values_six_fast", values_six_fast, false},
 	{"values_six_alarm", values_six_alarm, false},
 	{"values_six_old", values_six_old, false},
 	{"values_six_scan", values_six_scan, false},
 	{"values_six_no_api", values_six_no_api, false},
-	{"values_six_long_labels", values_six_long_labels, true},
+	{"page_ladeluft", page_ladeluft, false},
+	{"page_abgas", page_abgas, false},
+	{"page_dpf", page_dpf, false},
+	{"page_kraftstoff", page_kraftstoff, false},
+	{"page_agr", page_agr, false},
+	{"page_agr_low", page_agr_low, false},
 	{"values_longest", values_longest, true},
 	{"values_one_longest", values_one_longest, true},
 	{"notice_no_wifi", notice_no_wifi, false},
@@ -839,18 +984,24 @@ static const screen_t screens[] =
 	{"list_menu_top", list_menu_top, false},
 	{"list_menu_end", list_menu_end, false},
 	{"list_dtc_blocked", list_dtc_blocked, false},
+	{"list_dtc_failed", list_dtc_failed, false},
+	{"list_dtc_unknown", list_dtc_unknown, false},
+	{"list_dtc_many", list_dtc_many, false},
 	{"list_dtc_top", list_dtc_top, false},
 	{"list_dtc_middle", list_dtc_middle, false},
 	{"list_dtc_end", list_dtc_end, false},
 	{"list_cleared", list_cleared, false},
 	{"list_old", list_old, false},
 	{"list_web", list_web, false},
+	{"list_web_begun", list_web_begun, false},
 	{"list_info", list_info, false},
 	{"list_settings", list_settings, false},
+	{"list_settings_normal", list_settings_normal, false},
 	{"list_empty", list_empty, false},
 	{"list_longest", list_longest, true},
 	{"progress_sent", progress_sent, false},
 	{"progress_running", progress_running, false},
+	{"progress_running_short", progress_running_short, false},
 	{"progress_done", progress_done, false},
 	{"progress_longest", progress_longest, true},
 	{"choice_clear", choice_clear, false},
@@ -874,6 +1025,232 @@ static const screen_t screens[] =
 };
 
 #define SCREENS     ((int)(sizeof(screens) / sizeof(screens[0])))
+
+// Screens that differ only in what changes while somebody looks at them: a value with a digit more, the
+// detail of a row, the name of the control unit that is being read. Every text of the one has the font and
+// the height on the screen it has in the other.
+static const char *const steady[][2] =
+{
+	{"values_four", "values_four_fast"},
+	{"values_six", "values_six_fast"},
+	{"page_agr", "page_agr_low"},
+	{"list_settings", "list_settings_normal"},
+	{"list_web", "list_web_begun"},
+	{"progress_running", "progress_running_short"},
+};
+
+// Labels that are too wide for their place and are cut on the device, named so that the run can stay strict
+// about every other text. A label of this list that is no longer cut fails the run: the list cannot
+// outlive its reason. Empty since the labels of the built-in layout were shortened for the pages with six
+// values (188 px in the first and the last row, 222 px in the middle one, at 24 px); the first entry only
+// keeps the array from being empty and matches no screen.
+static const struct
+{
+	const char *screen;
+	const char *text;
+} known_cut[] =
+{
+	{"", ""},
+};
+
+/*
+ * The scenes of the core: the files display/test/fixtures/scene_*.txt and app_*.txt hold what scene_build()
+ * makes, written by scene_dump(), and the host tests of the core compare them byte for byte. Read back
+ * here, they are the screens the device really shows, with the words the core has today.
+ */
+
+#define COUNT(a)    ((int)(sizeof(a) / sizeof((a)[0])))
+
+// The words of scene_dump() (scene.h): it takes them by the number of the member, so this is their order
+static const char *const kind_words[] = {"values", "notice", "list", "progress", "choice", "level"};
+static const char *const ring_words[] = {"none", "yellow", "grey", "red", "progress"};
+static const char *const tone_words[] = {"normal", "dim", "warn", "alarm"};
+static const char *const widget_words[] = {"number", "arc", "bar", "state"};
+static const char *const row_words[] = {"action", "head", "line", "sub"};
+static const char *const over_words[] = {"none", "upload", "ask", "update"};
+
+static const char *dump_path;   // the file that is being read, and the line in it
+static int dump_line;
+
+// A file this cannot read ends the run: a screen that is skipped would be a screen nobody looked at
+static void refuse(const char *what)
+{
+	fprintf(stderr, "render.c: %s, line %d: %s\n", dump_path, dump_line, what);
+	exit(2);
+}
+
+// What stands behind a name and its blank, NULL if the line begins with another name. An empty text has no
+// blank behind the colon.
+static char *behind(char *text, const char *name)
+{
+	size_t length = strlen(name);
+
+	if(strncmp(text, name, length) != 0) return NULL;
+	if(text[length] == '\0') return text + length;
+	return text[length] == ' ' ? text + length + 1 : NULL;
+}
+
+static int number_of(const char *text)
+{
+	char *end;
+	long value = strtol(text, &end, 10);
+
+	if(end == text || *end != '\0' || value < INT_MIN || value > INT_MAX) refuse("no number where one has to be");
+	return (int)value;
+}
+
+static int word_of(const char *text, const char *const *words, int count)
+{
+	for(int i = 0; i < count; i++)
+	{
+		if(strcmp(text, words[i]) == 0) return i;
+	}
+	refuse("a word scene_dump() does not have (\"?\" stands for a member that is none)");
+	return 0;
+}
+
+// Cuts a line into its `count` fields at every " | ". A text that has " | " in itself cannot be told from
+// two fields, and is refused.
+static void split(char *text, char *fields[], int count)
+{
+	for(int i = 0; i < count; i++)
+	{
+		char *bar = strstr(text, " | ");
+
+		fields[i] = text;
+		if(i == count - 1)
+		{
+			if(bar != NULL) refuse("more fields than the line has");
+			return;
+		}
+		if(bar == NULL) refuse("fewer fields than the line has");
+		*bar = '\0';
+		text = bar + 3;
+	}
+}
+
+#define TAKE(field, text)   take(field, sizeof(field), text)
+
+static void take(char *field, size_t size, const char *text)
+{
+	if(strlen(text) >= size) refuse("a text too long for its field");
+	strcpy(field, text);
+}
+
+static void read_scene(const char *path, scene_t *scene)
+{
+	char text[512];
+	char *fields[6], *rest;
+	int options_read = 0;
+	FILE *file = fopen(path, "r");
+
+	dump_path = path;
+	dump_line = 0;
+	if(file == NULL) refuse("cannot be opened");
+
+	// What scene_dump() leaves out is what scene_build() sets for "not used"
+	memset(scene, 0, sizeof(*scene));
+	scene->dot = -1;
+	scene->permille = -1;
+	scene->over_permille = -1;
+
+	while(fgets(text, sizeof(text), file) != NULL)
+	{
+		size_t length = strlen(text);
+
+		dump_line++;
+		if(length == 0 || text[length - 1] != '\n') refuse("a line without an end, or longer than any scene_dump() writes");
+		text[length - 1] = '\0';
+
+		if((rest = behind(text, "kind:")) != NULL)
+		{
+			scene->kind = (scene_kind_t)word_of(rest, kind_words, COUNT(kind_words));
+		}
+		else if((rest = behind(text, "ring:")) != NULL)
+		{
+			// "progress 277": the permille stands only behind this kind
+			char *blank = strchr(rest, ' ');
+
+			if(blank != NULL)
+			{
+				*blank = '\0';
+				scene->ring.permille = number_of(blank + 1);
+			}
+			scene->ring.kind = (ring_kind_t)word_of(rest, ring_words, COUNT(ring_words));
+		}
+		else if((rest = behind(text, "title:")) != NULL) TAKE(scene->title, rest);
+		else if((rest = behind(text, "note:")) != NULL) TAKE(scene->note, rest);
+		else if((rest = behind(text, "item:")) != NULL)
+		{
+			scene_item_t *target = &scene->items[scene->item_count];
+
+			if(scene->item_count == LAYOUT_ITEMS_MAX) refuse("more items than a scene holds");
+			split(rest, fields, 6);
+			TAKE(target->label, fields[0]);
+			TAKE(target->text, fields[1]);
+			TAKE(target->unit, fields[2]);
+			target->tone = (scene_tone_t)word_of(fields[3], tone_words, COUNT(tone_words));
+			target->widget = (layout_widget_t)word_of(fields[4], widget_words, COUNT(widget_words));
+			target->permille = number_of(fields[5]);
+			scene->item_count++;
+		}
+		else if((rest = behind(text, "dots:")) != NULL)
+		{
+			// "2/7": the second of seven
+			char *slash = strchr(rest, '/');
+
+			if(slash == NULL) refuse("dots without a slash");
+			*slash = '\0';
+			scene->dot = number_of(rest) - 1;
+			scene->dots = number_of(slash + 1);
+		}
+		else if((rest = behind(text, "row: >")) != NULL || (rest = behind(text, "row: -")) != NULL)
+		{
+			scene_row_t *target = &scene->rows[scene->row_count];
+
+			if(scene->row_count == SCENE_ROWS_MAX) refuse("more rows than a scene holds");
+			split(rest, fields, 4);
+			target->kind = (scene_row_kind_t)word_of(fields[0], row_words, COUNT(row_words));
+			TAKE(target->text, fields[1]);
+			TAKE(target->detail, fields[2]);
+			if(strcmp(fields[3], "enabled") != 0 && strcmp(fields[3], "disabled") != 0) refuse("neither enabled nor disabled");
+			target->enabled = fields[3][0] == 'e';
+			target->focus = text[5] == '>';
+			scene->row_count++;
+		}
+		else if((rest = behind(text, "first:")) != NULL) scene->first = number_of(rest);
+		else if((rest = behind(text, "total:")) != NULL) scene->total = number_of(rest);
+		else if((rest = behind(text, "line:")) != NULL)
+		{
+			if(scene->line_count == SCENE_LINES_MAX) refuse("more lines than a scene holds");
+			TAKE(scene->lines[scene->line_count], rest);
+			scene->line_count++;
+		}
+		else if((rest = behind(text, "big:")) != NULL) TAKE(scene->big, rest);
+		else if((rest = behind(text, "permille:")) != NULL) scene->permille = number_of(rest);
+		else if((rest = behind(text, "option: >")) != NULL || (rest = behind(text, "option: -")) != NULL)
+		{
+			if(options_read == 2) refuse("more than two options");
+			TAKE(scene->options[options_read], rest);
+			if(text[8] == '>') scene->option = options_read;
+			options_read++;
+		}
+		else if((rest = behind(text, "over:")) != NULL)
+		{
+			scene->over = (scene_over_t)word_of(rest, over_words, COUNT(over_words));
+		}
+		else if((rest = behind(text, "over_line:")) != NULL)
+		{
+			if(scene->over_line_count == COUNT(scene->over_lines)) refuse("more lines over the screen than a scene holds");
+			TAKE(scene->over_lines[scene->over_line_count], rest);
+			scene->over_line_count++;
+		}
+		else if((rest = behind(text, "over_permille:")) != NULL) scene->over_permille = number_of(rest);
+		else refuse("a line scene_dump() does not write");
+	}
+	fclose(file);
+	if(dump_line == 0) refuse("empty");
+}
 
 /*
  * LVGL without a display
@@ -921,6 +1298,12 @@ static void start(void)
 	lv_display_set_flush_cb(display, flushed);
 
 	ui_init(display);
+}
+
+static void show(const scene_t *scene)
+{
+	ui_show(scene);
+	lv_refr_now(display);
 }
 
 /*
@@ -1082,9 +1465,13 @@ typedef struct
 	int layer;              // 0: the screen, 1: what lies over it
 	thing_kind_t kind;
 	int number;             // among the parts of its layer
+	int order;              // among the parts of its kind in its layer, those that are hidden counted
+	int left, top, right, bottom;   // the place LVGL gives it: for a text its lines in full height and width
 	int x0, y0, x1, y1;     // around its pixels; x1 < x0: it lights none
 	int count;
+	uint16_t ink;           // the brightest of its pixels when it is there alone; a text is white then
 	bool used;              // a text: it stands for a text of the scene
+	bool toned;             // a text: it is the value of an item
 	uint8_t lit[SIZE * SIZE / 8];
 } thing_t;
 
@@ -1153,11 +1540,15 @@ static void collect(void)
 	for(int layer = 0; layer < (int)lv_obj_get_child_count(screen); layer++)
 	{
 		lv_obj_t *parent = lv_obj_get_child(screen, layer);
+		int orders[3] = {0, 0, 0};
 
 		for(int i = 0; i < (int)lv_obj_get_child_count(parent); i++)
 		{
 			lv_obj_t *object = lv_obj_get_child(parent, i);
 			thing_t *thing = &things[thing_count];
+			thing_kind_t kind = lv_obj_check_type(object, &lv_label_class) ? THING_TEXT :
+			                    lv_obj_check_type(object, &lv_arc_class) ? THING_ARC : THING_BOX;
+			int order = orders[kind]++;
 
 			if(lv_obj_has_flag(object, LV_OBJ_FLAG_HIDDEN)) continue;
 			if(thing_count == THINGS_MAX)
@@ -1169,8 +1560,13 @@ static void collect(void)
 			thing->object = object;
 			thing->layer = layer;
 			thing->number = i;
-			thing->kind = lv_obj_check_type(object, &lv_label_class) ? THING_TEXT :
-			              lv_obj_check_type(object, &lv_arc_class) ? THING_ARC : THING_BOX;
+			thing->order = order;
+			thing->kind = kind;
+			// As of the last redraw, which every caller has just had made
+			thing->left = (int)lv_obj_get_x(object);
+			thing->top = (int)lv_obj_get_y(object);
+			thing->right = thing->left + (int)lv_obj_get_width(object) - 1;
+			thing->bottom = thing->top + (int)lv_obj_get_height(object) - 1;
 			thing_count++;
 		}
 	}
@@ -1207,6 +1603,7 @@ static void look(void)
 				if(frame[y * SIZE + x] == 0) continue;
 				thing->lit[(y * SIZE + x) / 8] |= (uint8_t)(1u << ((y * SIZE + x) % 8));
 				thing->count++;
+				if(brightness(frame[y * SIZE + x]) > brightness(thing->ink)) thing->ink = frame[y * SIZE + x];
 				if(x < thing->x0) thing->x0 = x;
 				if(x > thing->x1) thing->x1 = x;
 				if(y < thing->y0) thing->y0 = y;
@@ -1266,11 +1663,25 @@ static void check_seen(const scene_t *scene)
 	lv_refr_now(display);
 }
 
+// Twice the distance of the middle of a pixel from the middle of the screen, squared
+static int far2(int x, int y)
+{
+	int dx = 2 * x + 1 - SIZE, dy = 2 * y + 1 - SIZE;
+
+	return dx * dx + dy * dy;
+}
+
+// Every part inside its circle: a text within R_TEXT, a shape within R_SHAPE. Half a pixel is granted to
+// both: the edge of a round shape is drawn into the pixels it only touches. Of a text in one line the whole
+// place counts, not only the pixels its letters happen to light: a text that ends on a blank side of a
+// letter would hide that it was given too much room. (The lines of a text in several are each as wide as
+// the circle lets them be where they stand; the place around all of them has corners that mean nothing.)
 static void check_circle(void)
 {
 	for(int i = 0; i < thing_count; i++)
 	{
 		const thing_t *thing = &things[i];
+		int radius = thing->kind == THING_TEXT ? R_TEXT : R_SHAPE;
 		bool outside = false;
 
 		if(thing->count == 0)
@@ -1278,16 +1689,29 @@ static void check_circle(void)
 			fail("%s is on the screen but lights no pixel", name_of(thing));
 			continue;
 		}
+		if(thing->kind == THING_TEXT && strchr(text_of(thing), '\n') == NULL)
+		{
+			int x = 2 * thing->left + 1 < SIZE ? thing->left : thing->right;
+			int y = 2 * thing->top + 1 < SIZE ? thing->top : thing->bottom;
+
+			// The corner that is furthest from the middle of the screen
+			if(far2(thing->right, y) > far2(x, y)) x = thing->right;
+			if(far2(thing->left, y) > far2(x, y)) x = thing->left;
+			if(far2(x, thing->bottom) > far2(x, y)) y = thing->bottom;
+			if(far2(x, thing->top) > far2(x, y)) y = thing->top;
+			if(far2(x, y) > (2 * radius + 1) * (2 * radius + 1))
+			{
+				fail("the place of %s reaches outside the circle of radius %d at (%d, %d)", name_of(thing), radius, x, y);
+				continue;
+			}
+		}
 		for(int y = thing->y0; y <= thing->y1 && !outside; y++)
 		{
 			for(int x = thing->x0; x <= thing->x1 && !outside; x++)
 			{
-				// Twice the distance of the middle of the pixel from the middle of the screen
-				int dx = 2 * x + 1 - SIZE, dy = 2 * y + 1 - SIZE;
-
-				if(is_lit(thing, x, y) && dx * dx + dy * dy > 4 * R_LIMIT * R_LIMIT)
+				if(is_lit(thing, x, y) && far2(x, y) > (2 * radius + 1) * (2 * radius + 1))
 				{
-					fail("%s reaches outside the circle of radius %d at (%d, %d)", name_of(thing), R_LIMIT, x, y);
+					fail("%s reaches outside the circle of radius %d at (%d, %d)", name_of(thing), radius, x, y);
 					outside = true;
 				}
 			}
@@ -1420,6 +1844,18 @@ static int texts_of(const scene_t *scene, const char *texts[], int max)
 	return count;
 }
 
+// Whether a text of the screen that is being looked at is one of known_cut
+static bool is_known_cut(const char *text)
+{
+	for(int i = 0; i < (int)(sizeof(known_cut) / sizeof(known_cut[0])); i++)
+	{
+		if(strcmp(known_cut[i].screen, screen_name) == 0 && strcmp(known_cut[i].text, text) == 0) return true;
+	}
+	return false;
+}
+
+static int known_cuts;  // labels of known_cut that were seen cut
+
 static void check_texts(const scene_t *scene, bool may_cut)
 {
 	const char *texts[64];
@@ -1457,8 +1893,12 @@ static void check_texts(const scene_t *scene, bool may_cut)
 		{
 			if(things[at].kind == THING_TEXT && !things[at].used && shows(text_of(&things[at]), texts[i]) == 2) found = at;
 		}
-		if(found >= 0) things[found].used = true;
-		else if(!may_cut) fail("\"%s\" is not on the screen, or not whole", texts[i]);
+		if(found >= 0)
+		{
+			things[found].used = true;
+			if(is_known_cut(texts[i])) fail("\"%s\" is whole now: take it out of known_cut", texts[i]);
+		}
+		else if(!may_cut && !is_known_cut(texts[i])) fail("\"%s\" is not on the screen, or not whole", texts[i]);
 	}
 
 	// What is left has to be the beginning of a text of the scene
@@ -1467,13 +1907,101 @@ static void check_texts(const scene_t *scene, bool may_cut)
 		thing_t *thing = &things[i];
 		bool known = false;
 
+		const char *whole = "";
+
 		if(thing->kind != THING_TEXT || thing->used) continue;
-		for(int at = 0; at < count && !known; at++) known = shows(text_of(thing), texts[at]) == 1;
+		for(int at = 0; at < count && !known; at++)
+		{
+			known = shows(text_of(thing), texts[at]) == 1;
+			whole = texts[at];
+		}
 		if(known && may_cut) cut++;
+		else if(known && is_known_cut(whole))
+		{
+			printf("  known: the label \"%s\" does not fit its place, it is %s\n", whole, name_of(thing));
+			known_cuts++;
+		}
 		else if(known) fail("%s is cut", name_of(thing));
 		else fail("%s is no text of the scene", name_of(thing));
 	}
 	if(may_cut) printf("  %d texts cut\n", cut);
+}
+
+// The fonts of the texts of a scene, in the order of the labels of ui.c, those that are hidden left out
+static int fonts_of(const scene_t *scene, const thing_t *texts[], int max)
+{
+	int count = 0;
+
+	show(scene);
+	collect();
+	for(int i = 0; i < thing_count && count < max; i++)
+	{
+		if(things[i].kind == THING_TEXT) texts[count++] = &things[i];
+	}
+	return count;
+}
+
+static const screen_t *screen_named(const char *name)
+{
+	for(int i = 0; i < SCREENS; i++)
+	{
+		if(strcmp(screens[i].name, name) == 0) return &screens[i];
+	}
+	fprintf(stderr, "render.c: no screen is called %s\n", name);
+	exit(2);
+}
+
+// The pairs of `steady`: the texts of both screens are the same labels in the same fonts at the same height
+static void check_steady(void)
+{
+	static scene_t scene;
+	const lv_font_t *fonts[THINGS_MAX];
+	int orders[THINGS_MAX], layers[THINGS_MAX], tops[THINGS_MAX];
+	const thing_t *texts[THINGS_MAX];
+
+	for(int pair = 0; pair < (int)(sizeof(steady) / sizeof(steady[0])); pair++)
+	{
+		int count, other;
+
+		screen_name = steady[pair][1];
+		screen_named(steady[pair][0])->fill(&scene);
+		count = fonts_of(&scene, texts, THINGS_MAX);
+		for(int i = 0; i < count; i++)
+		{
+			fonts[i] = lv_obj_get_style_text_font(texts[i]->object, LV_PART_MAIN);
+			orders[i] = texts[i]->order;
+			layers[i] = texts[i]->layer;
+			tops[i] = texts[i]->top;
+		}
+
+		screen_named(steady[pair][1])->fill(&scene);
+		other = fonts_of(&scene, texts, THINGS_MAX);
+		if(other != count)
+		{
+			fail("%d texts, %s has %d: the two are to differ in a value only", other, steady[pair][0], count);
+			continue;
+		}
+		for(int i = 0; i < count; i++)
+		{
+			const lv_font_t *font = lv_obj_get_style_text_font(texts[i]->object, LV_PART_MAIN);
+
+			if(texts[i]->order != orders[i] || texts[i]->layer != layers[i])
+			{
+				fail("%s stands where %s has no text", name_of(texts[i]), steady[pair][0]);
+			}
+			else if(font != fonts[i])
+			{
+				fail("%s is written %d px high, and %d px on %s: a text must not change its size with a value",
+				     name_of(texts[i]), (int)lv_font_get_line_height(font), (int)lv_font_get_line_height(fonts[i]),
+				     steady[pair][0]);
+			}
+			else if(texts[i]->top != tops[i])
+			{
+				fail("%s begins at y = %d, and at %d on %s: a text must not jump with a value", name_of(texts[i]),
+				     texts[i]->top, tops[i], steady[pair][0]);
+			}
+		}
+	}
 }
 
 // The label that shows a text, looked for from the last part back: the rows and the options are put last
@@ -1498,8 +2026,67 @@ static void probe(const char *what, int x, int y, int expected)
 	if(got != expected) fail("ui_row_at(%d, %d) is %d, not %d: %s", x, y, got, expected, what);
 }
 
-static void check_rows(const scene_t *scene)
+typedef enum
 {
+	SHADE_DARK,
+	SHADE_RED,
+	SHADE_AMBER,
+	SHADE_GREY,
+	SHADE_WHITE,
+} shade_t;
+
+static const char *const shade_names[] = {"dark", "red", "amber", "grey", "white"};
+
+// What a pixel looks like, as far as the screens tell things apart by colour
+static shade_t shade_of(uint16_t pixel)
+{
+	int red = pixel >> 11, green = (pixel >> 5) & 63, blue = pixel & 31;
+
+	if(pixel == 0) return SHADE_DARK;
+	if(blue < 8 && red > 16) return green < 16 ? SHADE_RED : SHADE_AMBER;
+	return red >= 28 && green >= 56 && blue >= 28 ? SHADE_WHITE : SHADE_GREY;
+}
+
+static shade_t tone_shade(scene_tone_t tone)
+{
+	return tone == SCENE_TONE_ALARM ? SHADE_RED : tone == SCENE_TONE_WARN ? SHADE_AMBER :
+	       tone == SCENE_TONE_DIM ? SHADE_GREY : SHADE_WHITE;
+}
+
+// The brightest pixel of a part in the frame as it is, with everything else around it
+static uint16_t brightest_of(const thing_t *thing)
+{
+	uint16_t brightest = 0;
+
+	for(int y = thing->y0; y <= thing->y1; y++)
+	{
+		for(int x = thing->x0; x <= thing->x1; x++)
+		{
+			if(is_lit(thing, x, y) && brightness(frame[y * SIZE + x]) > brightness(brightest)) brightest = frame[y * SIZE + x];
+		}
+	}
+	return brightest;
+}
+
+// Whether a text lies on a box filled white: the bar that marks the focus
+static bool on_bar(const thing_t *text)
+{
+	for(int i = 0; i < thing_count; i++)
+	{
+		const thing_t *box = &things[i];
+
+		if(box->kind != THING_BOX || box->layer != text->layer || box->ink != 0xFFFF) continue;
+		if(shared(text, box) == text->count) return true;
+	}
+	return false;
+}
+
+// The rows and the options: ui_row_at() finds each at its middle, the one in focus has the white bar and no
+// other has, and all that can be chosen is written in one font, here and on every other screen
+static void check_rows(const scene_t *scene, bool may_cut)
+{
+	static const lv_font_t *action_font;
+	static char action_text[SCENE_TEXT_SIZE], action_screen[64];
 	bool covered = scene->over != SCENE_OVER_NONE;
 	int before = thing_count;
 	char what[160];
@@ -1509,14 +2096,45 @@ static void check_rows(const scene_t *scene)
 	{
 		for(int i = scene->row_count - 1; i >= 0; i--)
 		{
+			const scene_row_t *source = &scene->rows[i];
 			const thing_t *label;
 
 			// The detail was put after the text
-			if(scene->rows[i].detail[0] != '\0') label_of(scene->rows[i].detail, &before);
-			label = label_of(scene->rows[i].text, &before);
+			if(source->detail[0] != '\0') label_of(source->detail, &before);
+			label = label_of(source->text, &before);
 			if(label == NULL || label->count == 0) continue;
-			snprintf(what, sizeof(what), "row %d, \"%.100s\"", scene->first + i, scene->rows[i].text);
+			snprintf(what, sizeof(what), "row %d, \"%.100s\"", scene->first + i, source->text);
 			probe(what, (label->x0 + label->x1) / 2, (label->y0 + label->y1) / 2, covered ? -1 : scene->first + i);
+
+			if(on_bar(label) != source->focus)
+			{
+				fail("%s %s", what, source->focus ? "is in focus and has no white bar" : "has a white bar and is not in focus");
+			}
+			// White is what can be read or chosen, grey an action that is not offered. On the bar of the
+			// focus both are dark, and check_seen() looks at that.
+			if(!source->focus && !covered && shade_of(brightest_of(label)) != (source->enabled ? SHADE_WHITE : SHADE_GREY))
+			{
+				fail("%s is %s and written in %s", what, source->enabled ? "enabled" : "disabled",
+				     shade_names[shade_of(brightest_of(label))]);
+			}
+			// A screen with more than it can show may have to make a row smaller
+			if(source->kind == SCENE_ROW_ACTION && !may_cut)
+			{
+				const lv_font_t *font = lv_obj_get_style_text_font(label->object, LV_PART_MAIN);
+
+				if(action_font == NULL)
+				{
+					action_font = font;
+					snprintf(action_text, sizeof(action_text), "%s", source->text);
+					snprintf(action_screen, sizeof(action_screen), "%.60s", screen_name);
+				}
+				else if(font != action_font)
+				{
+					fail("%s is written %d px high, \"%s\" of %s %d px: what can be chosen has one font", what,
+					     (int)lv_font_get_line_height(font), action_text, action_screen,
+					     (int)lv_font_get_line_height(action_font));
+				}
+			}
 		}
 	}
 	else if(scene->kind == SCENE_CHOICE)
@@ -1528,6 +2146,11 @@ static void check_rows(const scene_t *scene)
 			if(label == NULL || label->count == 0) continue;
 			snprintf(what, sizeof(what), "option %d, \"%.100s\"", i, scene->options[i]);
 			probe(what, (label->x0 + label->x1) / 2, (label->y0 + label->y1) / 2, covered ? -1 : i);
+
+			if(on_bar(label) != (i == (scene->option == 1 ? 1 : 0)))
+			{
+				fail("%s %s", what, on_bar(label) ? "is filled white and is not in focus" : "is in focus and is not filled white");
+			}
 		}
 	}
 	else
@@ -1536,79 +2159,415 @@ static void check_rows(const scene_t *scene)
 	}
 }
 
-// The ring is looked at in the frame as the scene has it: in the middle of its band, every five degrees
-static void check_ring(const scene_t *scene)
+// A dot of the pages: a small box at the lower edge
+static bool is_dot(const thing_t *thing)
 {
-	static const char *const names[] = {"dark", "red", "amber", "grey or white"};
-	int sweep = scene->ring.kind == RING_PROGRESS ? scene->ring.permille * 360 / 1000 : 360;
+	return thing->kind == THING_BOX && thing->layer == 0 && thing->count > 0 && thing->y0 > 430 &&
+	       thing->x1 - thing->x0 < 10 && thing->y1 - thing->y0 < 10;
+}
+
+// As many dots as the knob has pages, from left to right, and filled is the one of the page shown. A dot
+// that is no more than an outline is dark in its middle.
+static void check_dots(const scene_t *scene)
+{
+	bool pages = scene->kind == SCENE_VALUES || scene->kind == SCENE_NOTICE;
+	int expected = !pages || scene->dots < 0 ? 0 : scene->dots > LAYOUT_PAGES_MAX ? LAYOUT_PAGES_MAX : scene->dots;
+	int count = 0, last_x = -1;
+
+	for(int i = 0; i < thing_count; i++)
+	{
+		const thing_t *thing = &things[i];
+		bool filled;
+
+		if(!is_dot(thing)) continue;
+		filled = is_lit(thing, (thing->x0 + thing->x1) / 2, (thing->y0 + thing->y1) / 2);
+		if(filled != (count == scene->dot))
+		{
+			fail("dot %d of %d is %s, the page shown is number %d", count + 1, expected, filled ? "filled" : "an outline",
+			     scene->dot + 1);
+		}
+		if(filled && thing->ink != 0xFFFF) fail("dot %d is filled and not white", count + 1);
+		if(thing->x0 <= last_x) fail("dot %d is not to the right of the one before it", count + 1);
+		last_x = thing->x1;
+		count++;
+	}
+	if(count != expected) fail("%d dots for %d pages", count, expected);
+}
+
+static const thing_t *arc_of(int layer, int order)
+{
+	for(int i = 0; i < thing_count; i++)
+	{
+		if(things[i].kind == THING_ARC && things[i].layer == layer && things[i].order == order) return &things[i];
+	}
+	return NULL;
+}
+
+// An arc that shows how far something is: its track from `start` (degrees clockwise from 3 o'clock) over
+// `sweep` degrees, and on it, from the same start, the part that `permille` says. ui.c puts the track
+// before the part, `first` is the place of the track among the arcs of its layer. sweep 0: no arc at all.
+static void check_arc(const char *what, int layer, int first, int start, int sweep, int permille)
+{
+	const thing_t *track = arc_of(layer, first), *part = arc_of(layer, first + 1);
+	int filled = sweep * (permille < 0 ? 0 : permille > 1000 ? 1000 : permille) / 1000;
+	int outer, width = 0;
+	double middle;
+
+	if(sweep == 0)
+	{
+		if(track != NULL || part != NULL) fail("%s on a screen that has none", what);
+		return;
+	}
+	if(track == NULL || track->count == 0)
+	{
+		fail("%s has no track", what);
+		return;
+	}
+
+	// The track passes 9 o'clock, 12 o'clock and 3 o'clock: its pixels are as wide as its circle, and at
+	// the top it is as thick as it is
+	outer = (track->x1 - track->x0 + 1) / 2;
+	while(width < outer && is_lit(track, CENTRE, CENTRE - outer + width)) width++;
+	middle = outer - width / 2.0;
 
 	for(int angle = 0; angle < 360; angle += 5)
 	{
-		double turn = angle * 3.14159265358979 / 180.0;
-		int x = (int)(CENTRE + 237.0 * sin(turn)), y = (int)(CENTRE - 237.0 * cos(turn));
-		uint16_t pixel = frame[y * SIZE + x];
-		int green = (pixel >> 5) & 63, blue = pixel & 31;
-		int seen = pixel == 0 ? 0 : green < 16 && blue < 8 ? 1 : blue < 8 ? 2 : 3;
-		int expected = 0;
+		double turn = (start + angle) * 3.14159265358979 / 180.0;
+		int x = (int)(CENTRE + middle * cos(turn)), y = (int)(CENTRE + middle * sin(turn));
+		bool on_part = part != NULL && is_lit(part, x, y);
 
-		switch(scene->ring.kind)
+		// An end may fall on either side of a sample next to it
+		if(angle < 4 || angle > 356) continue;
+		if(!(angle > sweep - 4 && angle < sweep + 4) && is_lit(track, x, y) != (angle < sweep))
 		{
-			case RING_RED:
-				expected = 1;
-				break;
-			case RING_YELLOW:
-				expected = 2;
-				break;
-			case RING_GREY:
-				expected = 3;
-				break;
-			case RING_PROGRESS:
-				// The end of the arc may fall on either side of a sample next to it
-				if(angle > sweep - 4 && angle < sweep + 4) continue;
-				expected = angle < sweep ? 3 : 0;
-				break;
-			default:
-				break;
+			fail("the track of %s is %s %d degrees from its start", what, angle < sweep ? "missing" : "drawn", angle);
+			return;
 		}
-		if(seen != expected)
+		if(!(angle > filled - 4 && angle < filled + 4) && on_part != (angle < filled))
 		{
-			fail("the ring is %s at %d degrees from the top, not %s", names[seen], angle, names[expected]);
+			fail("%s is %s %d degrees from its start, it has to reach %d degrees (%d permille of %d)", what,
+			     on_part ? "filled" : "empty", angle, filled, permille, sweep);
 			return;
 		}
 	}
 }
 
-// Nothing but the ring out there, whatever it belongs to
-static void check_edge(void)
+// Whether an item has a bar: an arc or bar widget among several values, a bar widget alone
+static bool has_bar(const scene_t *scene, int index)
 {
-	for(int y = 0; y < SIZE; y++)
-	{
-		for(int x = 0; x < SIZE; x++)
-		{
-			int dx = 2 * x + 1 - SIZE, dy = 2 * y + 1 - SIZE;
+	layout_widget_t widget = scene->items[index].widget;
 
-			if(frame[y * SIZE + x] != 0 && dx * dx + dy * dy > 4 * R_LIMIT * R_LIMIT)
+	return widget == LAYOUT_WIDGET_BAR || (widget == LAYOUT_WIDGET_ARC && scene->item_count > 1);
+}
+
+// The bars of a value page, in the order of its items: a track, and on it from the left the part that the
+// permille of the item says, in the tone of the item. Nothing else on a value page is a box, but the dots.
+static void check_bars(const scene_t *scene)
+{
+	int at = 0;
+
+	if(scene->kind != SCENE_VALUES) return;
+	for(int i = 0; i <= scene->item_count; i++)
+	{
+		const scene_item_t *item = &scene->items[i < scene->item_count ? i : 0];
+		const thing_t *track, *part = NULL;
+		int width, filled, drawn = 0;
+
+		while(at < thing_count && (things[at].kind != THING_BOX || things[at].layer != 0 || is_dot(&things[at]))) at++;
+		if(i == scene->item_count)
+		{
+			if(at < thing_count) fail("%s belongs to no item", name_of(&things[at]));
+			return;
+		}
+		if(!has_bar(scene, i)) continue;
+		if(at == thing_count)
+		{
+			fail("item %d, \"%s\", has no bar", i + 1, item->label);
+			return;
+		}
+		track = &things[at++];
+		width = track->x1 - track->x0 + 1;
+		filled = width * (item->permille < 0 ? 0 : item->permille > 1000 ? 1000 : item->permille) / 1000;
+
+		// The part lies on the track and begins where it begins
+		if(at < thing_count && things[at].kind == THING_BOX && things[at].layer == 0 && things[at].x0 == track->x0 &&
+		   things[at].y0 == track->y0)
+		{
+			part = &things[at++];
+			drawn = part->x1 - part->x0 + 1;
+		}
+		if(drawn < filled - 1 || drawn > filled + 1)
+		{
+			fail("the bar of item %d, \"%s\", is filled %d of %d px, %d permille are %d px", i + 1, item->label, drawn,
+			     width, item->permille, filled);
+		}
+		else if(part != NULL && shade_of(part->ink) != tone_shade(item->tone))
+		{
+			fail("the bar of item %d, \"%s\", is %s, its tone is %s", i + 1, item->label, shade_names[shade_of(part->ink)],
+			     shade_names[tone_shade(item->tone)]);
+		}
+	}
+}
+
+// The first text of a kind that shows a text of the scene, looked for from `from` on; -1: none
+static int text_showing(const char *text, int from)
+{
+	for(int i = from; i < thing_count; i++)
+	{
+		if(things[i].kind == THING_TEXT && things[i].layer == 0 && shows(text_of(&things[i]), text) != 0) return i;
+	}
+	return -1;
+}
+
+// The line the first line of a text stands on
+static int base_of(const thing_t *text)
+{
+	const lv_font_t *font = lv_obj_get_style_text_font(text->object, LV_PART_MAIN);
+
+	return text->top + (int)(font->line_height - font->base_line);
+}
+
+// The title of a value page names the page, and the label below it the first value: the two must not read
+// as one block of two lines. From the line the title stands on down to the label it is nearly twice as far
+// (seven quarters) as from the line of the label down to its value; or the title is written smaller than
+// the label, and still further from it than the label from its value.
+static void check_title(const scene_t *scene)
+{
+	int title, label, value, above, below;
+	int title_height, label_height;
+
+	if(scene->kind != SCENE_VALUES || scene->item_count < 1 || scene->title[0] == '\0') return;
+	// Only a number begins at the top of its line: a dash and the small letters of "n. v." stand lower
+	if(scene->items[0].label[0] == '\0' || scene->items[0].text[0] < '0' || scene->items[0].text[0] > '9') return;
+
+	// ui.c takes the title first, then per value its label and the value itself
+	title = text_showing(scene->title, 0);
+	label = title < 0 ? -1 : text_showing(scene->items[0].label, title + 1);
+	value = label < 0 ? -1 : text_showing(scene->items[0].text, label + 1);
+	if(value < 0 || things[title].count == 0 || things[label].count == 0 || things[value].count == 0) return;
+
+	above = things[label].y0 - base_of(&things[title]);
+	below = things[value].y0 - base_of(&things[label]);
+	title_height = (int)lv_font_get_line_height(lv_obj_get_style_text_font(things[title].object, LV_PART_MAIN));
+	label_height = (int)lv_font_get_line_height(lv_obj_get_style_text_font(things[label].object, LV_PART_MAIN));
+	if(above <= below || (title_height >= label_height && 4 * above < 7 * below))
+	{
+		fail("the label \"%s\" (%d px) begins %d px below the line of the title \"%s\" (%d px), its value %d px "
+		     "below its own line: they read as one block", scene->items[0].label, label_height, above, scene->title,
+		     title_height, below);
+	}
+}
+
+// What shows a level: the gauge of a value or of the brightness (open at the bottom, from 8 o'clock over
+// the top to 4 o'clock), the arc of a request or of the hold (all around, from the top), the same over the
+// screen for an upload, and the bars
+static void check_levels(const scene_t *scene)
+{
+	bool gauge = scene->kind == SCENE_LEVEL ||
+	             (scene->kind == SCENE_VALUES && scene->item_count == 1 && scene->items[0].widget == LAYOUT_WIDGET_ARC);
+	bool around = scene->kind == SCENE_PROGRESS || (scene->kind == SCENE_CHOICE && scene->permille >= 0);
+
+	// On the screen the ring comes first among the arcs; the scene looked at here has none
+	if(arc_of(0, 0) != NULL) fail("a ring on a scene without one");
+	if(gauge)
+	{
+		check_arc("the gauge", 0, 1, 150, 240, scene->kind == SCENE_LEVEL ? scene->permille : scene->items[0].permille);
+	}
+	else if(around)
+	{
+		check_arc(scene->kind == SCENE_PROGRESS ? "the arc of the request" : "the ring of the hold", 0, 1, 270, 360,
+		          scene->permille);
+	}
+	else
+	{
+		check_arc("an arc", 0, 1, 0, 0, 0);
+	}
+
+	if(scene->over == SCENE_OVER_UPLOAD) check_arc("the arc of the upload", 1, 0, 270, 360, scene->over_permille);
+	else check_arc("an arc over the screen", 1, 0, 0, 0, 0);
+
+	check_bars(scene);
+}
+
+// The value of every item is written in the colour of its tone: white, grey for what is dimmed, amber and
+// red. Looked at in the frame as a whole: the brightest pixel of the text.
+static void check_tones(const scene_t *scene)
+{
+	if(scene->kind != SCENE_VALUES || scene->over != SCENE_OVER_NONE) return;
+
+	for(int i = 0; i < scene->item_count; i++)
+	{
+		const scene_item_t *item = &scene->items[i];
+		shade_t seen = SHADE_DARK;
+		bool found = false;
+
+		if(item->text[0] == '\0') continue;
+		for(int at = 0; at < thing_count && !found; at++)
+		{
+			thing_t *thing = &things[at];
+
+			if(thing->kind != THING_TEXT || thing->layer != 0 || thing->toned || shows(text_of(thing), item->text) == 0) continue;
+			seen = shade_of(brightest_of(thing));
+			if(seen == tone_shade(item->tone))
 			{
-				fail("something is drawn outside the circle of radius %d at (%d, %d)", R_LIMIT, x, y);
+				thing->toned = true;
+				found = true;
+			}
+		}
+		if(!found)
+		{
+			fail("the value \"%s\" of item %d, \"%s\", is not written in %s (it is found in %s)", item->text, i + 1, item->label,
+			     shade_names[tone_shade(item->tone)], shade_names[seen]);
+		}
+	}
+}
+
+// The ring is looked at in the frame as the scene has it: every five degrees, near both edges of its band
+// and in the middle of it
+static void check_ring(const scene_t *scene)
+{
+	int sweep = scene->ring.kind == RING_PROGRESS ? scene->ring.permille * 360 / 1000 : 360;
+
+	for(int angle = 0; angle < 360; angle += 5)
+	{
+		double turn = angle * 3.14159265358979 / 180.0;
+		shade_t expected = SHADE_DARK;
+
+		switch(scene->ring.kind)
+		{
+			case RING_RED:
+				expected = SHADE_RED;
+				break;
+			case RING_YELLOW:
+				expected = SHADE_AMBER;
+				break;
+			case RING_GREY:
+				expected = SHADE_GREY;
+				break;
+			case RING_PROGRESS:
+				// The end of the arc may fall on either side of a sample next to it
+				if(angle > sweep - 4 && angle < sweep + 4) continue;
+				expected = angle < sweep ? SHADE_WHITE : SHADE_DARK;
+				break;
+			default:
+				break;
+		}
+		// The pixels at the very edges of the band are only touched by the ring: 1.5 px away from both
+		for(int step = 0; step < 3; step++)
+		{
+			double radius = RING_INSIDE + 1.5 + step * (RING_OUTSIDE - RING_INSIDE - 3.0) / 2.0;
+			int x = (int)(CENTRE + radius * sin(turn)), y = (int)(CENTRE - radius * cos(turn));
+			shade_t seen = shade_of(frame[y * SIZE + x]);
+
+			if(seen != expected)
+			{
+				fail("the ring is %s at %d degrees from the top, %.1f px from the middle, not %s", shade_names[seen],
+				     angle, radius, shade_names[expected]);
 				return;
 			}
 		}
 	}
 }
 
-static void show(const scene_t *scene)
+// The ring is the one thing out there, and it is nowhere else: `ringed` is the frame with the ring, the
+// frame itself the same scene without it
+static void check_edge(const uint16_t *ringed)
 {
+	for(int y = 0; y < SIZE; y++)
+	{
+		for(int x = 0; x < SIZE; x++)
+		{
+			if(frame[y * SIZE + x] != 0 && far2(x, y) > (2 * R_SHAPE + 1) * (2 * R_SHAPE + 1))
+			{
+				fail("something that is not the ring is drawn outside the circle of radius %d at (%d, %d)", R_SHAPE, x, y);
+				return;
+			}
+			if(frame[y * SIZE + x] != ringed[y * SIZE + x] && far2(x, y) <= 4 * R_SHAPE * R_SHAPE)
+			{
+				fail("the ring reaches inside the circle of radius %d at (%d, %d)", R_SHAPE, x, y);
+				return;
+			}
+		}
+	}
+}
+
+// Shows a scene and looks at it. always: its picture is written and printed whatever comes of it; else only
+// if something is wrong with it. Returns what tells its picture from every other.
+static uint64_t examine(const scene_t *scene, bool may_cut, const char *directory, bool always)
+{
+	static uint16_t ringed[SIZE * SIZE];
+	static scene_t bare;
+	int before = failures;
+	uint64_t hash;
+	char path[512];
+
+	show(scene);
+	hash = frame_hash();
+	memcpy(ringed, frame, sizeof(ringed));
+	snprintf(path, sizeof(path), "%s/%s.png", directory, screen_name);
+	if(always)
+	{
+		if(!write_png(path)) fail("%s could not be written", path);
+		print_art();
+	}
+	check_ring(scene);
+
+	// The same scene again changes nothing
 	ui_show(scene);
 	lv_refr_now(display);
+	if(frame_hash() != hash) fail("showing the same scene again changes the picture");
+
+	// The parts are looked at without the ring, which is the one thing that may be at the edge
+	bare = *scene;
+	bare.ring.kind = RING_NONE;
+	bare.ring.permille = 0;
+	show(&bare);
+	check_edge(ringed);
+	collect();
+	look();
+	check_seen(&bare);
+	check_circle();
+	check_overlap();
+	check_texts(&bare, may_cut);
+	check_rows(&bare, may_cut);
+	check_dots(&bare);
+	check_levels(&bare);
+	check_tones(&bare);
+	if(!may_cut) check_title(&bare);
+
+	// Also what it said before the first screen, while the fonts were made
+	if(complaints > 0) fail("LVGL complained %d times", complaints);
+	complaints = 0;
+
+	if(!always && failures != before)
+	{
+		show(scene);
+		if(!write_png(path)) fail("%s could not be written", path);
+		print_art();
+	}
+	return hash;
+}
+
+// The name of a screen of the core: that of its file, without the directory and the ending
+static const char *name_from(const char *path)
+{
+	static char name[64];
+	const char *slash = strrchr(path, '/');
+	size_t length;
+
+	snprintf(name, sizeof(name), "%.60s", slash != NULL ? slash + 1 : path);
+	length = strlen(name);
+	if(length > 4 && strcmp(name + length - 4, ".txt") == 0) name[length - 4] = '\0';
+	return name;
 }
 
 int main(int argc, char **argv)
 {
 	static uint64_t hashes[sizeof(screens) / sizeof(screens[0])];
-	static scene_t scene, bare;
+	static scene_t scene;
 	const char *directory = argc > 1 ? argv[1] : "out";
+	int by_hand, from_core = 0;
 	lv_mem_monitor_t memory;
-	char path[512];
 
 	setvbuf(stdout, NULL, _IOLBF, 0);
 	start();
@@ -1618,36 +2577,7 @@ int main(int argc, char **argv)
 		screen_name = screens[i].name;
 		printf("== %s%s\n", screen_name, screens[i].may_cut ? " (more than a screen can show)" : "");
 		screens[i].fill(&scene);
-
-		show(&scene);
-		hashes[i] = frame_hash();
-		snprintf(path, sizeof(path), "%s/%s.png", directory, screen_name);
-		if(!write_png(path)) fail("%s could not be written", path);
-		print_art();
-		check_ring(&scene);
-
-		// The same scene again changes nothing
-		ui_show(&scene);
-		lv_refr_now(display);
-		if(frame_hash() != hashes[i]) fail("showing the same scene again changes the picture");
-
-		// The parts are looked at without the ring, which is the one thing that may be at the edge
-		bare = scene;
-		bare.ring.kind = RING_NONE;
-		bare.ring.permille = 0;
-		show(&bare);
-		check_edge();
-		collect();
-		look();
-		check_seen(&bare);
-		check_circle();
-		check_overlap();
-		check_texts(&bare, screens[i].may_cut);
-		check_rows(&bare);
-
-		// Also what it said before the first screen, while the fonts were made
-		if(complaints > 0) fail("LVGL complained %d times", complaints);
-		complaints = 0;
+		hashes[i] = examine(&scene, screens[i].may_cut, directory, true);
 	}
 
 	// Every screen once more, each after another one than before
@@ -1658,11 +2588,27 @@ int main(int argc, char **argv)
 		show(&scene);
 		if(frame_hash() != hashes[i]) fail("the picture differs when the screen is shown after another one");
 	}
+	check_steady();
+	by_hand = failures;
+
+	// The scenes of the core. Each has to fit: what the core makes is what the device shows.
+	for(int i = 2; i < argc; i++)
+	{
+		int before = failures;
+
+		screen_name = name_from(argv[i]);
+		read_scene(argv[i], &scene);
+		examine(&scene, false, directory, false);
+		printf("== %s: %s\n", screen_name, failures == before ? "fits" : "FAILED, see above");
+		from_core++;
+	}
+	if(from_core == 0) printf("No scene of the core was given: only the screens made by hand were looked at\n");
 
 	lv_mem_monitor(&memory);
 	printf("LVGL heap: %zu bytes, at most %zu used (%zu %%), %zu free in %zu parts\n", memory.total_size,
 	       memory.max_used, memory.max_used * 100 / memory.total_size, memory.free_size, memory.free_cnt);
 
-	printf("%d screens, %d failures\n", SCREENS, failures);
+	printf("%d screens made by hand: %d failures. %d scenes of the core: %d failures. "
+	       "%d labels cut that are known not to fit\n", SCREENS, by_hand, from_core, failures - by_hand, known_cuts);
 	return failures == 0 ? 0 : 1;
 }

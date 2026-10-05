@@ -105,6 +105,11 @@ jobs:
       - name: Image leaves a fifth of its slot free
         run: python3 display/tools/check_partitions.py --partitions display/partitions.csv --flash-size 16M --image "display/build/wican-display.bin"
 
+      # A build that succeeds does not show it: without the definition LVGL builds as well, with a loop
+      # without end where an assertion fails
+      - name: LVGL is compiled with the assertion handler of components/ui (abort, not a loop)
+        run: python3 display/tools/check_build.py --commands display/build/compile_commands.json
+
       - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:
@@ -115,3 +120,26 @@ jobs:
             display/build/partition_table/partition-table.bin
             display/build/ota_data_initial.bin
             display/build/flash_args
+
+      # Counter-check of the step above with the real build system, behind the upload: nothing is built
+      # from here on. Without the line of components/ui/CMakeLists.txt the check has to fail.
+      - name: Counter-check, the definition is taken away
+        run: |
+          grep -c "LV_ASSERT_HANDLER=if" display/components/ui/CMakeLists.txt
+          sed -i "/LV_ASSERT_HANDLER=if/d" display/components/ui/CMakeLists.txt
+          if grep -q "LV_ASSERT_HANDLER=if" display/components/ui/CMakeLists.txt; then exit 1; fi
+
+      - name: Counter-check, configured again without it
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.2
+          target: esp32s3
+          path: display
+          command: idf.py reconfigure
+
+      - name: Counter-check, its absence is reported
+        run: |
+          if python3 display/tools/check_build.py --commands display/build/compile_commands.json; then
+            echo "the check did not notice that the definition is gone"
+            exit 1
+          fi

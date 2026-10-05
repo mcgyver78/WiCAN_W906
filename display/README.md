@@ -87,11 +87,44 @@ Artefakt holen (legt die Dateien nach `~/Downloads/wican-display`):
 gh run download -R mcgyver78/WiCAN_W906 --name wican-display --dir ~/Downloads/wican-display
 ```
 
-Erstes Flashen über USB. Die Adressen gehören zur Partitionstabelle `partitions.csv` und dürfen nicht
-geändert werden; `/dev/cu.usbmodemXXXX` durch den Port ersetzen, unter dem sich das Board meldet:
+Geflasht wird mit `esptool` (auf dem Mac über Homebrew; die Befehle unten sind gegen die Hilfe von
+esptool 5.4.0 geprüft, geflasht wurde damit noch nichts):
 
 ```bash
-cd ~/Downloads/wican-display && python3 -m esptool --chip esp32s3 --port /dev/cu.usbmodemXXXX write_flash 0x0 bootloader/bootloader.bin 0x8000 partition_table/partition-table.bin 0x29000 ota_data_initial.bin 0x30000 wican-display.bin
+brew install esptool
+```
+
+In allen Befehlen `/dev/cu.usbmodemXXXX` durch den Port ersetzen, unter dem sich das Board meldet:
+
+```bash
+ls /dev/cu.usbmodem*
+```
+
+Vor dem ersten Flashen die Werksfirmware sichern (die ganzen 16 MB, das dauert einige Minuten). Sie ist der
+einzige Beleg, dass Board und Panel in Ordnung sind, und der Vergleich, wenn unser Bild nicht kommt:
+
+```bash
+esptool --chip esp32s3 --port /dev/cu.usbmodemXXXX read-flash 0 0x1000000 ~/Downloads/crowpanel_werksfirmware.bin
+```
+
+Zurück zur Werksfirmware geht es mit derselben Datei:
+
+```bash
+esptool --chip esp32s3 --port /dev/cu.usbmodemXXXX write-flash 0 ~/Downloads/crowpanel_werksfirmware.bin
+```
+
+Erstes Flashen über USB. Die Adressen gehören zur Partitionstabelle `partitions.csv` und dürfen nicht
+geändert werden:
+
+```bash
+cd ~/Downloads/wican-display && esptool --chip esp32s3 --port /dev/cu.usbmodemXXXX write-flash 0x0 bootloader/bootloader.bin 0x8000 partition_table/partition-table.bin 0x29000 ota_data_initial.bin 0x30000 wican-display.bin
+```
+
+Die serielle Ausgabe (Start, Fehlermeldungen, die Zeilen zu den `CHECK:`-Stellen) kommt über dasselbe
+USB-Kabel; beenden mit Ctrl-A, dann K:
+
+```bash
+screen /dev/cu.usbmodemXXXX 115200
 ```
 
 Spätere Versionen kommen über die Webseite (Gerät → Firmware). Das Display startet eine hochgeladene Firmware
@@ -137,7 +170,8 @@ grep -rn "CHECK:" ~/projects/WiCAN/WiCAN_W906-display/display/components/board ~
 Die Reihenfolge, in der sie sich stellen:
 
 1. Vor dem ersten Flashen: Meldet sich das Board am Mac als USB-Gerät? Die Werksfirmware läuft und zeigt ein
-   Bild? Das ist der Beleg, dass Board und Kabel in Ordnung sind.
+   Bild? Das ist der Beleg, dass Board und Kabel in Ordnung sind. Dann die Werksfirmware sichern (siehe
+   „Flashen").
 2. Nach dem Flashen, serielle Ausgabe mitlesen: Antwortet der Expander an 0x21? Welche Kennung meldet der
    Touch-Controller? Startet der WLAN-Treiber (er läuft ohne eigenen NVS-Bereich)? Steht in der Startzeile
    „safe mode 0", ohne dass eine Hand am Knopf war? Unter Menü → Info darf „Letzter Neustart" nie `task_wdt`

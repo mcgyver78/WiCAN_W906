@@ -566,7 +566,11 @@ MUTATIONS = [
     ("app_web_reset_judged_one_ms_late", T, F, RESET_MAY, RESET_MAY.replace("out, length, now);", "out, length, now + 1);")),
     ("app_web_reset_not_asked_under_update", T, F, RESET_MAY, RESET_MAY.replace("app_busy(app)", "app_busy(app) || app->update_pending")),
     ("app_web_reset_with_detail", T, F, RESET_ASK, RESET_ASK.replace("\"\"", "\"alles\"")),
-    ("app_web_reset_keeps_detail", T, F, RESET_ASK, RESET_ASK.replace("\"\"", "app->ask_detail")),
+    # through a copy: printing a text into its own room is undefined, and the C libraries differ (macOS keeps
+    # the text, glibc empties it - there the mutant changed nothing)
+    ("app_web_reset_keeps_detail", T, F, RESET_ASK,
+     "\tchar kept[sizeof(app->ask_detail)];\n\n\tdrop_network(app);\n\tmemcpy(kept, app->ask_detail, sizeof(kept));\n"
+     "\treturn ask(app, ACCESS_ASK_RESET, kept, out, length, now);"),
     ("app_web_reset_asked_as_firmware", T, F, RESET_ASK, RESET_ASK.replace("ACCESS_ASK_RESET", "ACCESS_ASK_FIRMWARE")),
     ("app_web_reset_asked_as_wifi", T, F, RESET_ASK, RESET_ASK.replace("ACCESS_ASK_RESET", "ACCESS_ASK_WIFI")),
     ("app_web_reset_carried_out_at_once", T, F, RESET_ASK, "\tapp->events |= APP_EVENT_FACTORY_RESET;\n" + RESET_ASK),

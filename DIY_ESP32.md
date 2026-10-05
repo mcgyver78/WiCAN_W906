@@ -43,13 +43,82 @@ Fahrzeugbus ist bereits abgeschlossen.
 
 | OBD-Pin | Signal |
 |---|---|
-| 16 | +12 V Dauerplus → Verpolschutz → TVS → DC-DC → 3,3 V |
+| 16 | +12 V Dauerplus (V_BAT hinter F1 und D1) |
 | 4, 5 | Masse |
 | 6 | CAN-H |
 | 14 | CAN-L |
 
-DC-DC: Eingang möglichst ≥ 36 V, geringer Ruhestrom (das Gerät hängt
-dauerhaft an der Starterbatterie).
+Die Aderfarben fertiger OBD-Kabel sind nicht genormt – vor dem Anlöten
+durchmessen.
+
+## Spannungsversorgung
+
+```
+OBD 16 ── F1 ── D1 ── V_BAT
+
+V_BAT ──┬── D2 ── GND
+        ├── C1 ── GND        (Plus an V_BAT)
+        ├── C2 ── GND
+        ├── R1 ──┬── GPIO34
+        │        ├── R2 ── GND
+        │        └── C3 ── GND
+        └── MP1584 IN+
+
+MP1584 IN−  ── GND
+MP1584 OUT+ ──┬── 3V3 ESP32-DevKit
+              └── VCC SN65HVD230
+MP1584 OUT− ── GND
+
+OBD 4, 5 ── GND
+```
+
+- **D1** (Schottky, Verpolschutz): Ring zum MP1584.
+- **D2** (TVS, unidirektional): Ring zur 12-V-Seite. Falsch herum schließt
+  sie 12 V kurz, und F1 löst aus.
+- **C1**: Plus an V_BAT, Spannungsfestigkeit ≥ 35 V.
+- **MP1584EN**: verträgt höchstens 28 V am Eingang, deshalb D2 davor. Erst
+  **ohne** ESP32 auf 3,3 V einstellen, Poti danach sichern (Lack),
+  Power-LED des Moduls auslöten (Ruhestrom).
+- **DevKit**: 3,3 V an den Pin **3V3**, nicht an 5V/VIN. Die Power-LED des
+  DevKits ebenfalls auslöten. USB am DevKit und 12 V am MP1584 nicht
+  gleichzeitig anschließen – zum Flashen auf dem Tisch reicht USB allein.
+- **Teiler R1/R2** hinter D1: Die Firmware schlägt 0,2 V auf den Messwert
+  auf, vermutlich als Ausgleich für den Diodenabfall beim V300 (nicht am
+  V300-Schaltplan geprüft). Bei 12,6 V an V_BAT liegen etwa 1,74 V an
+  GPIO34.
+- Ohne Teiler darf der Sleep-Modus nicht eingeschaltet werden: GPIO34 misst
+  dann ~0 V, der WiCAN schläft ein und wacht nicht mehr auf.
+
+## Stückliste
+
+Bedrahtete Bauteile, Bestellnummern von Reichelt (Stand 30.09.2026, alle ab
+Lager).
+
+| Pos. | Bauteil | Wert / Typ | Reichelt | Menge |
+|---|---|---|---|---|
+| 1 | ESP32-DevKit | ESP32-DevKitC (WROOM-32) | – | 1 |
+| 2 | CAN-Transceiver-Modul | SN65HVD230 (VP230) | – | 1 |
+| 3 | DC-DC-Modul | MP1584EN | – | 1 |
+| 4 | OBD-Stecker mit Kabel | | – | 1 |
+| 5 | F1 Polyfuse | 0,5 A Haltestrom, 72 V | `LITT RXEF050` | 1 |
+| 6 | D1 Schottky | 1N5819, 40 V / 1 A | `1N 5819 TSC` | 1 |
+| 7 | D2 TVS | P6KE20A, unidirektional | `P6KE 20A` | 1 |
+| 8 | C1 Elko | 100 µF / 50 V, 105 °C, AEC-Q200 | `FC-A 100U 50` | 1 |
+| 9 | C2, C3 Keramik | 100 nF / 50 V, X7R, RM 2,5 | `X7R-2,5 100N MUR` | 2 |
+| 10 | R1 | 100 kΩ, 1 % | `METALL 100K` | 1 |
+| 11 | R2 | 16 kΩ, 1 % | `METALL 16,0K` | 1 |
+| 12 | R3 | 10 kΩ, 1 % (Pulldown GPIO23 → GND) | `METALL 10,0K` | 1 |
+| 13 | Lochrasterplatine, Buchsenleisten 2,54 mm, Gehäuse, Draht, Zugentlastung | | – | |
+
+- **TVS-Falle:** Bei P6KE nennt die Zahl die Durchbruchspannung, bei SMBJ die
+  Sperrspannung. Das Gegenstück zur SMBJ18A ist die **P6KE20A**
+  (Sperrspannung 17,1 V, Klemmung 27,7 V), nicht die P6KE18A (Sperrspannung
+  nur 15,3 V).
+- **16 kΩ nicht da:** 15 kΩ + 1 kΩ in Reihe. Das Verhältnis 100k/16k muss
+  stimmen.
+- Einen 10-µF-Kondensator am 3,3-V-Ausgang braucht es nicht, das DevKit hat
+  ihn schon.
+- LEDs an GPIO25–27 sind optional; die Pins können offen bleiben.
 
 ## Bauen
 

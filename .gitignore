@@ -83,3 +83,6 @@ tools/wican-log-viewer/*.dll
 tools/wican-log-viewer/*.exe
 
 build_diy/
+
+# macOS
+.DS_Store

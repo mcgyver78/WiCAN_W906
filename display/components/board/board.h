@@ -20,7 +20,7 @@
  *
  * Everything in this component is READ from the schematic of the maker (Main V1.0) and from the maker's
  * examples. Nothing was measured: the board was not there when this was written. Places that can only be
- * decided with the board in hand are marked CHECK in board.c and listed in display/README.md.
+ * decided with the board in hand are marked CHECK in board.c.
  *
  * Wiring (schematic):
  *   I2C            SDA 38, SCL 39; touch controller at 0x15, port expander PCF8574 at 0x21
@@ -30,6 +30,7 @@
  *   panel init     3-wire SPI, 9 bit: CS 16, SCK 2, SDA 1
  *   panel data     RGB565 parallel: DE 40, VSYNC 7, HSYNC 15, PCLK 41,
  *                  blue 5, 45, 48, 47, 21; green 14, 13, 12, 11, 10, 9; red 46, 3, 8, 18, 17
+ *                  (the names of the schematic; which colour of a pixel is sent on which: board_pins.h)
  *   backlight      GPIO 6, PWM, high = on
  *   encoder        A 42, B 4, pull-ups on the board, no debounce capacitors
  *   console        native USB (USB serial JTAG); GPIO 43 (UART0 TX) drives a LED of the board

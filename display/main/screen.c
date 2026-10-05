@@ -315,7 +315,9 @@ esp_err_t screen_start(esp_lcd_panel_handle_t panel)
 	 * LVGL draws parts of the screen into its own buffer, and lvgl_flush() copies them into the one frame
 	 * buffer of the panel (board.c: bounce buffers, no second frame buffer). RGB565 as the panel takes it;
 	 * CONFIG_LV_COLOR_DEPTH_16 makes that the format of the display.
-	 * CHECK (board.c): the picture is upright and not mirrored. If not: lv_display_set_rotation() here.
+	 * CHECK (board.c): the picture is upright and not mirrored. If not: board.c turns the panel and the
+	 * touch points (its CHECK there says how); lv_display_set_rotation() alone does not turn the pixels
+	 * that lvgl_flush() copies.
 	 */
 	draw = heap_caps_malloc(draw_bytes, MALLOC_CAP_SPIRAM);
 	ESP_RETURN_ON_FALSE(draw != NULL, ESP_ERR_NO_MEM, TAG, "no memory for the buffer LVGL draws into");

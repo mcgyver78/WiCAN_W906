@@ -16,7 +16,7 @@ CONFIG_SPIRAM_SPEED_80M=y
 
 # RGB panel (components/board): the frame buffer lies in the PSRAM, and an interrupt copies it a few lines
 # at a time into two bounce buffers in the internal RAM, which the DMA sends. board.c refuses to compile
-# without the first and the last of the three.
+# without the first of the settings below, and with the one that is named as left out.
 #
 # Data cache line of 64 bytes: Espressif's FAQ on the RGB screen of the ESP32-S3 calls it necessary for
 # the bounce buffer mode, the picture may drift without it (esp-faq, software-framework/peripherals/lcd)
@@ -24,11 +24,16 @@ CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
 # Data cache of 64 KB instead of 32 KB: set by the maker's ESPHome lessons. Costs 32 KB of heap in the internal RAM; the same FAQ says 32 KB do as well. Not decided
 # before it is tried on the board
 CONFIG_ESP32S3_DATA_CACHE_64KB=y
-# If the DMA cannot keep up with the panel (flash being written, PSRAM busy) the picture stays shifted
-# from then on. With this the driver restarts the DMA in every vertical blanking, so it recovers by itself
-# (ESP-IDF v5.5.2, api-reference/peripherals/lcd/rgb_lcd). ESPHome gets the same by calling
-# esp_lcd_rgb_panel_restart() in its loop
-CONFIG_LCD_RGB_RESTART_IN_VSYNC=y
+# NOT here: CONFIG_LCD_RGB_RESTART_IN_VSYNC, although the documentation of ESP-IDF v5.5.2 names it
+# (api-reference/peripherals/lcd/rgb_lcd) against a picture that stays shifted after the flash was written
+# or the PSRAM was busy. With it the driver of v5.5.2 restarts the DMA in every vertical blanking, but it no
+# longer sets right its count of the bounce buffers, which it does without the option: after one lost
+# interrupt it fills each buffer while that one is sent, and the picture stays shifted by one buffer
+# (esp_lcd_panel_rgb.c, lcd_rgb_panel_try_restart_transmission(); ESP-IDF issue 19070; mended on master by
+# commit c0fb05b3, not in v5.5.5 and not in release/v5.5 on 2026-10-05). The other way the documentation
+# names is taken instead: board.c asks for the restart with esp_lcd_rgb_panel_restart() from a timer, which
+# sets the count right as well - ESPHome does that in its loop. With an ESP-IDF that has the commit the
+# option can come back and the timer can go; until then board.c does not compile with it.
 
 # The interrupt of the RGB panel copies every line with the CPU, and LVGL draws with it: full speed, as the
 # maker's builds have it

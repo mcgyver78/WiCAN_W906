@@ -78,8 +78,10 @@
 #define BOARD_PANEL_SLEEP_OUT_MS        120
 #define BOARD_PANEL_DISPLAY_ON_MS       50
 
-// Order of red and blue in the panel, the bit BGR of the command 36h. See the CHECK at the init sequence
-#define BOARD_PANEL_ELE_ORDER           LCD_RGB_ELEMENT_ORDER_RGB
+// Order of red and blue in the panel, the bit BGR of the command 36h: set (08h), as the table of [gfx] has
+// it and as [sketch] sends it once more after that table. It belongs to the order of
+// BOARD_PANEL_DATA_PINS. See the CHECK at the init sequence
+#define BOARD_PANEL_ELE_ORDER           LCD_RGB_ELEMENT_ORDER_BGR
 // What the command 3Ah is given: 18 bit (60h) in [gfx] and in [yaml], although the bus has 16 lines. The
 // lowest bit of red and of blue is not connected at the panel [sch]
 #define BOARD_PANEL_COLMOD_BITS         18
@@ -90,22 +92,30 @@
 #define BOARD_PANEL_VSYNC               7       // [sch] [sketch] [yaml]
 #define BOARD_PANEL_HSYNC               15      // [sch] [sketch] [yaml]
 #define BOARD_PANEL_PCLK                41      // [sch] [sketch] [yaml]
-// From bit 0 of a pixel upwards, a pixel being RGB565 in the byte order of the chip: this is the order
-// [gfx] builds for "native endian", and the one [esphome] ends up with after it has swapped the two bytes
-// of its big-endian pixels. GPIO 3, 45 and 46 are strapping pins; they are only driven after the start
+// From bit 0 of a pixel upwards, a pixel being RGB565 in the byte order of the chip, as LVGL draws it and
+// main/screen.c hands it on. The signal is the one of [sketch], line for line: [gfx] ("native endian")
+// puts bit 0 to 4 of what it is given on GPIO 5, 45, 48, 47, 21 and bit 11 to 15 on GPIO 46, 3, 8, 18, 17,
+// and [sketch] exchanges the red and the blue field of every pixel before it gives it to [gfx]. So the red
+// of a pixel leaves the chip on the lines [sch] calls blue, the blue on the ones it calls red, and the bit
+// BGR above turns the two round again in the panel. Here the pixel is not touched, so the pins are named
+// in the exchanged order. [yaml] has both the other way round (red on 46, 3, 8, 18, 17 and 36h = 00h).
+// GPIO 3, 45 and 46 are strapping pins; they are only driven after the start
 #define BOARD_PANEL_DATA_PINS \
-	5, 45, 48, 47, 21,          /* blue,  panel B1 to B5  [sch] [sketch] [yaml] */ \
-	14, 13, 12, 11, 10, 9,      /* green, panel G0 to G5  [sch] [sketch] [yaml] */ \
-	46, 3, 8, 18, 17            /* red,   panel R1 to R5  [sch] [sketch] [yaml] */
+	46, 3, 8, 18, 17,           /* bit 0 to 4, blue of the pixel:   panel R1 to R5  [sch] [sketch] */ \
+	14, 13, 12, 11, 10, 9,      /* bit 5 to 10, green:              panel G0 to G5  [sch] [sketch] [yaml] */ \
+	5, 45, 48, 47, 21           /* bit 11 to 15, red of the pixel:  panel B1 to B5  [sch] [sketch] */
 
 // The timing of [sketch], the firmware every board is shipped with: [gfx] hands these numbers to
-// esp_lcd_new_rgb_panel() unchanged, so they are a set for the driver used here. The set of [yaml]
-// (18 MHz, falling edge, 20 / 10 / 10 and 8 / 10 / 10, bounce buffer of 10 lines) is the alternative: it
-// is only known to work together with the sdkconfig of the maker's ESPHome lessons (code and constants
-// run from the PSRAM, 240 MHz), and a community build that used it without them got a sheared picture.
+// esp_lcd_new_rgb_panel() unchanged (its "polarity 1" for HSYNC and VSYNC is the idle level the driver has
+// without a flag), so they are a set for the driver used here. The set of [yaml] (18 MHz, data taken on
+// the falling edge, 20 / 10 / 10 and 8 / 10 / 10, bounce buffer of 10 lines) is the alternative: it is
+// only known to work together with the sdkconfig of the maker's ESPHome lessons (code and constants run
+// from the PSRAM, 240 MHz), and a community build that used it without them got a sheared picture.
 // See the CHECK at the RGB panel
 #define BOARD_PANEL_PCLK_HZ             12000000
-#define BOARD_PANEL_PCLK_ACTIVE_NEG     0       // data changes on the rising edge
+// The panel takes the data on the rising edge of the pixel clock; it changes on the falling one
+// (hal/lcd_ll.h of ESP-IDF: "False: sample on posedge")
+#define BOARD_PANEL_PCLK_ACTIVE_NEG     0
 #define BOARD_PANEL_HSYNC_FRONT         10
 #define BOARD_PANEL_HSYNC_PULSE         4
 #define BOARD_PANEL_HSYNC_BACK          20
@@ -113,11 +123,20 @@
 #define BOARD_PANEL_VSYNC_PULSE         4
 #define BOARD_PANEL_VSYNC_BACK          20
 // Lines in each of the two bounce buffers in the internal RAM, as in [sketch]: 2 * 480 * 20 * 2 bytes =
-// 38.4 KB. The frame buffer (480 * 480 * 2 bytes) has to be a multiple of it
+// 38.4 KB. A frame has to be a whole and an EVEN number of them (480 / 20 = 24; 10 lines give 48): the
+// driver tells the two buffers apart by counting and starts every frame with the first. It refuses a
+// number that is not whole; an odd one (32 lines give 15) it takes and shows a picture put together
+// wrongly, so board.c refuses that
 #define BOARD_PANEL_BOUNCE_LINES        20
-// Frame buffers in the PSRAM, 460800 bytes each. One, as [esphome] and [gfx] have it. Two are needed to
-// let LVGL draw straight into them ("avoid tearing" of esp_lvgl_port)
+// Frame buffers in the PSRAM, 460800 bytes each. One, as [esphome] and [gfx] have it. A second one is of
+// no use by itself: main/screen.c copies what LVGL has drawn into the one that is shown. See the CHECK
+// about tearing at the RGB panel
 #define BOARD_PANEL_FRAME_BUFFERS       1
+// How often the driver is asked to start the DMA again at the first bounce buffer in the next vertical
+// blanking (board.c, panel_restart_start()). Shorter than a frame of either set (22.0 ms with this one,
+// 14.7 ms with the one of [yaml]), so that every blanking finds the request: [esphome] asks in every round
+// of its loop
+#define BOARD_PANEL_RESTART_MS          10
 
 /* ------------------------------------------------------------ backlight */
 

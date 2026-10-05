@@ -14,6 +14,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_check.h"
+#include "esp_timer.h"
 #include "driver/i2c_master.h"
 #include "driver/ledc.h"
 #include "driver/pulse_cnt.h"
@@ -31,16 +32,24 @@
  *
  * Tasks: board_init() and board_panel_start() are called once, one after the other, when the display
  * starts. Everything after that belongs to the task that owns the screen. The I2C driver serialises its
- * transfers by itself; nothing else here has a lock.
+ * transfers by itself; nothing else here has a lock. One thing runs beside that task: the timer that asks
+ * the panel driver for its restart (panel_restart_start()), from the task of esp_timer.
  */
 
 #define TAG "board"
 
 // The panel is driven through bounce buffers (see panel_create()), and that mode leans on two settings of
-// display/sdkconfig.defaults. Without them the picture shifts some day and nothing tells why.
-#if !CONFIG_ESP32S3_DATA_CACHE_LINE_64B || !CONFIG_LCD_RGB_RESTART_IN_VSYNC
-#error "sdkconfig: CONFIG_ESP32S3_DATA_CACHE_LINE_64B and CONFIG_LCD_RGB_RESTART_IN_VSYNC are needed, see display/sdkconfig.defaults"
+// display/sdkconfig.defaults: one that has to be set and one that must not be. With either of them wrong
+// the picture shifts some day and nothing tells why.
+#if !CONFIG_ESP32S3_DATA_CACHE_LINE_64B
+#error "sdkconfig: CONFIG_ESP32S3_DATA_CACHE_LINE_64B is needed, see display/sdkconfig.defaults"
 #endif
+#if CONFIG_LCD_RGB_RESTART_IN_VSYNC
+#error "sdkconfig: CONFIG_LCD_RGB_RESTART_IN_VSYNC leaves the picture shifted with ESP-IDF v5.5.2, see display/sdkconfig.defaults"
+#endif
+// The driver fills the two bounce buffers in turn and starts every frame with the first (panel_create())
+_Static_assert(BOARD_HEIGHT % (2 * BOARD_PANEL_BOUNCE_LINES) == 0,
+               "a frame has to be an even number of bounce buffers, see BOARD_PANEL_BOUNCE_LINES");
 
 // Level of the outputs of the expander while nothing is going on: both resets released, panel without power
 #define EXPANDER_IDLE   (BOARD_EXP_TOUCH_RESET | BOARD_EXP_LCD_RESET | (BOARD_LCD_POWER_ON ? 0 : BOARD_EXP_LCD_POWER))
@@ -64,12 +73,16 @@ static esp_lcd_panel_handle_t panel_started;
  * ahead of the table, from BOARD_PANEL_ELE_ORDER and BOARD_PANEL_COLMOD_BITS, and warns about a table that
  * sends them again. The software reset is sent by esp_lcd_panel_reset().
  *
- * CHECK: red, green and blue areas show in their colour. The table of the maker ends with 36h = 08h (BGR),
- * but its firmware also exchanges red and blue of every pixel in software, and ESPHome writes 36h = 00h
- * after the sequence of the lessons (with command set 2 still selected; whether the ST7701S takes it then
- * is not known). Read together: a pixel that is sent as it is, its red on the pins R of the panel, needs
- * the bit BGR off. That is set here, and it is a conclusion, not something a source says. If red and blue
- * are exchanged: BOARD_PANEL_ELE_ORDER to LCD_RGB_ELEMENT_ORDER_BGR.
+ * CHECK: red, green and blue areas show in their colour. What leaves the chip is what the firmware of the
+ * maker sends: 36h = 08h (BGR), and the red of a pixel on the lines the schematic calls blue (that
+ * firmware exchanges red and blue of every pixel in software before it sends it; here the pins are named
+ * in that order instead, BOARD_PANEL_DATA_PINS). The ESPHome lessons of the maker have both the other way
+ * round, red on the lines called red and 36h = 00h (written by ESPHome after the sequence, with command
+ * set 2 selected). That is the same picture only if the ST7701S obeys the bit BGR while it is fed through
+ * the RGB bus, and no source says that it does; the first of those lessons carries the note "colors are
+ * off". If red and blue are exchanged: BOARD_PANEL_ELE_ORDER to LCD_RGB_ELEMENT_ORDER_RGB. If that
+ * changes nothing, the panel does not obey the bit: put it back, and exchange the two groups of five in
+ * BOARD_PANEL_DATA_PINS.
  * CHECK: grey steps are even and nothing is washed out or inverted. If not, this is not the sequence of
  * the panel that is built in: compare with the other st7701_type*_init_operations of Arduino_GFX.
  */
@@ -240,6 +253,9 @@ static esp_err_t bus_init(void)
  * CHECK: the log names the id 0x11 (CST826, the only one the driver of the maker's firmware accepts). With
  * another id the registers board_touch() reads may mean something else: compare with the data sheet of
  * that controller.
+ * CHECK: if the log says here that the controller does not answer, and touches work all the same once the
+ * panel runs: the controller is fed through the switch on P3, which is still off at this point. Then
+ * this reset has to move into board_panel_start(), behind the power.
  */
 static esp_err_t touch_reset(void)
 {
@@ -357,11 +373,23 @@ esp_err_t board_init(void)
  * The frame buffer lies in the PSRAM. The DMA does not read it there: an interrupt copies it, a few lines
  * at a time, into one of two bounce buffers in the internal RAM, and the DMA sends those. This is the mode
  * the maker's firmware and ESPHome drive this board in; the timing is the one of the maker's firmware
- * (board_pins.h). No event callback is registered here: esp_lvgl_port registers its own, and
- * esp_lcd_rgb_panel_register_event_callbacks() replaces all of them at once.
+ * (board_pins.h). No event callback is registered, neither here nor in main/screen.c: they are free for
+ * whoever wants to draw in step with the picture (esp_lcd_rgb_panel_register_event_callbacks() sets all
+ * of them at once).
  *
  * The two interrupts of the panel run on the core of the task that calls this. Espressif advises to run
  * the LVGL task on the same core, so that two cores do not share the PSRAM while a line is copied.
+ *
+ * Which of the two bounce buffers is to be filled next, the driver knows by counting the interrupts of
+ * the DMA. When some of them are lost - they were held up for longer than one buffer lasts, 0.86 ms with
+ * this timing: the flash is written, interrupts are off for long - the count no longer fits the picture.
+ * It is set right in the vertical blanking, together with a restart of the DMA at the first buffer:
+ * ESP-IDF v5.5.2 does that when it has counted too few interrupts in a frame, and when it was asked to
+ * (esp_lcd_rgb_panel_restart(); panel_restart_start() below asks all the time). With
+ * CONFIG_LCD_RGB_RESTART_IN_VSYNC it restarts the DMA in every blanking but never sets the count right
+ * (esp_lcd_panel_rgb.c, lcd_rgb_panel_try_restart_transmission(); ESP-IDF issue 19070, mended on master
+ * only). After one lost interrupt every buffer is then filled while it is sent, and the picture stays
+ * shifted. So that option is off, and this file does not compile with it.
  *
  * CHECK: the picture stands still, straight and whole, also with WiFi connected and traffic on it. A
  * picture that is sheared, shifted sideways or torn into bands is the timing or the bandwidth of the
@@ -371,13 +399,24 @@ esp_err_t board_init(void)
  * CONFIG_SPIRAM_RODATA.
  * CHECK: single pixels that sparkle, or edges with a coloured fringe: the panel takes the data on the
  * other edge of the pixel clock, flip BOARD_PANEL_PCLK_ACTIVE_NEG.
- * CHECK: the picture is upright and not mirrored. If it is not: the rotation of the LVGL display
- * (esp_lvgl_port calls esp_lcd_panel_mirror(), which mirrors in software here), not this file.
- * CHECK: while the flash is written (settings stored, firmware update) the picture may stop or show
- * garbage, because the PSRAM cannot be read then. It has to be whole again afterwards. If it stays shifted,
- * CONFIG_LCD_RGB_RESTART_IN_VSYNC does not do what it is set for.
- * CHECK: moving content does not tear. If it does: BOARD_PANEL_FRAME_BUFFERS 2 and "avoid tearing" of
- * esp_lvgl_port.
+ * CHECK: the picture is upright and not mirrored. If it is not: esp_lcd_panel_mirror() or
+ * esp_lcd_panel_swap_xy() on the panel at the end of this function (the RGB driver then turns every block
+ * while it copies it into the frame buffer; the ST7701 driver passes the call on), and the same turn for
+ * the coordinates in board_touch(). The rotation of the LVGL display does not turn the pixels.
+ * CHECK: while the flash is written (a layout or the settings stored, a firmware update) the picture may
+ * stop or show garbage, because the PSRAM cannot be read then. It has to be whole again within a moment,
+ * every time: store a layout twenty times, upload a firmware, start the WiFi. A picture that stays
+ * shifted up or down by BOARD_PANEL_BOUNCE_LINES lines, flickering at the left edge of every such band,
+ * is the count described above: see whether the timer of panel_restart_start() runs. The cross-check, to
+ * be seen once: with CONFIG_LCD_RGB_RESTART_IN_VSYNC=y and its #error taken out the shift should stay
+ * after some of these writes (expected from the code of the driver, never seen here).
+ * CHECK: moving content does not tear. If it does, BOARD_PANEL_FRAME_BUFFERS 2 changes nothing by itself:
+ * main/screen.c would have to let LVGL draw straight into the two frame buffers
+ * (esp_lcd_rgb_panel_get_frame_buffer()) and hand the finished one to esp_lcd_panel_draw_bitmap(), which
+ * then shows it from the next frame on instead of copying.
+ * CHECK: heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL) after an hour with WiFi, the web page and
+ * an upload. The two bounce buffers take 38.4 KB of the internal RAM, twice what the design counted
+ * with. If it gets tight: the set of the ESPHome lessons above has buffers of half the size.
  */
 static esp_err_t panel_create(esp_lcd_panel_io_handle_t io, esp_lcd_panel_handle_t *panel)
 {
@@ -441,6 +480,42 @@ static esp_err_t panel_create(esp_lcd_panel_io_handle_t io, esp_lcd_panel_handle
 	return err;
 }
 
+// Only sets a flag in the driver, under its spinlock: the restart itself is done by the interrupt of the
+// next vertical blanking
+static void panel_restart_cb(void *arg)
+{
+	esp_lcd_rgb_panel_restart(arg);
+}
+
+/*
+ * Asks the driver, more often than a frame lasts, to start the DMA again at the first bounce buffer and to
+ * count the buffers anew (see panel_create()). This is what CONFIG_LCD_RGB_RESTART_IN_VSYNC is meant to do
+ * and in ESP-IDF v5.5.2 does only by half, and what ESPHome does for this board from its loop. The handle
+ * of the ST7701 driver is the one of the RGB panel with some of its functions replaced, so the call takes
+ * it. The timer is never stopped: the panel lives as long as the firmware runs.
+ */
+static esp_err_t panel_restart_start(esp_lcd_panel_handle_t panel)
+{
+	const esp_timer_create_args_t timer_args =
+	{
+		.callback = panel_restart_cb,
+		.arg = panel,
+		.dispatch_method = ESP_TIMER_TASK,
+		.name = "panel restart",
+	};
+	esp_timer_handle_t timer;
+	esp_err_t err;
+
+	ESP_RETURN_ON_ERROR(esp_timer_create(&timer_args, &timer), TAG, "panel: timer of the restart");
+	err = esp_timer_start_periodic(timer, (uint64_t)BOARD_PANEL_RESTART_MS * 1000);
+	if(err != ESP_OK)
+	{
+		ESP_LOGE(TAG, "panel: timer of the restart does not start: %s", esp_err_to_name(err));
+		esp_timer_delete(timer);
+	}
+	return err;
+}
+
 esp_err_t board_panel_start(esp_lcd_panel_handle_t *panel)
 {
 	const spi_line_config_t line_config =
@@ -480,6 +555,14 @@ esp_err_t board_panel_start(esp_lcd_panel_handle_t *panel)
 	err = panel_create(io, panel);
 	if(err != ESP_OK)
 	{
+		esp_lcd_panel_io_del(io);
+		return err;
+	}
+	err = panel_restart_start(*panel);
+	if(err != ESP_OK)
+	{
+		esp_lcd_panel_del(*panel);
+		*panel = NULL;
 		esp_lcd_panel_io_del(io);
 		return err;
 	}

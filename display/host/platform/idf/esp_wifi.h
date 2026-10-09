@@ -115,8 +115,17 @@ typedef struct
 
 #define WIFI_INIT_CONFIG_DEFAULT() { .nvs_enable = 1 }
 
+// esp_wifi_types_generic.h: the station sleeps between beacons unless it is told not to
+typedef enum
+{
+	WIFI_PS_NONE,
+	WIFI_PS_MIN_MODEM,
+	WIFI_PS_MAX_MODEM,
+} wifi_ps_type_t;
+
 esp_err_t esp_wifi_init(const wifi_init_config_t *config);
 esp_err_t esp_wifi_set_storage(wifi_storage_t storage);
+esp_err_t esp_wifi_set_ps(wifi_ps_type_t type);
 esp_err_t esp_wifi_set_mode(wifi_mode_t mode);
 esp_err_t esp_wifi_set_config(wifi_interface_t interface, wifi_config_t *conf);
 esp_err_t esp_wifi_start(void);

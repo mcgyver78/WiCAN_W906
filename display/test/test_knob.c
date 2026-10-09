@@ -79,15 +79,15 @@ static void garbage(void)
 	knob.long_sent = false;
 	knob.pressed_since_ms = 77777;
 	knob.clock_ms = 99999;
-	knob.rest = 3;
+	knob.rest = 1;
 	knob.last_count_ms = 88888;
 	knob.reverse = true;
 }
 
 static void test_constants(void)
 {
-	check(KNOB_DEBOUNCE == 2 && KNOB_LONG_MS == 800 && KNOB_COUNTS_PER_DETENT == 4 && KNOB_REST_MS == 500,
-	      "2 readings in a row, 800 ms for a long press, 4 counts per detent, 500 ms until a rest is dropped");
+	check(KNOB_DEBOUNCE == 2 && KNOB_LONG_MS == 800 && KNOB_COUNTS_PER_DETENT == 2 && KNOB_REST_MS == 500,
+	      "2 readings in a row, 800 ms for a long press, 2 counts per detent, 500 ms until a rest is dropped");
 }
 
 static void test_init(void)
@@ -95,11 +95,12 @@ static void test_init(void)
 	garbage();
 	knob_init(&knob, false);
 	check(!knob_is_pressed(&knob), "after the start the switch counts as released, whatever stood in the memory");
-	check(turn(3, 10) == 0 && turn(1, 20) == 1, "after the start nothing is counted: four counts are the first detent, in the direction given");
+	// 112 ms after the last count that stood in the memory (garbage()): a count left there would still count
+	check(turn(1, 89000) == 0 && turn(1, 89010) == 1, "after the start nothing is counted, whatever stood in the memory: two counts are the first detent, in the direction given");
 
 	garbage();
 	knob_init(&knob, true);
-	check(turn(4, 10) == -1 && turn(-4, 20) == 1, "started with reverse: a detent is reported with the opposite sign");
+	check(turn(2, 10) == -1 && turn(-2, 20) == 1, "started with reverse: a detent is reported with the opposite sign");
 
 	garbage();
 	knob_init(&knob, false);
@@ -464,7 +465,7 @@ static void test_long_times(void)
 		if(reading(false, 1020 + gaps[i]) != KNOB_NONE || reading(false, 1040 + gaps[i]) != KNOB_NONE || knob_is_pressed(&knob)) wrong_release = true;
 
 		knob_init(&knob, false);
-		turn(3, 1000);
+		turn(1, 1000);
 		if(turn(1, 1000 + gaps[i]) != 0) wrong_rest = true;
 	}
 	check(!wrong_long, "no reading for 65 seconds, 49 days, thousands of years or half of all time, then pressed: the long press");
@@ -487,10 +488,10 @@ static void test_long_times(void)
 	check(reading(false, 0x100000000ull + 399) == KNOB_SHORT, "a press 400 ms before the time needs 33 bits, released 399 ms behind that point: a short press");
 
 	knob_init(&knob, false);
-	turn(3, 0x100000000ull - 100);
+	turn(1, 0x100000000ull - 100);
 	check(turn(1, 0x100000000ull + 399) == 1, "a rest counted 100 ms before the time needs 33 bits is kept 399 ms behind that point");
 	knob_init(&knob, false);
-	turn(3, 0x100000000ull - 100);
+	turn(1, 0x100000000ull - 100);
 	check(turn(1, 0x100000000ull + 400) == 0, "a rest counted 100 ms before the time needs 33 bits is dropped 400 ms behind that point");
 }
 
@@ -510,26 +511,26 @@ static void test_time_zero(void)
 	check(reading(false, 120) == KNOB_SHORT, "a press that began at time 0, released at 120: a short press");
 
 	knob_init(&knob, false);
-	turn(3, 0);
+	turn(1, 0);
 	check(turn(1, 499) == 1, "a rest counted at time 0 is kept at 499");
 	knob_init(&knob, false);
-	turn(3, 0);
+	turn(1, 0);
 	check(turn(1, 500) == 0, "a rest counted at time 0 is dropped at 500");
 }
 
-// How many whole detents `counts` holds, taken off four at a time; what is left stays in *counts
-static int fours(int *counts)
+// How many whole detents `counts` holds, taken off two at a time; what is left stays in *counts
+static int twos(int *counts)
 {
 	int detents = 0;
 
-	while(*counts >= 4)
+	while(*counts >= 2)
 	{
-		*counts -= 4;
+		*counts -= 2;
 		detents++;
 	}
-	while(*counts <= -4)
+	while(*counts <= -2)
 	{
-		*counts += 4;
+		*counts += 2;
 		detents--;
 	}
 	return detents;
@@ -537,7 +538,8 @@ static int fours(int *counts)
 
 static void test_every_count(void)
 {
-	static const int more[6] = {1, 2, 3, -1, -2, -3};
+	// One count either way tells what was left: one count forth completes a detent, one back, or neither
+	static const int more[2] = {1, -1};
 	int wrong_first = 0, wrong_reverse = 0, wrong_more = 0, wrong_rest = 0;
 	int counts, rest;
 	size_t m;
@@ -545,40 +547,40 @@ static void test_every_count(void)
 	for(counts = -1000; counts <= 1000; counts++)
 	{
 		int left = counts;
-		int expected = fours(&left);
+		int expected = twos(&left);
 
 		knob_init(&knob, false);
 		if(turn(counts, 1000) != expected) wrong_first++;
 		knob_init(&knob, true);
 		if(turn(counts, 1000) != -expected) wrong_reverse++;
 
-		for(m = 0; m < 6; m++)
+		for(m = 0; m < 2; m++)
 		{
 			int together = left + more[m];
-			int then = fours(&together);
+			int then = twos(&together);
 
 			knob_init(&knob, false);
 			turn(counts, 1000);
 			if(turn(more[m], 1010) != then) wrong_more++;
 		}
 	}
-	check(wrong_first == 0, "every count from -1000 to 1000 in one call: as many detents as it holds whole fours");
+	check(wrong_first == 0, "every count from -1000 to 1000 in one call: as many detents as it holds whole twos");
 	check(wrong_reverse == 0, "every count from -1000 to 1000 with reverse set: the same detents with the opposite sign");
-	check(wrong_more == 0, "every count from -1000 to 1000: what is left of it counts on with one, two or three counts either way");
+	check(wrong_more == 0, "every count from -1000 to 1000: what is left of it counts on with one count more either way");
 
-	for(rest = -3; rest <= 3; rest++)
+	for(rest = -1; rest <= 1; rest++)
 	{
 		for(counts = -1000; counts <= 1000; counts++)
 		{
 			int together = rest + counts;
-			int expected = fours(&together);
+			int expected = twos(&together);
 
 			knob_init(&knob, false);
 			turn(rest, 1000);
 			if(turn(counts, 1010) != expected) wrong_rest++;
 		}
 	}
-	check(wrong_rest == 0, "every count from -1000 to 1000 on top of every rest from -3 to 3: the whole fours of both together");
+	check(wrong_rest == 0, "every count from -1000 to 1000 on top of a rest of one count either way or of none: the whole twos of both together");
 }
 
 static void test_detents(void)
@@ -587,33 +589,30 @@ static void test_detents(void)
 	int i;
 
 	knob_init(&knob, false);
-	check(turn(4, 1000) == 1, "four counts: one detent");
-	check(turn(-4, 1010) == -1, "four counts the other way: one detent the other way");
-	check(turn(8, 1020) == 2 && turn(-12, 1030) == -3, "fast turning: eight counts are two detents, twelve the other way three");
+	check(turn(2, 1000) == 1, "two counts: one detent");
+	check(turn(-2, 1010) == -1, "two counts the other way: one detent the other way");
+	check(turn(4, 1020) == 2 && turn(-6, 1030) == -3, "fast turning: four counts are two detents, six the other way three");
 	check(turn(0, 1040) == 0, "no counts: no detent");
-	check(turn(1, 1050) == 0 && turn(1, 1060) == 0 && turn(1, 1070) == 0, "slow turning: three counts, one per call, are no detent yet");
-	check(turn(1, 1080) == 1, "slow turning: the fourth count completes the detent");
-	check(turn(-1, 1090) == 0 && turn(-1, 1100) == 0 && turn(-1, 1110) == 0 && turn(-1, 1120) == -1, "slow turning the other way: the fourth count completes the detent");
+	check(turn(1, 1050) == 0, "slow turning: one count is no detent yet");
+	check(turn(1, 1060) == 1, "slow turning: the second count completes the detent");
+	check(turn(-1, 1070) == 0 && turn(-1, 1080) == -1, "slow turning the other way: the second count completes the detent");
 
 	knob_init(&knob, false);
-	check(turn(3, 1000) == 0, "three counts at once: no detent");
+	turn(1, 1000);
 	check(turn(0, 1010) == 0 && turn(1, 1020) == 1, "a call without counts between does not lose what was counted");
 
+	// What a call leaves is one count or none: three counts are a detent and one count in their direction
 	knob_init(&knob, false);
-	check(turn(5, 1000) == 1 && turn(3, 1010) == 1, "five counts: one detent and one count left, three more complete the next");
+	check(turn(3, 1000) == 1 && turn(1, 1010) == 1, "three counts: one detent, not two, and one count left that the next completes");
 	knob_init(&knob, false);
-	check(turn(-5, 1000) == -1 && turn(-3, 1010) == -1, "five counts the other way: one detent and one count left that way");
-	knob_init(&knob, false);
-	check(turn(7, 1000) == 1 && turn(1, 1010) == 1, "seven counts: one detent, not two, and three counts left");
-	knob_init(&knob, false);
-	check(turn(-7, 1000) == -1 && turn(-1, 1010) == -1, "seven counts the other way: one detent that way, not two, and three counts left");
+	check(turn(-3, 1000) == -1 && turn(-1, 1010) == -1, "three counts the other way: one detent that way, not two, and one count left that way");
 
 	knob_init(&knob, false);
 	for(i = 0; i < 400; i++)
 	{
-		if(turn(1, 1000 + (uint64_t)i * 20) != (i % 4 == 3 ? 1 : 0)) wrong = true;
+		if(turn(1, 1000 + (uint64_t)i * 20) != (i % 2 == 1 ? 1 : 0)) wrong = true;
 	}
-	check(!wrong, "400 counts, one every 20 ms: a detent with every fourth, 100 in all");
+	check(!wrong, "400 counts, one every 20 ms: a detent with every second, 200 in all");
 }
 
 static void test_direction(void)
@@ -622,24 +621,24 @@ static void test_direction(void)
 	int i;
 
 	knob_init(&knob, false);
-	turn(3, 1000);
-	check(turn(-1, 1010) == 0 && turn(1, 1020) == 0 && turn(1, 1030) == 1, "three counts, one back, two forth: the detent with the fourth count that is left");
+	turn(1, 1000);
+	check(turn(-1, 1010) == 0 && turn(1, 1020) == 0 && turn(1, 1030) == 1, "one count forth and one back are nothing: two more forth are one detent");
 
 	knob_init(&knob, false);
-	turn(3, 1000);
-	check(turn(-3, 1010) == 0 && turn(-3, 1020) == 0 && turn(-1, 1030) == -1, "three counts forth and three back are nothing: four more that way are one detent");
+	turn(1, 1000);
+	check(turn(-1, 1010) == 0 && turn(-1, 1020) == 0 && turn(-1, 1030) == -1, "one count forth and one back are nothing: two more back are one detent");
 
 	knob_init(&knob, false);
-	turn(3, 1000);
-	check(turn(-7, 1010) == -1 && turn(3, 1020) == 0 && turn(1, 1030) == 1, "three forth, seven back: one detent back and nothing left");
+	turn(1, 1000);
+	check(turn(-3, 1010) == -1 && turn(1, 1020) == 0 && turn(1, 1030) == 1, "one forth, three back: one detent back and nothing left");
 
 	knob_init(&knob, false);
-	turn(2, 1000);
-	check(turn(-5, 1010) == 0 && turn(-1, 1020) == -1, "two forth, five back: three counts back are left, the fourth completes the detent");
+	turn(1, 1000);
+	check(turn(-2, 1010) == 0 && turn(-1, 1020) == -1, "one forth, two back: one count back is left, the next completes the detent");
 
 	knob_init(&knob, false);
-	turn(-3, 1000);
-	check(turn(6, 1010) == 0 && turn(1, 1020) == 1, "three back, six forth: three counts forth are left");
+	turn(-1, 1000);
+	check(turn(2, 1010) == 0 && turn(1, 1020) == 1, "one back, two forth: one count forth is left");
 
 	knob_init(&knob, false);
 	for(i = 0; i < 200; i++)
@@ -647,14 +646,6 @@ static void test_direction(void)
 		if(turn(i % 2 == 0 ? 1 : -1, 1000 + (uint64_t)i * 20) != 0) wrong = true;
 	}
 	check(!wrong, "a knob that trembles between two counts for four seconds turns no detent");
-
-	knob_init(&knob, false);
-	wrong = false;
-	for(i = 0; i < 200; i++)
-	{
-		if(turn(i % 2 == 0 ? 3 : -3, 1000 + (uint64_t)i * 20) != 0) wrong = true;
-	}
-	check(!wrong, "three counts forth and back again and again turn no detent");
 }
 
 static void test_rest(void)
@@ -663,20 +654,20 @@ static void test_rest(void)
 	int i;
 
 	knob_init(&knob, false);
-	turn(3, 1000);
-	check(turn(1, 1499) == 1, "the fourth count 499 ms after the third: the rest was kept, a detent");
+	turn(1, 1000);
+	check(turn(1, 1499) == 1, "the second count 499 ms after the first: the rest was kept, a detent");
 
 	knob_init(&knob, false);
-	turn(3, 1000);
-	check(turn(1, 1500) == 0, "the fourth count 500 ms after the third: the rest was dropped, no detent");
-	check(turn(2, 1600) == 0 && turn(1, 1700) == 1, "the count that dropped the rest is the first of a new one");
+	turn(1, 1000);
+	check(turn(1, 1500) == 0, "the second count 500 ms after the first: the rest was dropped, no detent");
+	check(turn(1, 1600) == 1, "the count that dropped the rest is the first of a new one: the next completes the detent");
 
 	knob_init(&knob, false);
-	turn(-3, 1000);
-	check(turn(-1, 1500) == 0 && turn(-2, 1600) == 0 && turn(-1, 1700) == -1, "a rest the other way is dropped after 500 ms as well");
+	turn(-1, 1000);
+	check(turn(-1, 1500) == 0 && turn(-1, 1600) == -1, "a rest the other way is dropped after 500 ms as well");
 
 	knob_init(&knob, false);
-	check(turn(1, 1000) == 0 && turn(1, 1499) == 0 && turn(1, 1998) == 0 && turn(1, 2497) == 1, "a count every 499 ms: the fourth completes the detent, the time counts from the count before");
+	check(turn(1, 1000) == 0 && turn(1, 1499) == 1 && turn(1, 1998) == 0 && turn(1, 2497) == 1, "a count every 499 ms: every second one completes a detent");
 
 	knob_init(&knob, false);
 	for(i = 0; i < 40; i++)
@@ -685,55 +676,46 @@ static void test_rest(void)
 	}
 	check(!wrong, "a count every 500 ms never adds up to a detent");
 
+	// A rest outlives a count only in a call of several: one count is left at 1000, and one again at 1400
 	knob_init(&knob, false);
-	check(turn(1, 1000) == 0 && turn(1, 1400) == 0 && turn(1, 1800) == 0 && turn(1, 2200) == 1,
-	      "four counts 400 ms apart, 1200 ms from the first to the last: a detent");
+	check(turn(1, 1000) == 0 && turn(2, 1400) == 1 && turn(1, 1800) == 1,
+	      "one count, two 400 ms later, one 400 ms after them: two detents, the time of a rest counts from the count before and not from its first");
 
 	knob_init(&knob, false);
-	turn(3, 1000);
+	turn(1, 1000);
 	turn(0, 1300);
 	check(turn(1, 1500) == 0, "a call without counts is no count: it does not keep the rest alive");
 
 	knob_init(&knob, false);
-	turn(3, 1000);
+	turn(1, 1000);
 	turn(0, 1400);
 	check(turn(1, 1499) == 1, "a call without counts does not drop a rest that is younger than 500 ms");
 
 	knob_init(&knob, false);
-	turn(3, 1000);
+	turn(1, 1000);
 	turn(0, 1600);
 	check(turn(1, 1700) == 0, "a call without counts after the rest time, then a count: the rest is gone");
 
 	knob_init(&knob, false);
-	turn(4, 1000);
-	turn(3, 1400);
+	turn(2, 1000);
+	turn(1, 1400);
 	check(turn(1, 1899) == 1, "the rest time counts from the last count, also when that one completed a detent before");
 
 	knob_init(&knob, false);
-	turn(3, 1000);
-	check(turn(5, 1500) == 1 && turn(3, 1600) == 1, "five counts after a dropped rest: one detent and one count left");
-
-	knob_init(&knob, false);
 	turn(1, 1000);
-	check(turn(3, 1500) == 0 && turn(1, 1600) == 1, "a rest of one count is dropped after 500 ms like a rest of three");
-	knob_init(&knob, false);
-	turn(-1, 1000);
-	check(turn(-3, 1500) == 0 && turn(-1, 1600) == -1, "a rest of one count the other way is dropped after 500 ms");
-	knob_init(&knob, false);
-	turn(2, 1000);
-	check(turn(2, 1500) == 0 && turn(2, 1600) == 1, "a rest of two counts is dropped after 500 ms");
+	check(turn(3, 1500) == 1 && turn(1, 1600) == 1, "three counts after a dropped rest: one detent and one count left");
 
 	knob_init(&knob, true);
-	turn(3, 1000);
-	check(turn(1, 1500) == 0 && turn(3, 1600) == -1, "with reverse set the rest is dropped after 500 ms as well");
+	turn(1, 1000);
+	check(turn(1, 1500) == 0 && turn(1, 1600) == -1, "with reverse set the rest is dropped after 500 ms as well");
 
 	pressed_at_1020();
-	turn(3, 1100);
-	check(turn(1, 1600) == 0 && turn(3, 1700) == 1, "while the switch is pressed the rest is dropped after 500 ms as well");
+	turn(1, 1100);
+	check(turn(1, 1600) == 0 && turn(1, 1700) == 1, "while the switch is pressed the rest is dropped after 500 ms as well");
 
 	// Without a rest nothing can be dropped
 	knob_init(&knob, false);
-	check(turn(4, 100000) == 1 && turn(4, 900000) == 1, "whole detents are reported whatever the time between them");
+	check(turn(2, 100000) == 1 && turn(2, 900000) == 1, "whole detents are reported whatever the time between them");
 }
 
 static void test_fault(void)
@@ -744,45 +726,45 @@ static void test_fault(void)
 	size_t i;
 
 	knob_init(&knob, false);
-	check(turn(1000, 1000) == 250, "1000 counts in one call: 250 detents");
-	check(turn(-1000, 1010) == -250, "1000 counts the other way: 250 detents that way");
+	check(turn(1000, 1000) == 500, "1000 counts in one call: 500 detents");
+	check(turn(-1000, 1010) == -500, "1000 counts the other way: 500 detents that way");
 
 	knob_init(&knob, false);
-	check(turn(999, 1000) == 249 && turn(1, 1010) == 1, "999 counts: 249 detents and three counts left");
+	check(turn(999, 1000) == 499 && turn(1, 1010) == 1, "999 counts: 499 detents and one count left");
 	knob_init(&knob, false);
-	check(turn(-999, 1000) == -249 && turn(-1, 1010) == -1, "999 counts the other way: 249 detents and three counts left that way");
+	check(turn(-999, 1000) == -499 && turn(-1, 1010) == -1, "999 counts the other way: 499 detents and one count left that way");
 
 	knob_init(&knob, false);
-	turn(3, 1000);
-	check(turn(1000, 1010) == 250 && turn(1, 1020) == 1, "1000 counts on top of a rest of three: 250 detents, the rest stays");
+	turn(1, 1000);
+	check(turn(1000, 1010) == 500 && turn(1, 1020) == 1, "1000 counts on top of a rest of one: 500 detents, the rest stays");
 
 	knob_init(&knob, false);
 	check(turn(1001, 1000) == 0, "1001 counts in one call: a fault of the counter, no detent");
 	check(turn(-1001, 1010) == 0, "1001 counts the other way: a fault of the counter, no detent");
 
 	knob_init(&knob, false);
-	turn(3, 1000);
+	turn(1, 1000);
 	turn(1001, 1010);
-	check(turn(3, 1020) == 0 && turn(1, 1030) == 1, "a fault of the counter drops the rest: four counts behind it are the next detent, not fewer");
+	check(turn(1, 1020) == 0 && turn(1, 1030) == 1, "a fault of the counter drops the rest: two counts behind it are the next detent, not one");
 
 	knob_init(&knob, false);
-	turn(-3, 1000);
+	turn(-1, 1000);
 	turn(-1001, 1010);
-	check(turn(-3, 1020) == 0 && turn(-1, 1030) == -1, "a fault of the counter the other way drops the rest as well");
+	check(turn(-1, 1020) == 0 && turn(-1, 1030) == -1, "a fault of the counter the other way drops the rest as well");
 
 	knob_init(&knob, false);
-	turn(3, 1000);
+	turn(1, 1000);
 	turn(-1001, 1010);
-	check(turn(3, 1020) == 0 && turn(1, 1030) == 1, "a fault of the counter against the direction of the rest drops it too");
+	check(turn(1, 1020) == 0 && turn(1, 1030) == 1, "a fault of the counter against the direction of the rest drops it too");
 
 	for(counts = 1001; counts <= 3000; counts++)
 	{
 		knob_init(&knob, false);
-		turn(3, 1000);
-		if(turn(counts, 1010) != 0 || turn(3, 1020) != 0 || turn(1, 1030) != 1) wrong++;
+		turn(1, 1000);
+		if(turn(counts, 1010) != 0 || turn(1, 1020) != 0 || turn(1, 1030) != 1) wrong++;
 		knob_init(&knob, false);
-		turn(-3, 1000);
-		if(turn(-counts, 1010) != 0 || turn(-3, 1020) != 0 || turn(-1, 1030) != -1) wrong++;
+		turn(-1, 1000);
+		if(turn(-counts, 1010) != 0 || turn(-1, 1020) != 0 || turn(-1, 1030) != -1) wrong++;
 	}
 	check(wrong == 0, "every count from 1001 to 3000 either way: a fault, no detent, the rest dropped");
 
@@ -790,56 +772,56 @@ static void test_fault(void)
 	for(i = 0; i < sizeof(far_out) / sizeof(far_out[0]); i++)
 	{
 		knob_init(&knob, false);
-		turn(3, 1000);
-		if(turn(far_out[i], 1010) != 0 || turn(3, 1020) != 0 || turn(1, 1030) != 1) wrong++;
+		turn(1, 1000);
+		if(turn(far_out[i], 1010) != 0 || turn(1, 1020) != 0 || turn(1, 1030) != 1) wrong++;
 		knob_init(&knob, false);
-		turn(-3, 1000);
-		if(turn(-far_out[i], 1010) != 0 || turn(-3, 1020) != 0 || turn(-1, 1030) != -1) wrong++;
+		turn(-1, 1000);
+		if(turn(-far_out[i], 1010) != 0 || turn(-1, 1020) != 0 || turn(-1, 1030) != -1) wrong++;
 	}
 	check(wrong == 0, "counts far beyond the limit either way, around 16 bits and up to 30 bits: a fault, no detent, the rest dropped");
 
 	knob_init(&knob, false);
-	turn(3, 1000);
-	check(turn(INT_MAX - 1, 1010) == 0 && turn(3, 1020) == 0 && turn(1, 1030) == 1, "one below the largest int as count: a fault, no detent, the rest dropped");
+	turn(1, 1000);
+	check(turn(INT_MAX - 1, 1010) == 0 && turn(1, 1020) == 0 && turn(1, 1030) == 1, "one below the largest int as count: a fault, no detent, the rest dropped");
 	knob_init(&knob, false);
-	turn(-3, 1000);
-	check(turn(INT_MIN + 1, 1010) == 0 && turn(-3, 1020) == 0 && turn(-1, 1030) == -1, "one above the smallest int as count: a fault, no detent, the rest dropped");
+	turn(-1, 1000);
+	check(turn(INT_MIN + 1, 1010) == 0 && turn(-1, 1020) == 0 && turn(-1, 1030) == -1, "one above the smallest int as count: a fault, no detent, the rest dropped");
 
 	knob_init(&knob, false);
-	turn(3, 1000);
-	check(turn(INT_MAX, 1010) == 0 && turn(3, 1020) == 0 && turn(1, 1030) == 1, "the largest int as count: a fault, no detent, the rest dropped");
+	turn(1, 1000);
+	check(turn(INT_MAX, 1010) == 0 && turn(1, 1020) == 0 && turn(1, 1030) == 1, "the largest int as count: a fault, no detent, the rest dropped");
 	knob_init(&knob, false);
-	turn(-3, 1000);
-	check(turn(INT_MIN, 1010) == 0 && turn(-3, 1020) == 0 && turn(-1, 1030) == -1, "the smallest int as count: a fault, no detent, the rest dropped");
+	turn(-1, 1000);
+	check(turn(INT_MIN, 1010) == 0 && turn(-1, 1020) == 0 && turn(-1, 1030) == -1, "the smallest int as count: a fault, no detent, the rest dropped");
 
 	knob_init(&knob, true);
 	check(turn(INT_MAX, 1000) == 0 && turn(INT_MIN, 1010) == 0 && turn(1001, 1020) == 0 && turn(-1001, 1030) == 0, "faults of the counter with reverse set: no detent");
-	check(turn(1000, 1040) == -250 && turn(-1000, 1050) == 250, "1000 counts with reverse set: 250 detents with the opposite sign");
+	check(turn(1000, 1040) == -500 && turn(-1000, 1050) == 500, "1000 counts with reverse set: 500 detents with the opposite sign");
 }
 
 static void test_reverse(void)
 {
 	knob_init(&knob, true);
-	check(turn(4, 1000) == -1 && turn(-4, 1010) == 1 && turn(8, 1020) == -2, "reverse: every detent is reported with the opposite sign");
-	check(turn(0, 1030) == 0 && turn(3, 1040) == 0 && turn(1, 1050) == -1, "reverse: counts add up to a detent as without it");
+	check(turn(2, 1000) == -1 && turn(-2, 1010) == 1 && turn(4, 1020) == -2, "reverse: every detent is reported with the opposite sign");
+	check(turn(0, 1030) == 0 && turn(1, 1040) == 0 && turn(1, 1050) == -1, "reverse: counts add up to a detent as without it");
 
 	knob_set_reverse(&knob, false);
-	check(turn(4, 1060) == 1 && turn(-4, 1070) == -1, "reverse switched off: detents with the sign of the counts");
+	check(turn(2, 1060) == 1 && turn(-2, 1070) == -1, "reverse switched off: detents with the sign of the counts");
 	knob_set_reverse(&knob, true);
-	check(turn(4, 1080) == -1 && turn(-4, 1090) == 1, "reverse switched on: detents with the opposite sign");
+	check(turn(2, 1080) == -1 && turn(-2, 1090) == 1, "reverse switched on: detents with the opposite sign");
 	knob_set_reverse(&knob, true);
-	check(turn(4, 1100) == -1, "reverse switched on twice: still the opposite sign");
+	check(turn(2, 1100) == -1, "reverse switched on twice: still the opposite sign");
 
 	// The rest is kept as it was counted
 	knob_init(&knob, false);
-	turn(3, 1000);
+	turn(1, 1000);
 	knob_set_reverse(&knob, true);
-	check(turn(1, 1010) == -1, "reverse switched on with three counts left: the fourth completes the detent, reported with the opposite sign");
+	check(turn(1, 1010) == -1, "reverse switched on with one count left: the second completes the detent, reported with the opposite sign");
 
 	knob_init(&knob, true);
-	turn(-3, 1000);
+	turn(-1, 1000);
 	knob_set_reverse(&knob, false);
-	check(turn(-1, 1010) == -1, "reverse switched off with three counts left: the fourth completes the detent");
+	check(turn(-1, 1010) == -1, "reverse switched off with one count left: the second completes the detent");
 
 	// Nothing but the sign of the detents
 	pressed_at_1020();
@@ -865,7 +847,7 @@ static void test_reverse(void)
 	check(readings(true, 40, 2000) == 0 && readings(false, 2020, 2040) == 0, "reverse switched on during the press found at the start: it still reports nothing");
 
 	knob_init(&knob, false);
-	turn(3, 1000);
+	turn(1, 1000);
 	turn(0, 1400);
 	knob_set_reverse(&knob, true);
 	check(turn(1, 1500) == 0, "reverse switched on does not keep a rest alive: dropped 500 ms after the last count");
@@ -878,50 +860,51 @@ static void test_reverse(void)
 static void test_turn_clock(void)
 {
 	knob_init(&knob, false);
-	turn(3, 1000);
+	turn(1, 1000);
 	check(turn(1, 200) == 1, "a count with a time before the latest one: no time passed, the rest is kept");
 
-	// The count at 600 is counted at 1000, so the one at 1100 comes 100 ms after it
+	// A detent at 1000. The count with the time 600 is counted at 1000 as well, so the one at 1100 comes
+	// 100 ms after it and not 500
 	knob_init(&knob, false);
-	turn(1, 1000);
+	turn(2, 1000);
 	turn(1, 600);
-	check(turn(1, 1100) == 0 && turn(1, 1200) == 1, "a count with a time before the latest one is a count at the latest one");
+	check(turn(1, 1100) == 1, "a count with a time before the latest one is a count at the latest one");
 
 	knob_init(&knob, false);
-	turn(3, 1000);
+	turn(1, 1000);
 	turn(0, 3000);
 	check(turn(1, 1100) == 0, "a call without counts moves the time on: the count behind it comes two seconds after the last one");
 
 	knob_init(&knob, false);
 	reading(false, 5000);
-	turn(3, 1000);
+	turn(1, 1000);
 	check(turn(1, 5499) == 1, "a time given to knob_sample is a time seen: a count with a time before it is counted at it, 499 ms later the rest is kept");
 	knob_init(&knob, false);
 	reading(false, 5000);
-	turn(3, 1000);
+	turn(1, 1000);
 	check(turn(1, 5500) == 0, "counted at the time given to knob_sample, 500 ms later the rest is dropped");
 
 	knob_init(&knob, false);
 	failed(false, 5000);
-	turn(3, 1000);
+	turn(1, 1000);
 	check(turn(1, 5499) == 1, "a time given with a failed reading is a time seen: the count behind it is counted at it");
 
 	knob_init(&knob, false);
-	turn(3, UINT64_MAX - 499);
+	turn(1, UINT64_MAX - 499);
 	check(turn(1, UINT64_MAX) == 1, "a rest 499 ms before the largest time is kept at the largest time");
 	knob_init(&knob, false);
-	turn(3, UINT64_MAX - 500);
+	turn(1, UINT64_MAX - 500);
 	check(turn(1, UINT64_MAX) == 0, "a rest 500 ms before the largest time is dropped at the largest time");
 
 	knob_init(&knob, false);
-	turn(3, UINT64_MAX);
-	check(turn(1, 0) == 1 && turn(3, 100000) == 0 && turn(1, 900000) == 1, "the time wraps from the largest to 0: a step back, no time passes any more");
+	turn(1, UINT64_MAX);
+	check(turn(1, 0) == 1 && turn(1, 100000) == 0 && turn(1, 900000) == 1, "the time wraps from the largest to 0: a step back, no time passes any more");
 }
 
 static void test_switch_and_encoder(void)
 {
 	pressed_at_1020();
-	check(turn(4, 1100) == 1 && turn(3, 1200) == 0 && knob_is_pressed(&knob), "turning while pressed: detents are reported, the switch stays pressed");
+	check(turn(2, 1100) == 1 && turn(1, 1200) == 0 && knob_is_pressed(&knob), "turning while pressed: detents are reported, the switch stays pressed");
 	check(reading(false, 1300) == KNOB_NONE && reading(false, 1320) == KNOB_SHORT, "turning during a press does not change what the press reports");
 	check(turn(1, 1400) == 1, "press and release do not change what was counted");
 
@@ -930,16 +913,16 @@ static void test_switch_and_encoder(void)
 	reading(false, 0);
 	reading(true, 1000);
 	reading(true, 1020);
-	check(turn(4, 1100) == -1 && turn(-8, 1200) == 2, "turning while pressed with reverse set: the opposite sign as without a press");
+	check(turn(2, 1100) == -1 && turn(-4, 1200) == 2, "turning while pressed with reverse set: the opposite sign as without a press");
 
 	started();
-	turn(3, 900);
+	turn(1, 900);
 	reading(true, 1000);
 	reading(true, 1020);
 	check(turn(1, 1030) == 1, "a press does not drop what was counted before it");
 
 	started();
-	turn(3, 1000);
+	turn(1, 1000);
 	reading(true, 1400);
 	reading(true, 1420);
 	check(turn(1, 1500) == 0, "a press does not keep a rest alive: dropped 500 ms after the last count");
@@ -949,11 +932,11 @@ static void test_switch_and_encoder(void)
 	reading(true, 1000);
 	turn(1, 1010);
 	check(reading(true, 1020) == KNOB_NONE && knob_is_pressed(&knob), "a turn between two readings that read pressed does not break their row");
-	check(turn(4, 1400) == 1 && reading(true, 1819) == KNOB_NONE && reading(true, 1820) == KNOB_LONG, "turning during a press does not restart its time: the long press 800 ms after the press");
-	check(turn(4, 1900) == 1 && readings(true, 1920, 3000) == 0, "turning after the long press does not report it again");
+	check(turn(2, 1400) == 1 && reading(true, 1819) == KNOB_NONE && reading(true, 1820) == KNOB_LONG, "turning during a press does not restart its time: the long press 800 ms after the press");
+	check(turn(2, 1900) == 1 && readings(true, 1920, 3000) == 0, "turning after the long press does not report it again");
 
 	started();
-	turn(3, 900);
+	turn(1, 900);
 	reading(true, 1000);
 	reading(true, 1020);
 	check(readings(true, 1040, 1800) == 0 && reading(true, 1820) == KNOB_LONG, "a rest of the encoder does not keep the long press from being reported");
@@ -961,7 +944,7 @@ static void test_switch_and_encoder(void)
 	knob_init(&knob, false);
 	reading(true, 0);
 	reading(true, 20);
-	check(turn(4, 100) == 1 && readings(true, 120, 2000) == 0 && readings(false, 2020, 2040) == 0, "turning during the press found at the start: it still reports nothing");
+	check(turn(2, 100) == 1 && readings(true, 120, 2000) == 0 && readings(false, 2020, 2040) == 0, "turning during the press found at the start: it still reports nothing");
 }
 
 /*
@@ -977,7 +960,7 @@ typedef struct
 	bool seen_up;           // a reading saw the switch released since the start
 	bool mute;              // the press that is going on reports nothing (more)
 	uint64_t down_for;      // since it began to count as pressed
-	int part;               // counts on the way to the next detent, -3 to 3
+	int part;               // the count on the way to the next detent: -1, 0 or 1
 	uint64_t still_for;     // since the last count
 	bool reverse;
 } model_t;
@@ -1078,7 +1061,7 @@ static int model_turn(model_t *model, int counts, uint64_t now_ms)
 	for(; left != 0; left -= step)
 	{
 		model->part += step;
-		if(model->part == 4 || model->part == -4)
+		if(model->part == 2 || model->part == -2)
 		{
 			model->part = 0;
 			detents += model->reverse ? -step : step;

@@ -58,6 +58,8 @@ TASK_WAITS = "answered ? 0 : pdMS_TO_TICKS(NET_STEP_MS)"
 PASSWORD_LENGTH = "password_length >= 8 && password_length < sizeof(ap_config.ap.password)"
 ROOM = "\troom = heap_caps_malloc(sizeof(*room), MALLOC_CAP_SPIRAM);\n"
 NO_NVS = "\tinit_config.nvs_enable = 0;\n"
+PS_NONE = "\tESP_RETURN_ON_ERROR(esp_wifi_set_ps(WIFI_PS_NONE), TAG, \"WiFi power save\");\n"
+WIFI_START = "\tESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, \"WiFi start\");\n"
 AP_PASSWORD = "\tmemcpy(ap_config.ap.password, ap_password, password_length);\n"
 AP_WPA2 = "\tap_config.ap.authmode = WIFI_AUTH_WPA2_PSK;\n"
 AP_GIVEN = "\tESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_AP, &ap_config), TAG, \"access point\");\n"
@@ -128,6 +130,10 @@ MUTATIONS = [
      "password_length >= 1 && password_length < sizeof(ap_config.ap.password)"),
     ("net_room_in_the_internal_ram", S, F, ROOM, "\troom = heap_caps_malloc(sizeof(*room), MALLOC_CAP_INTERNAL);\n"),
     ("net_driver_with_its_own_nvs", S, F, NO_NVS, ""),
+    ("net_station_sleeps_between_beacons", S, F, PS_NONE, ""),
+    ("net_station_told_to_sleep_as_the_driver_starts_out", S, F, PS_NONE, PS_NONE.replace("WIFI_PS_NONE", "WIFI_PS_MIN_MODEM")),
+    ("net_station_told_to_sleep_deeply", S, F, PS_NONE, PS_NONE.replace("WIFI_PS_NONE", "WIFI_PS_MAX_MODEM")),
+    ("net_power_save_also_set_before_the_driver_runs", S, F, WIFI_START, PS_NONE + WIFI_START),
     ("net_access_point_without_its_password", S, F, AP_PASSWORD, ""),
     ("net_access_point_open", S, F, AP_WPA2, ""),
     ("net_access_point_not_configured_before_the_start", S, F, AP_GIVEN, ""),

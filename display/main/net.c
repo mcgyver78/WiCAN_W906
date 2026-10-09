@@ -959,12 +959,19 @@ esp_err_t net_start(const char *ap_ssid, const char *ap_password)
 		ESP_LOGE(TAG, "mDNS: %s", esp_err_to_name(err));
 	}
 
-	// CHECK: the station sleeps between the beacons of its network (WIFI_PS_MIN_MODEM, the default of the
-	// driver), so every answer of the adapter may wait up to a beacon. If the requests of a round (state and
-	// values, conn.h) do not fit into its second - the count of answers on the info page grows by less than
-	// two a second with the engine running - esp_wifi_set_ps(WIFI_PS_NONE) belongs here, and a look at the
-	// chip temperature with it.
 	ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "WiFi start");
+	// The station does not sleep between the beacons of its network (the default of the driver is
+	// WIFI_PS_MIN_MODEM). Measured on the board on 2026-10-09 with the default: of 150 pings to the display,
+	// five a second, 51 % were lost and the others took 154 ms on average, while the adapter in the same
+	// network lost none of 100 (5 ms); requests to the adapter ran into their 4 s in phases although it
+	// answered the PC every time, and the web interface of the display did not answer for seconds. With
+	// the own access point switched on, which keeps the station awake, the same pings lost none of 150 and
+	// the adapter was answered twice a second without a failure. The display hangs on the supply of the
+	// vehicle: there is nothing to save.
+	// CHECK: with this line the same pings lose (nearly) none, the count of answers on the info page grows
+	// by about two a second with the ignition on, and the chip temperature there stays below the 75 degrees
+	// where the heat rule begins - the radio now listens all the time.
+	ESP_RETURN_ON_ERROR(esp_wifi_set_ps(WIFI_PS_NONE), TAG, "WiFi power save");
 
 	platform_lock();
 	strlcpy(platform_info.ap_ssid, ap_ssid, sizeof(platform_info.ap_ssid));

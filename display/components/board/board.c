@@ -287,14 +287,14 @@ static esp_err_t touch_reset(void)
  * The hardware counter starts again from 0 at either limit. With accum_count and a watch point on each
  * limit the driver adds what is lost there in its interrupt, and pcnt_unit_get_count() returns the sum.
  *
- * CHECK: one detent is KNOB_COUNTS_PER_DETENT (4, knob.h) counts: log the sum of board_encoder() over ten
- * detents, which should be 40. With 20, the encoder has a detent on every half period and the constant in
- * knob.h is 2.
+ * One detent of the knob is two counts, KNOB_COUNTS_PER_DETENT in knob.h. Measured on the board on
+ * 2026-10-09, not read from a data sheet: while the constant was 4, two detents of the hand turned one
+ * page. If every edge counts as it is set up here, the encoder has a detent on every half period.
  * CHECK: turning clockwise counts up. If it counts down, that is the setting "reverse" of knob.h; nothing
  * changes here. The sources disagree about it.
- * CHECK: the sum returns to its start when the knob is turned ten detents forth and ten back, slowly and
- * fast. If it drifts, counts are lost or made up: look at both channels with an oscilloscope before
- * changing BOARD_ENCODER_GLITCH_NS.
+ * CHECK: log the sum of board_encoder(): it is 20 after ten detents forth and back at its start after ten
+ * back, slowly and fast. If it drifts, counts are lost or made up: look at both channels with an
+ * oscilloscope before changing BOARD_ENCODER_GLITCH_NS.
  */
 static esp_err_t encoder_init(void)
 {

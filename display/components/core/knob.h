@@ -32,14 +32,20 @@
  * The clear dialog reads the switch by its own, stricter rules (hold.h); while it is open the caller does
  * not act on the events of this module.
  *
- * The encoder is counted by the pulse counter of the chip. One detent is KNOB_COUNTS_PER_DETENT counts;
- * what is left of a detent is kept, so that slow turning loses nothing, and dropped after KNOB_REST_MS
- * without a count, so that a knob resting between two detents does not add up to a step some day.
+ * The encoder is counted by the pulse counter of the chip. A detent is one click of the knob under the hand,
+ * and the unit the display turns in (nav.h: one detent is one page or one row). One detent is
+ * KNOB_COUNTS_PER_DETENT counts: two. That number was measured on the board on 2026-10-09, not read from a
+ * data sheet: while it was 4, two detents of the hand turned one page.
+ *
+ * What is left of a detent is kept, so that slow turning loses nothing, and dropped after KNOB_REST_MS
+ * without a count, so that a knob resting between two detents does not add up to a step some day. With two
+ * counts a detent, what is left is one count and never more: half a detent. So the two counts of a detent
+ * have to come less than KNOB_REST_MS apart; a single count that nothing follows in that time is forgotten.
  */
 
 #define KNOB_DEBOUNCE           2
 #define KNOB_LONG_MS            800u
-#define KNOB_COUNTS_PER_DETENT  4
+#define KNOB_COUNTS_PER_DETENT  2
 #define KNOB_REST_MS            500u
 
 typedef enum
@@ -57,7 +63,7 @@ typedef struct
 	                            // or the switch was not seen released before it (so it is set from the start)
 	uint64_t pressed_since_ms;
 	uint64_t clock_ms;          // the latest time seen: it follows the calls but never runs backwards
-	int rest;                   // counts that are not a whole detent yet, -3 to 3
+	int rest;                   // the count that is not a whole detent yet: -1, 0 or 1
 	uint64_t last_count_ms;
 	bool reverse;
 } knob_t;

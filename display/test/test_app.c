@@ -413,12 +413,12 @@ static void test_pages(void)
 	shows("page_sonstiges", "the value pages: five detents further the last of the seven pages");
 	turn(1);
 	shows("page_sonstiges", "the value pages: the hard end of the last page");
-	app_encoder(app, 3, now);
-	shows("page_sonstiges", "the value pages: three counts back are no detent");
-	app_encoder(app, -5, now);
-	check(app->nav.page == 6, "the value pages: three counts forth and five back are no detent either");
+	// One count forth alone would show nothing here: at the hard end a detent forth leaves the page as well
+	app_encoder(app, 1, now);
 	app_encoder(app, -2, now);
-	check(app->nav.page == 5, "the value pages: two counts more make the detent back to the sixth page");
+	shows("page_sonstiges", "the value pages: one count forth and two back are no detent");
+	app_encoder(app, -1, now);
+	check(app->nav.page == 5, "the value pages: one count more makes the detent back to the sixth page");
 	turn(-9);
 	shows("page_motor", "the value pages: nine detents back end on the first page");
 }
@@ -1523,10 +1523,10 @@ static void test_standby(void)
 	long_press();
 	check(app->nav.page == 0, "the next long press leads to the first page");
 	run(60000);
-	app_encoder(app, 2, now);
-	check(light() == 0, "counts that make no detent do not wake the screen");
-	app_encoder(app, 2, now);
-	check(light() == 80 && app->nav.page == 0, "the counts that complete the detent wake it");
+	app_encoder(app, 1, now);
+	check(light() == 0, "a count that makes no detent does not wake the screen");
+	app_encoder(app, 1, now);
+	check(light() == 80 && app->nav.page == 0, "the count that completes the detent wakes it");
 	run(59980);
 	check(light() == 80 && app_backlight(app, now + 19) == 80 && app_backlight(app, now + 20) == 0, "the idle time counts from the input that woke the screen");
 
@@ -5930,8 +5930,10 @@ static void one(void)
 	}
 	else if(what_now < 36)
 	{
+		// Up to three counts either way, one short of two detents: none, one or - on top of a count that was
+		// left - two
 		doing = "counts";
-		count(pick(15) - 7);
+		count(pick(7) - 3);
 	}
 	else if(what_now < 44)
 	{

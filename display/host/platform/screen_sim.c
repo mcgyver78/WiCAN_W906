@@ -1324,7 +1324,7 @@ static void test_late(void)
 	// one behind it comes with the second tick from then - at least a tick later, at most a round
 	power_on();
 	world.turn[0].at_ms = T0 + 200;
-	world.turn[0].counts = 4;
+	world.turn[0].counts = KNOB_COUNTS_PER_DETENT;
 	world.show_at_ms = T0 + 200;
 	world.show_ms = 35;
 	run(600);
@@ -1394,19 +1394,19 @@ static void test_turn(void)
 {
 	power_on();
 	world.turn[0].at_ms = T0 + 300;
-	world.turn[0].counts = 4;
+	world.turn[0].counts = KNOB_COUNTS_PER_DETENT;
 	run(600);
-	CHECK(round_of(T0 + 300)->told_counts == 4 && sum.counts == 4);
+	CHECK(round_of(T0 + 300)->told_counts == KNOB_COUNTS_PER_DETENT && sum.counts == KNOB_COUNTS_PER_DETENT);
 	CHECK(round_of(T0 + 300)->shows == 1 && shows == 2);
 
 	// Counts that came while a round was under way are those of the next one
 	power_on();
 	world.turn[0].at_ms = T0 + 301;
-	world.turn[0].counts = -3;
+	world.turn[0].counts = -(KNOB_COUNTS_PER_DETENT - 1);
 	world.turn[1].at_ms = T0 + 315;
 	world.turn[1].counts = -1;
 	run(600);
-	CHECK(round_of(T0 + 300)->told_counts == 0 && round_of(T0 + 320)->told_counts == -4 && sum.counts == -4);
+	CHECK(round_of(T0 + 300)->told_counts == 0 && round_of(T0 + 320)->told_counts == -KNOB_COUNTS_PER_DETENT && sum.counts == -KNOB_COUNTS_PER_DETENT);
 }
 
 // A reading that was held up between its time and the bus has observed nothing: the app is told that it
@@ -1464,7 +1464,7 @@ static void test_frame(void)
 	power_on();
 	world.frame = (span_t){ T0 + 190, T0 + 290 };
 	world.turn[0].at_ms = T0 + 200;
-	world.turn[0].counts = 4;
+	world.turn[0].counts = KNOB_COUNTS_PER_DETENT;
 	run(600);
 	CHECK(sum.least_gap_ms == 20 && sum.most_gap_ms == 20);
 	CHECK(round_of(T0 + 200)->refused && round_of(T0 + 280)->refused && sum.refused == 5);
@@ -1530,7 +1530,7 @@ static void test_tap(void)
 	for(unsigned i = 0; i < 8; i++)
 	{
 		world.turn[i].at_ms = T0 + 300 + 20 * i;
-		world.turn[i].counts = i % 2 == 0 ? 4 : -4;
+		world.turn[i].counts = i % 2 == 0 ? KNOB_COUNTS_PER_DETENT : -KNOB_COUNTS_PER_DETENT;
 	}
 	run(600);
 	CHECK(round_of(T0 + 360)->lookups == 1 && round_of(T0 + 360)->shows == 1 && sum.taps == 1 && sum.lookups == 1);
@@ -1588,7 +1588,7 @@ static void test_events(void)
 	power_on();
 	world.press[0] = (span_t){ T0 + 100, T0 + 200 };
 	world.turn[0].at_ms = T0 + 400;
-	world.turn[0].counts = 8;
+	world.turn[0].counts = 2 * KNOB_COUNTS_PER_DETENT;
 	world.press[1] = (span_t){ T0 + 600, T0 + 700 };
 	run(1000);
 	CHECK(platform_app->settings.night_mode && events_seen == APP_EVENT_STORE_SETTINGS && platform_app->events == 0);
@@ -1607,10 +1607,10 @@ static void test_backlight(void)
 	power_on();
 	world.press[0] = (span_t){ T0 + 100, T0 + 200 };
 	world.turn[0].at_ms = T0 + 400;
-	world.turn[0].counts = 4;
+	world.turn[0].counts = KNOB_COUNTS_PER_DETENT;
 	world.press[1] = (span_t){ T0 + 600, T0 + 700 };
 	world.turn[1].at_ms = T0 + 1000;
-	world.turn[1].counts = 4;
+	world.turn[1].counts = KNOB_COUNTS_PER_DETENT;
 	run(1400);
 	CHECK(shown.kind == SCENE_LEVEL && round_of(T0 + 1000)->lights == 1 && lights == 2 && light > round_of(T0)->wanted);
 	CHECK(sim_log_found == 1);

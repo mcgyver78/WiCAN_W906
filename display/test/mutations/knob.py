@@ -170,8 +170,9 @@ MUTATIONS = [
      ADD, "\tif((counts > 0) != (knob->rest > 0)) knob->rest = 0;\n" + ADD),
 
     # detents
-    ("knob_two_counts_per_detent", T, H, "#define KNOB_COUNTS_PER_DETENT  4", "#define KNOB_COUNTS_PER_DETENT  2"),
-    ("knob_five_counts_per_detent", T, H, "#define KNOB_COUNTS_PER_DETENT  4", "#define KNOB_COUNTS_PER_DETENT  5"),
+    ("knob_one_count_per_detent", T, H, "#define KNOB_COUNTS_PER_DETENT  2", "#define KNOB_COUNTS_PER_DETENT  1"),
+    ("knob_three_counts_per_detent", T, H, "#define KNOB_COUNTS_PER_DETENT  2", "#define KNOB_COUNTS_PER_DETENT  3"),
+    ("knob_four_counts_per_detent", T, H, "#define KNOB_COUNTS_PER_DETENT  2", "#define KNOB_COUNTS_PER_DETENT  4"),
     ("knob_rest_not_added", T, F, ADD, ""),
     ("knob_rest_not_kept", T, F, DIVIDE, DIVIDE.replace("knob->rest = counts % KNOB_COUNTS_PER_DETENT", "knob->rest = 0")),
     ("knob_rest_keeps_whole_detents", T, F, DIVIDE, DIVIDE.replace("knob->rest = counts % KNOB_COUNTS_PER_DETENT", "knob->rest = counts")),

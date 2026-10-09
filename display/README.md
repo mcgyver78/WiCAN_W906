@@ -7,16 +7,37 @@ mit dem WiCAN; der bisherige Weg WiCAN → MQTT → Node-RED bleibt daneben best
 Hardware: Elecrow CrowPanel 2.1inch-HMI ESP32 Rotary Display (ESP32-S3R8, rundes IPS-Panel 480 × 480,
 Drehknopf mit Taster, Touch).
 
-## Stand (2026-10-05)
+## Stand (2026-10-09)
 
-**Nichts davon ist je auf dem Board gelaufen. Das Board lag beim Schreiben nicht vor.**
+Am 2026-10-09 lief die Firmware zum ersten Mal auf dem Board (Version `w906-v1.4.0-39-g5ba4322`, geschrieben
+ohne Board). An diesem Tag gesehen oder gemessen:
+
+- Start ohne Fehler: Expander antwortet, Touch-Controller meldet sich als CST826 (Kennung 0x11), PSRAM 8 MB,
+  WLAN-Treiber startet ohne eigenen NVS-Bereich, „safe mode 0".
+- Das Bild steht ruhig, Ring rot, Text richtig; Knopf und Touch gehen; Standby schaltet das Licht nach 60 s ab.
+- Hotspot, Eintragen eines Netzes über die Webseite, Beitritt, echte Werte vom WiCAN (`/api/values`).
+
+Befunde desselben Tages:
+
+- Der Knopf liefert zwei Zählschritte je Raste, nicht vier: Es brauchte zwei Rasten für eine Seite. Berichtigt
+  (`KNOB_COUNTS_PER_DETENT`).
+- Mit dem Energiesparmodus des WLAN-Treibers gingen 51 % von 150 Pings zum Display verloren, Anfragen an den
+  WiCAN liefen phasenweise in ihre 4 s, die Webseite antwortete sekundenlang nicht. Mit eingeschaltetem Hotspot,
+  der das WLAN wach hält: 0 % Verlust, zwei Antworten des WiCAN je Sekunde. Berichtigt (`esp_wifi_set_ps` in
+  `main/net.c`).
+- Einmal meldete die Info-Seite als letzten Neustartgrund `wdt`. Ursache unbekannt, die Konsole lief zu der
+  Zeit nicht mit. **Offen.**
+
+Die beiden Berichtigungen sind auf dem PC geprüft; **auf dem Board gelaufen sind sie erst, wenn die Firmware
+mit ihnen aufgespielt ist.** Nicht geprüft am Board: Fehlerspeicher lesen und löschen, Update über die
+Webseite, Zurücknehmen eines Updates, Wärme im Gehäuse, alles Weitere der Liste unten.
 
 | Teil | Stand |
 |---|---|
 | Logik (`components/core`, 27 Module) | auf dem PC getestet: 27 Testprogramme mit gut 12.000 Prüfungen, dazu über 8.000 Mutationen, von denen jede einen Test rot machen muss. Läuft in der CI unter gcc, lokal unter clang, jeweils auch mit `unsigned char` wie auf dem ESP32. |
 | Zeichencode (`components/ui`, LVGL 9.5.0) | in der CI gebaut; ein Renderer ohne Display zeichnet 79 von Hand gebaute Bildschirme und gut 200 Szenen aus den Tests der Logik und prüft, dass nichts über den Kreis ragt, sich überlappt oder abgeschnitten wird. Die Bilder hängen als Artefakt `wican-display-screens` am CI-Lauf. |
 | Plattform (`main`: Start, Bildschirm-Task, WLAN, HTTP, Flash) | übersetzt und linkt für den ESP32-S3. Gegen ESP-IDF v5.5.2 und LVGL 9.5.0 gegengelesen. Dazu laufen `main.c`, `screen.c`, `net.c` und `web.c` unverändert auf dem PC gegen die echte Logik, mit Platzhaltern für ESP-IDF, FreeRTOS und LVGL (`host/platform`, in der CI). Die Platzhalter sind ein nach den Quellen geschriebenes Modell: Sie zeigen, dass die Plattform ihre eigenen Regeln hält, nicht, dass Treiber, Scheduler und Flash sich so verhalten wie gelesen. |
-| Board-Schicht (`components/board`) | übersetzt. Alle Pins, Zeiten und die Panel-Initialisierung sind aus dem Schaltplan und den Beispielen des Herstellers **gelesen**, nichts ist gemessen. |
+| Board-Schicht (`components/board`) | Pins, Zeiten und die Panel-Initialisierung sind aus dem Schaltplan und den Beispielen des Herstellers gelesen. Am Board bestätigt (2026-10-09): Bild, Farben, Hintergrundlicht, Expander, Touch, Taster, Encoder. Gemessen ist nur die Zahl der Zählschritte je Raste. |
 | Webseite (`main/web/index.html`) | in Chromium gegen einen Display-Mock auf dem PC ausprobiert. Nicht auf einem Telefon, nicht in Safari oder Firefox. |
 | WiCAN-Firmware (HTTP-Weg für den Fehlerspeicher) | auf dem Adapter im Fahrzeug geflasht und gemessen (2026-10-04): Lesen über HTTP funktioniert, MQTT unverändert. Löschen über HTTP ist am Fahrzeug noch nicht getestet. Siehe `tools/w906/API.md`. |
 
@@ -113,15 +134,23 @@ Zurück zur Werksfirmware geht es mit derselben Datei:
 esptool --chip esp32s3 --port /dev/cu.usbmodemXXXX write-flash 0 ~/Downloads/crowpanel_werksfirmware.bin
 ```
 
-Erstes Flashen über USB. Die Adressen gehören zur Partitionstabelle `partitions.csv` und dürfen nicht
-geändert werden:
+Erstes Flashen über USB. Zuerst den ganzen Flash löschen (etwa eine Minute): Die Partitionen der
+Werksfirmware liegen anders, und ihre Reste lägen sonst in unseren.
+
+```bash
+esptool --chip esp32s3 --port /dev/cu.usbmodemXXXX erase-flash
+```
+
+Die Adressen gehören zur Partitionstabelle `partitions.csv` und dürfen nicht geändert werden:
 
 ```bash
 cd ~/Downloads/wican-display && esptool --chip esp32s3 --port /dev/cu.usbmodemXXXX write-flash 0x0 bootloader/bootloader.bin 0x8000 partition_table/partition-table.bin 0x29000 ota_data_initial.bin 0x30000 wican-display.bin
 ```
 
+So ist es am 2026-10-09 gelaufen (löschen 61 s, schreiben 14 s, alle Prüfsummen bestätigt).
+
 Die serielle Ausgabe (Start, Fehlermeldungen, die Zeilen zu den `CHECK:`-Stellen) kommt über dasselbe
-USB-Kabel; beenden mit Ctrl-A, dann K:
+USB-Kabel; beenden mit Ctrl-A, dann K. Läuft sie nicht mit, geht die Meldung eines Absturzes verloren:
 
 ```bash
 screen /dev/cu.usbmodemXXXX 115200
@@ -159,7 +188,7 @@ Slot noch ein zurückgenommenes Update, steht es danach wieder unter „Vorherig
 
 ## Erster Tag am Board
 
-Im Quelltext sind 52 Stellen mit `CHECK:` markiert (22 in `components/board/board.c`, 9 in `main/main.c`,
+Im Quelltext sind 51 Stellen mit `CHECK:` markiert (21 in `components/board/board.c`, 9 in `main/main.c`,
 5 in `main/screen.c`, 10 in `main/net.c`, 3 in `main/web.c`, 2 in `main/web/index.html`, 1 in
 `sdkconfig.defaults`). Jede sagt, was zu beobachten ist und was zu ändern ist, wenn es anders kommt:
 
@@ -180,10 +209,12 @@ Die Reihenfolge, in der sie sich stellen:
    Der Timing-Satz ist der der Werksfirmware (12 MHz); der Satz aus den ESPHome-Beispielen des Herstellers
    steht in `board_pins.h` als Ausweichweg.
 4. Hintergrundlicht: nach dem Start dunkel, dann stufenlos heller, kein Flackern bei 1 %.
-5. Knopf: zehn Rasten vor und zurück ergeben null; eine Raste ist eine Seite (sonst `KNOB_COUNTS_PER_DETENT`);
-   Drehrichtung (Einstellung „Drehrichtung", nicht der Quelltext). Taster: losgelassen und gedrückt werden
-   richtig gelesen, auch nach Minuten. Gehen Tastendrücke verloren, ohne dass gerade etwas gespeichert wird,
-   dauert eine Lesung länger als die angenommenen 10 ms (`READ_MS` in `main/screen.c`).
+5. Knopf: Gemessen am 2026-10-09: Solange `KNOB_COUNTS_PER_DETENT` 4 war, brauchte eine Seite zwei Rasten
+   der Hand. Der Knopf gibt also zwei Zählschritte je Raste, und die Konstante in `components/core/knob.h`
+   steht seitdem auf 2. Noch zu sehen: Mit der 2 ist eine Raste eine Seite; zehn Rasten vor und zurück
+   ergeben null; Drehrichtung (Einstellung „Drehrichtung", nicht der Quelltext). Taster: losgelassen und
+   gedrückt werden richtig gelesen, auch nach Minuten. Gehen Tastendrücke verloren, ohne dass gerade etwas
+   gespeichert wird, dauert eine Lesung länger als die angenommenen 10 ms (`READ_MS` in `main/screen.c`).
 6. Touch: Ein Tipp trifft die Zeile unter dem Finger, oben und unten in einer Liste.
 7. Löschdialog: Der Ring füllt sich in drei Sekunden. Er darf neu beginnen, aber nie früher als nach drei
    Sekunden Halten vollenden – auch nicht, während im Browser ein Layout gespeichert wird.

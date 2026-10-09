@@ -165,6 +165,8 @@ static struct
 	int refused;                // asked for a scan or a network while the station was connecting or leaving
 	int ap_refusals;            // orders for the access point that were refused
 	int nvs_enable;             // as esp_wifi_init() was told
+	wifi_ps_type_t ps;          // whether the station sleeps between beacons: as the driver starts out, or as told
+	int ps_calls;
 	int ap_stations;
 	// A driver that does what is not written down, one switch at a time
 	bool join_silent;           // an attempt never ends by itself
@@ -382,6 +384,8 @@ char *esp_ip4addr_ntoa(const esp_ip4_addr_t *addr, char *buf, int buflen)
 esp_err_t esp_wifi_init(const wifi_init_config_t *config)
 {
 	drv.nvs_enable = config->nvs_enable;
+	// The default of the driver (esp_wifi.h, esp_wifi_set_ps())
+	drv.ps = WIFI_PS_MIN_MODEM;
 	return ESP_OK;
 }
 
@@ -395,6 +399,15 @@ esp_err_t esp_wifi_set_storage(wifi_storage_t storage)
 esp_err_t esp_wifi_start(void)
 {
 	drv.started = true;
+	return ESP_OK;
+}
+
+esp_err_t esp_wifi_set_ps(wifi_ps_type_t type)
+{
+	// The driver takes this once it is started (esp_wifi.h: ESP_ERR_WIFI_NOT_STARTED before)
+	CHECK(drv.started);
+	drv.ps = type;
+	drv.ps_calls++;
 	return ESP_OK;
 }
 
@@ -1063,6 +1076,9 @@ static void test_access_point(void)
 	CHECK(drv.started && drv.mode == WIFI_MODE_STA && mdns_started == 1 && strcmp(mdns_name, "wican-display") == 0);
 	// The driver gets no NVS of its own: the display starts without a store as well
 	CHECK(drv.nvs_enable == 0);
+	// The station never sleeps between beacons: half of what was sent to it was lost on the board with the
+	// default (net.c has the numbers)
+	CHECK(drv.ps == WIFI_PS_NONE && drv.ps_calls == 1);
 	CHECK(strcmp(platform_info.ap_ssid, "WiCAN-Display-1234") == 0 && strcmp(platform_info.ap_password, "geheimes-passwort") == 0);
 	run(1000);
 	CHECK(drv.mode == WIFI_MODE_APSTA && !drv.ap_open_window && drv.scans == 0 && link_ap_on(&platform_app->link));

@@ -382,12 +382,13 @@ static void build_busy(const scene_input_t *input, conn_view_t view, const wican
 	if(paused)
 	{
 		// The state the display still holds is from before the pause: its step would stand there as if the scan
-		// stood still, and "ca. 35 s" would promise an end nobody knows. What is known: the connection is
-		// interrupted; a scan the adapter accepted goes on without the display; of a read whose POST got no
-		// answer only the answer is missing.
+		// stood still, and "ca. 35 s" would promise an end nobody knows. What is known is that the connection
+		// is interrupted and that the display waits for the adapter - not what the adapter does meanwhile: it
+		// may scan, hold the result of a scan that is done, never have got the read, be asleep or switched
+		// off. One line, the same whether the read was accepted or its POST got no answer.
 		append(scene->big, sizeof(scene->big), "…");
 		add_text(scene, "Verbindung unterbrochen");
-		add_text(scene, accepted ? "WiCAN liest weiter" : "Warte auf Antwort");
+		add_text(scene, "Warte auf WiCAN");
 		return;
 	}
 	// Done counts as well: until the result is fetched the scan shows as complete, not as never begun

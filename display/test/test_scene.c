@@ -2199,12 +2199,11 @@ static void test_busy(void)
 	view_scan();
 	view_fell_silent();
 	check(conn_state(&conn) != NULL && conn_state(&conn)->dtc.seq == 41 && conn_state(&conn)->dtc.step == 5, "the scene: the adapter fell silent, and the connection still holds its state with the own read at 5 of 18");
-	screen("busy_read_paused", "the adapter fell silent at control unit 5 of 18 of the own read: the connection is interrupted and the adapter reads on - not the step of the last state, "
-	       "not \"ca. 35 s\"; the ring is that of the silence, red");
+	screen("busy_read_paused", "the adapter fell silent at control unit 5 of 18 of the own read: the connection is interrupted and the display waits for the WiCAN - not the step of "
+	       "the last state, not \"ca. 35 s\", and no word of what the adapter does meanwhile; the ring is that of the silence, red");
 	stage_busy(DTC_FLOW_READ_SENT, 0);
 	view_no_wifi();
-	screen("busy_read_paused_sent", "the network went before the POST of the read was answered: the connection is interrupted and the display waits for the answer - "
-	       "it does not say that the adapter reads");
+	screen("busy_read_paused", "the network went before the POST of the read was answered: the same screen byte for byte - \"Warte auf WiCAN\" is the one line of both phases");
 	stage_busy(DTC_FLOW_READING, 41);
 	view_connecting();
 	screen("busy_read_paused_joining", "back in a network in which the adapter has not answered yet: still interrupted, the ring yellow as while connecting");
@@ -2217,16 +2216,16 @@ static void test_busy(void)
 		VIEWS[v].make();
 		build();
 		snprintf(what, sizeof(what), "the own read, accepted, in the view %s: %s", VIEWS[v].name,
-		         unseen ? "it waits for the adapter - \"Verbindung unterbrochen\", \"WiCAN liest weiter\", no hint" : "\"Auftrag gesendet\" and the hint");
+		         unseen ? "it waits for the adapter - \"Verbindung unterbrochen\", \"Warte auf WiCAN\", no hint" : "\"Auftrag gesendet\" and the hint");
 		check(head_is(SCENE_PROGRESS, "Fehlerspeicher lesen", "") && strcmp(scene->big, "…") == 0 && scene->permille == 0 &&
-		      (unseen ? lines_are("Verbindung unterbrochen", "WiCAN liest weiter", NULL, NULL) : lines_are("Auftrag gesendet", HINT, NULL, NULL)), what);
+		      (unseen ? lines_are("Verbindung unterbrochen", "Warte auf WiCAN", NULL, NULL) : lines_are("Auftrag gesendet", HINT, NULL, NULL)), what);
 		stage_busy(DTC_FLOW_READ_SENT, 0);
 		VIEWS[v].make();
 		build();
 		snprintf(what, sizeof(what), "the own read, sent and not answered, in the view %s: %s", VIEWS[v].name,
-		         unseen ? "it waits for the adapter - \"Verbindung unterbrochen\", \"Warte auf Antwort\", no hint" : "\"Auftrag gesendet\" and the hint");
+		         unseen ? "it waits for the adapter - \"Verbindung unterbrochen\", \"Warte auf WiCAN\" as the accepted one, no hint" : "\"Auftrag gesendet\" and the hint");
 		check(head_is(SCENE_PROGRESS, "Fehlerspeicher lesen", "") && strcmp(scene->big, "…") == 0 && scene->permille == 0 &&
-		      (unseen ? lines_are("Verbindung unterbrochen", "Warte auf Antwort", NULL, NULL) : lines_are("Auftrag gesendet", HINT, NULL, NULL)), what);
+		      (unseen ? lines_are("Verbindung unterbrochen", "Warte auf WiCAN", NULL, NULL) : lines_are("Auftrag gesendet", HINT, NULL, NULL)), what);
 		// A clear does not wait, and no screen says that it does
 		for(int sent = 0; sent < 2; sent++)
 		{
@@ -2248,14 +2247,15 @@ static void test_busy(void)
 	scan(WICAN_DTC_DONE, 41, false, 18, 18, "");
 	view_fell_silent();
 	build();
-	check(strcmp(scene->big, "…") == 0 && scene->permille == 0 && lines_are("Verbindung unterbrochen", "WiCAN liest weiter", NULL, NULL),
-	      "the own read with a connection that fell silent after the scan was done: it waits like every read - \"18/18\" would say that the result is on its way");
+	check(strcmp(scene->big, "…") == 0 && scene->permille == 0 && lines_are("Verbindung unterbrochen", "Warte auf WiCAN", NULL, NULL),
+	      "the own read with a connection that fell silent after the display saw the scan done: \"Warte auf WiCAN\" as for every read that waits - \"18/18\" would say that "
+	      "the result is on its way, and no line says that a scan that is over goes on");
 	stage_busy(DTC_FLOW_READING, 41);
 	view_fell_silent();
 	world.flow = DTC_FLOW_IDLE;
 	input.read_block = DTC_FLOW_ALLOWED;
 	build();
-	check(lines_are("Verbindung unterbrochen", "WiCAN liest weiter", NULL, NULL), "that a read waits is told by its flow and by the view of the connection, whatever the world and the block of a read say");
+	check(lines_are("Verbindung unterbrochen", "Warte auf WiCAN", NULL, NULL), "that a read waits is told by its flow and by the view of the connection, whatever the world and the block of a read say");
 
 	for(int i = 0; i < COUNT(phases); i++)
 	{
@@ -2324,7 +2324,7 @@ static void test_busy(void)
 	view_scan();
 	view_no_wifi();
 	build();
-	check(strcmp(scene->big, "…") == 0 && lines_are("Verbindung unterbrochen", "WiCAN liest weiter", NULL, NULL) && ring_is(RING_RED, 0),
+	check(strcmp(scene->big, "…") == 0 && lines_are("Verbindung unterbrochen", "Warte auf WiCAN", NULL, NULL) && ring_is(RING_RED, 0),
 	      "the own read without a network and without a state of the adapter: it waits - no step, no crash");
 	stage_busy(DTC_FLOW_CLEARING, 41);
 	view_scan();
@@ -4369,7 +4369,8 @@ static const int BUSY_LINES[] = {0, 2, 2, 0, 2, 2, 0, 0, 0};
 // connection in the order of conn_view_t
 static const bool WAITS[] = {false, true, true, false, false, false, false, false, false};
 static const bool UNSEEN[] = {true, true, true, false, false, false, false, false, false, false};
-static const char *const WAIT_LINES[] = {"", "Warte auf Antwort", "WiCAN liest weiter", "", "", "", "", "", ""};
+// What such a read says in the place of the hint: one line, whether its POST was answered or not
+#define WAIT_LINE   "Warte auf WiCAN"
 
 static bool holds(when_t when)
 {
@@ -4690,7 +4691,7 @@ static const char *model(void)
 		unsigned phase = (unsigned)flow.phase < 9 ? (unsigned)flow.phase : 0;
 		bool waits = WAITS[phase] && UNSEEN[view];
 
-		if(strcmp(scene->lines[scene->line_count - 1], waits ? WAIT_LINES[phase] : HINT) != 0) return "the last line of a progress is not the hint, or not what a read that waits says in its place";
+		if(strcmp(scene->lines[scene->line_count - 1], waits ? WAIT_LINE : HINT) != 0) return "the last line of a progress is not the hint, or not what a read that waits says in its place";
 		if(waits && (strcmp(scene->big, "…") != 0 || scene->permille != 0)) return "a read that waits for the adapter shows a step";
 	}
 	return NULL;

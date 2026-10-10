@@ -279,7 +279,11 @@ nav_do_t nav_long(nav_t *nav, const nav_world_t *world, uint64_t now_ms);
 nav_do_t nav_tap(nav_t *nav, int row, const nav_world_t *world, uint64_t now_ms);
 
 // A swipe: on NAV_PAGES a turn of one detent in that direction (positive = next page; 0 is ignored), on
-// every other screen ignored
+// every other screen ignored.
+// A swipe without a direction (0) is the input that acts on nothing: on every screen and under everything that
+// lies over it, it restarts the idle time and changes nothing else. The caller passes it for what counts as an
+// input and is no turn, press or touch that means something here - app.h: a swipe up or down in one of the two
+// dialogs, and the moment at which a fault memory request of the display ends.
 nav_do_t nav_swipe(nav_t *nav, int direction, const nav_world_t *world, uint64_t now_ms);
 
 // What hold_sample() reported while NAV_DTC_CONFIRM is shown: HOLD_CONFIRMED -> NAV_DO_CLEAR and
@@ -315,6 +319,10 @@ nav_do_t nav_cancel(nav_t *nav, const nav_world_t *world, uint64_t now_ms);
  * Only the last rule waits for an overlay to go, the others follow what happened below it as well. A screen
  * entered here has the focus on row 0, NAV_DTC_LIST entered from NAV_DTC_CONFIRM on Fehler löschen.
  * A time before the one of an earlier call counts as no time passed.
+ * The end of the own request is no input to this module by itself: the outcome of a request that ends later
+ * than NAV_IDLE_MS behind the last input is shown by one tick and left for the value pages by the next. The
+ * caller sees to that (app.h): it passes the end as an input that acts on nothing - nav_swipe() without a
+ * direction - before the tick that follows the flow, and the outcome stays for NAV_IDLE_MS unless somebody acts.
  */
 nav_do_t nav_tick(nav_t *nav, const nav_world_t *world, uint64_t now_ms);
 

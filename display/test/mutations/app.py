@@ -57,8 +57,25 @@ SCENE_CLEAR = "\tinput.clear_block = dtc_flow_clear_block(&poll->flow, &poll->co
 SCENE_LIST = "\tif(poll->has_list)\n\t{\n\t\tinput.list = app->list;\n\t\tinput.summary = &app->summary;\n\t}"
 LEFT = "\tif(app->update_pending) input.update_left_s = (uint32_t)((passed(app->update_until_ms, now) + 999) / 1000);"
 AP_KEPT = "\tworld->ap_kept = link_ap_kept(&app->link);\n"
-BUSY = ("\treturn phase == DTC_FLOW_READ_SENT || phase == DTC_FLOW_READING || phase == DTC_FLOW_CLEAR_SENT || phase == DTC_FLOW_CLEARING ||\n"
-        "\t       app->nav.screen == NAV_DTC_CONFIRM || app->uploading;")
+BUSY = "\treturn under_way(app) || app->nav.screen == NAV_DTC_CONFIRM || app->uploading;"
+# A request of the display is under way: what app_busy() and the end of a request (follow_request()) both ask
+UNDER_WAY = "\treturn phase == DTC_FLOW_READ_SENT || phase == DTC_FLOW_READING || phase == DTC_FLOW_CLEAR_SENT || phase == DTC_FLOW_CLEARING;"
+PHASE = "app->poll.flow.phase"
+# The end of a fault memory request of the display counts as an input for the two idle times (app.h)
+ENDED = "\tbool ended = app->requesting && !under_way(app);\n"
+SEEN = "\tapp->requesting = under_way(app);\n"
+NOT_ENDED = "\tif(!ended) return;\n"
+TELL_NAV = "\tnav_swipe(&app->nav, 0, world, now);\n"
+LIGHT_ANEW = "\tif(app->heat != GUARD_HEAT_OFF) app->last_input_ms = now;\n"
+TICK_FOLLOW = "\tfollow_request(app, &world, now);\n"
+BEGUN = "\t\t\tif(under_way(app)) app->requesting = true;\n"
+BEGUN_READ = "\t\t\t// Begun between two ticks: its end is seen also if it comes before the next one\n" + BEGUN
+BEGUN_CLEAR = "\t\t\t// As for a read\n" + BEGUN
+
+
+def ends_as(name, phase):
+    """A request that ends in this phase is not noted"""
+    return ("app_request_end_%s_is_no_input" % name, T, F, ENDED, ENDED.replace("!under_way(app)", "!under_way(app) && %s != %s" % (PHASE, phase)))
 
 
 def clock(name, function, text):
@@ -442,6 +459,43 @@ MUTATIONS = [
     ("app_tick_asked_dropped_while_the_question_waits", T, F, TICK_DROP, "\tdrop_asked(app);"),
     ("app_tick_asked_dropped_only_with_the_release", T, F, TICK_DROP, "\tif(!world.release_open) drop_asked(app);"),
     ("app_tick_asked_not_dropped_during_an_upload", T, F, TICK_DROP, "\tif(world.asking == ACCESS_ASK_NONE && !app->uploading) drop_asked(app);"),
+    # the end of a fault memory request of the display counts as an input for the two idle times, and for nothing else
+    ("app_request_end_is_no_input", T, F, ENDED, "\tbool ended = false;\n"),
+    ends_as("with_a_list", "DTC_FLOW_LIST"),
+    ends_as("as_failed", "DTC_FLOW_FAILED"),
+    ends_as("with_the_outcome_of_a_clear", "DTC_FLOW_CLEARED"),
+    ends_as("as_unknown", "DTC_FLOW_UNKNOWN"),
+    ends_as("withdrawn", "DTC_FLOW_IDLE"),
+    ("app_request_end_only_of_a_read", T, F, ENDED, ENDED.replace("!under_way(app)", "!under_way(app) && !app->poll.has_cleared && %s != DTC_FLOW_UNKNOWN" % PHASE)),
+    ("app_request_end_only_with_something_to_show", T, F, ENDED, ENDED.replace("!under_way(app)", "!under_way(app) && %s != DTC_FLOW_FAILED && %s != DTC_FLOW_UNKNOWN" % (PHASE, PHASE))),
+    ("app_request_acceptance_is_an_input", T, F, ENDED, ENDED.replace("!under_way(app)", "%s != DTC_FLOW_READ_SENT && %s != DTC_FLOW_CLEAR_SENT" % (PHASE, PHASE))),
+    ("app_request_end_noted_with_every_tick_behind_it", T, F, SEEN, "\tif(under_way(app)) app->requesting = true;\n"),
+    ("app_request_seen_only_where_it_was_asked_for", T, F, SEEN, "\tapp->requesting = app->requesting && under_way(app);\n"),
+    ("app_request_begun_by_a_read_not_noted", T, F, BEGUN_READ, ""),
+    ("app_request_begun_by_a_clear_not_noted", T, F, BEGUN_CLEAR, ""),
+    ("app_request_of_somebody_else_ends_as_an_input", T, F, ENDED + "\n" + SEEN,
+     "\tbool scanning = conn_view(&app->poll.conn, now) == CONN_VIEW_SCAN;\n\tbool ended = app->requesting && !under_way(app) && !scanning;\n\n"
+     "\tapp->requesting = under_way(app) || scanning;\n"),
+    ("app_request_end_noted_behind_nav", T, F, TICK_FOLLOW + TICK_NAV + "\n", TICK_NAV + "\n" + TICK_FOLLOW),
+    ("app_request_end_not_told_to_nav", T, F, TELL_NAV, "\t(void)world;\n"),
+    ("app_request_end_not_told_to_nav_while_too_hot", T, F, TELL_NAV, "\tif(app->heat != GUARD_HEAT_OFF) nav_swipe(&app->nav, 0, world, now);\n"),
+    ("app_request_end_told_to_nav_only_on_the_progress", T, F, TELL_NAV, "\tif(app->nav.screen == NAV_DTC_BUSY) nav_swipe(&app->nav, 0, world, now);\n"),
+    ("app_request_end_told_to_nav_one_second_late", T, F, TELL_NAV, "\tnav_swipe(&app->nav, 0, world, now + 1000);\n"),
+    ("app_request_end_is_a_short_press", T, F, TELL_NAV, "\tapp_do(app, nav_short(&app->nav, world, now), now);\n"),
+    ("app_request_end_is_a_long_press", T, F, TELL_NAV, "\tapp_do(app, nav_long(&app->nav, world, now), now);\n"),
+    ("app_request_end_is_a_swipe_to_the_next_page", T, F, TELL_NAV, "\tnav_swipe(&app->nav, 1, world, now);\n"),
+    ("app_request_end_acknowledges_the_outcome", T, F, TELL_NAV, TELL_NAV + "\tapp_do(app, NAV_DO_DISMISS, now);\n"),
+    ("app_request_end_renews_the_web_release", T, F, TELL_NAV, TELL_NAV + "\taccess_write(&app->access, now);\n"),
+    ("app_request_end_ends_the_press_begun_in_the_dark", T, F, TELL_NAV, TELL_NAV + "\tapp->woke = false;\n"),
+    ("app_request_end_does_not_light_a_screen_dark_by_standby", T, F, LIGHT_ANEW, ""),
+    ("app_request_end_restarts_the_standby_time_of_a_screen_dark_by_heat", T, F, LIGHT_ANEW, "\tapp->last_input_ms = now;\n"),
+    ("app_request_end_restarts_the_standby_time_only_of_a_dark_screen", T, F, LIGHT_ANEW,
+     "\tif(app->heat != GUARD_HEAT_OFF && backlight(app, world, now) == 0) app->last_input_ms = now;\n"),
+    ("app_request_end_restarts_the_standby_time_only_of_a_lit_screen", T, F, LIGHT_ANEW,
+     "\tif(app->heat != GUARD_HEAT_OFF && backlight(app, world, now) != 0) app->last_input_ms = now;\n"),
+    ("app_request_end_lights_only_while_dimmed_by_heat", T, F, LIGHT_ANEW, "\tif(app->heat == GUARD_HEAT_DIM) app->last_input_ms = now;\n"),
+    ("app_request_end_lights_only_with_no_heat_at_all", T, F, LIGHT_ANEW, "\tif(app->heat == GUARD_HEAT_NORMAL) app->last_input_ms = now;\n"),
+    ("app_request_end_restarts_the_standby_time_one_second_late", T, F, LIGHT_ANEW, "\tif(app->heat != GUARD_HEAT_OFF) app->last_input_ms = now + 1000;\n"),
     ("app_tick_info_not_made", T, F, "\tif(world.asking == ACCESS_ASK_NONE) drop_asked(app);\n\tmake_info(app);\n", "\tif(world.asking == ACCESS_ASK_NONE) drop_asked(app);\n"),
     ("app_update_time_is_299_s", T, H, "#define APP_UPDATE_CONFIRM_MS   (300u * 1000u)", "#define APP_UPDATE_CONFIRM_MS   (299u * 1000u)"),
     ("app_upload_idle_time_is_31_s", T, H, "#define APP_UPLOAD_IDLE_MS      (30u * 1000u)", "#define APP_UPLOAD_IDLE_MS      (31u * 1000u)"),
@@ -714,17 +768,25 @@ MUTATIONS = [
      "\tuint64_t now = now_ms;\n\tnav_world_t world;\n\n\tapp_world(app, &world, now);\n\treturn backlight("),
     ("app_backlight_at_the_time_of_the_last_call", T, F, "\tuint64_t now = time_at(app, now_ms);\n\tnav_world_t world;\n\n\tapp_world(app, &world, now);\n\treturn backlight(",
      "\tuint64_t now = app->clock_ms + 0 * now_ms;\n\tnav_world_t world;\n\n\tapp_world(app, &world, now);\n\treturn backlight("),
-    ("app_busy_not_while_read_waits_to_be_sent", T, F, BUSY, BUSY.replace("phase == DTC_FLOW_READ_SENT || ", "")),
-    ("app_busy_not_while_reading", T, F, BUSY, BUSY.replace("phase == DTC_FLOW_READING || ", "")),
+    # busy by the own request: the rule of app_busy() alone, where under_way() serves the end of a request as well
+    ("app_busy_not_while_read_waits_to_be_sent", T, F, BUSY, BUSY.replace("under_way(app)", "(under_way(app) && %s != DTC_FLOW_READ_SENT)" % PHASE)),
+    ("app_busy_not_while_reading", T, F, BUSY, BUSY.replace("under_way(app)", "(under_way(app) && %s != DTC_FLOW_READING)" % PHASE)),
     ("app_busy_not_while_a_read_waits_for_a_lost_adapter", T, F, BUSY,
-     BUSY.replace("phase == DTC_FLOW_READ_SENT || phase == DTC_FLOW_READING || ", "((phase == DTC_FLOW_READ_SENT || phase == DTC_FLOW_READING) && !app->poll.lost) || ")),
+     BUSY.replace("under_way(app)", "(under_way(app) && !((%s == DTC_FLOW_READ_SENT || %s == DTC_FLOW_READING) && app->poll.lost))" % (PHASE, PHASE))),
     ("app_busy_not_while_a_read_waits_without_a_network", T, F, BUSY,
-     BUSY.replace("phase == DTC_FLOW_READ_SENT || phase == DTC_FLOW_READING || ", "((phase == DTC_FLOW_READ_SENT || phase == DTC_FLOW_READING) && app->poll.wifi) || ")),
-    ("app_busy_not_while_clear_waits_to_be_sent", T, F, BUSY, BUSY.replace("phase == DTC_FLOW_CLEAR_SENT || ", "")),
-    ("app_busy_not_while_clearing", T, F, BUSY, BUSY.replace("phase == DTC_FLOW_CLEARING ||\n", "false ||\n")),
-    ("app_busy_while_a_list_is_shown", T, F, BUSY, BUSY.replace("phase == DTC_FLOW_READ_SENT || ", "phase == DTC_FLOW_READ_SENT || phase == DTC_FLOW_LIST || ")),
-    ("app_busy_while_an_outcome_is_shown", T, F, BUSY, BUSY.replace("phase == DTC_FLOW_READ_SENT || ", "phase == DTC_FLOW_READ_SENT || phase == DTC_FLOW_CLEARED || ")),
-    ("app_busy_after_a_failure", T, F, BUSY, BUSY.replace("phase == DTC_FLOW_READ_SENT || ", "phase == DTC_FLOW_READ_SENT || phase >= DTC_FLOW_FAILED || ")),
+     BUSY.replace("under_way(app)", "(under_way(app) && !((%s == DTC_FLOW_READ_SENT || %s == DTC_FLOW_READING) && !app->poll.wifi))" % (PHASE, PHASE))),
+    ("app_busy_not_while_clear_waits_to_be_sent", T, F, BUSY, BUSY.replace("under_way(app)", "(under_way(app) && %s != DTC_FLOW_CLEAR_SENT)" % PHASE)),
+    ("app_busy_not_while_clearing", T, F, BUSY, BUSY.replace("under_way(app)", "(under_way(app) && %s != DTC_FLOW_CLEARING)" % PHASE)),
+    ("app_busy_while_a_list_is_shown", T, F, BUSY, BUSY.replace("under_way(app)", "under_way(app) || %s == DTC_FLOW_LIST" % PHASE)),
+    ("app_busy_while_an_outcome_is_shown", T, F, BUSY, BUSY.replace("under_way(app)", "under_way(app) || %s == DTC_FLOW_CLEARED" % PHASE)),
+    ("app_busy_after_a_failure", T, F, BUSY, BUSY.replace("under_way(app)", "under_way(app) || %s >= DTC_FLOW_FAILED" % PHASE)),
+    ("app_busy_whatever_the_own_request", T, F, BUSY, BUSY.replace("under_way(app) || ", "")),
+    # ... and the phases in which a request is under way, for both
+    ("app_under_way_not_while_read_waits_to_be_sent", T, F, UNDER_WAY, UNDER_WAY.replace("phase == DTC_FLOW_READ_SENT || ", "")),
+    ("app_under_way_not_while_reading", T, F, UNDER_WAY, UNDER_WAY.replace("phase == DTC_FLOW_READING || ", "")),
+    ("app_under_way_not_while_clear_waits_to_be_sent", T, F, UNDER_WAY, UNDER_WAY.replace("phase == DTC_FLOW_CLEAR_SENT || ", "")),
+    ("app_under_way_not_while_clearing", T, F, UNDER_WAY, UNDER_WAY.replace(" || phase == DTC_FLOW_CLEARING;", ";")),
+    ("app_under_way_while_a_list_is_shown", T, F, UNDER_WAY, UNDER_WAY.replace("phase == DTC_FLOW_READ_SENT || ", "phase == DTC_FLOW_READ_SENT || phase == DTC_FLOW_LIST || ")),
     ("app_busy_not_in_the_clear_dialog", T, F, BUSY, BUSY.replace("app->nav.screen == NAV_DTC_CONFIRM || ", "")),
     ("app_busy_in_the_dialog_of_the_settings", T, F, BUSY, BUSY.replace("app->nav.screen == NAV_DTC_CONFIRM", "app->nav.screen == NAV_DTC_CONFIRM || app->nav.screen == NAV_CONFIRM")),
     ("app_busy_not_during_an_upload", T, F, BUSY, BUSY.replace(" || app->uploading;", ";")),
@@ -757,6 +819,6 @@ MUTATIONS += clock("button", "app_button", "\tuint64_t now = advance(app, now_ms
 MUTATIONS += clock("encoder", "app_encoder", "\tuint64_t now = advance(app, now_ms);\n\tint detents")
 MUTATIONS += clock("tap", "app_tap", "\tuint64_t now = advance(app, now_ms);\n\tnav_world_t world;\n\n\tapp_world(app, &world, now);\n\tif(in_the_dark(app, &world, now)) return;\n\n\tif(app->nav.screen == NAV_DTC_CONFIRM) hold_activity(&app->hold, now);\n\tapp_do(app, nav_tap(")
 MUTATIONS += clock("swipe", "app_swipe", "\tuint64_t now = advance(app, now_ms);\n\t// In the two dialogs the knob alone")
-MUTATIONS += clock("tick", "app_tick", "\tuint64_t now = advance(app, now_ms);\n\tnav_world_t world;\n\n\tapp_world(app, &world, now);\n\tapp_do(app, nav_tick(")[:1]
+MUTATIONS += clock("tick", "app_tick", "\tuint64_t now = advance(app, now_ms);\n\tnav_world_t world;\n\n\tapp_world(app, &world, now);\n\tfollow_request(app, &world, now);\n")[:1]
 MUTATIONS += clock("net", "app_net", "\tuint64_t now = advance(app, now_ms);\n\tconn_view_t view;")
 MUTATIONS += clock("do", "app_do", "\tuint64_t now = advance(app, now_ms);\n\tnav_world_t world;\n\n\tswitch(what)")

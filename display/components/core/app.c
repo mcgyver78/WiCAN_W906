@@ -301,6 +301,31 @@ static bool in_the_dark(app_t *app, const nav_world_t *world, uint64_t now)
 	return dark;
 }
 
+// A fault memory request of the display is under way: handed to the flow and not ended
+static bool under_way(const app_t *app)
+{
+	dtc_flow_phase_t phase = app->poll.flow.phase;
+
+	return phase == DTC_FLOW_READ_SENT || phase == DTC_FLOW_READING || phase == DTC_FLOW_CLEAR_SENT || phase == DTC_FLOW_CLEARING;
+}
+
+// The one place where the app learns that a request of the display to the fault memory has ended (app.h): the
+// tick, before nav follows the flow. That moment counts as an input for the two idle times and for nothing
+// else - who reads and waits is to see the outcome, however long ago the last hand was at the display.
+static void follow_request(app_t *app, const nav_world_t *world, uint64_t now)
+{
+	bool ended = app->requesting && !under_way(app);
+
+	app->requesting = under_way(app);
+	if(!ended) return;
+
+	// The input that acts on nothing (nav.h): the outcome stays for NAV_IDLE_MS unless somebody acts
+	nav_swipe(&app->nav, 0, world, now);
+	// A screen dark by the standby rule lights up. One the heat keeps dark is woken by nothing, and it is not to
+	// light up for this outcome when the heat lets go: its idle time stays what the last hand left.
+	if(app->heat != GUARD_HEAT_OFF) app->last_input_ms = now;
+}
+
 void app_choose_layout(app_t *app)
 {
 	const catalog_t *catalog = &app->poll.catalog;
@@ -477,6 +502,7 @@ void app_tick(app_t *app, uint64_t now_ms)
 	nav_world_t world;
 
 	app_world(app, &world, now);
+	follow_request(app, &world, now);
 	app_do(app, nav_tick(&app->nav, &world, now), now);
 
 	// The boot loader takes back an update that was not confirmed before the restart. Asked for once: the
@@ -569,6 +595,8 @@ void app_do(app_t *app, nav_do_t what, uint64_t now_ms)
 		case NAV_DO_READ:
 			poll_read(&app->poll, now);
 			take_poll_events(app);
+			// Begun between two ticks: its end is seen also if it comes before the next one
+			if(under_way(app)) app->requesting = true;
 			break;
 
 		case NAV_DO_HOLD_OPEN:
@@ -585,6 +613,8 @@ void app_do(app_t *app, nav_do_t what, uint64_t now_ms)
 		case NAV_DO_CLEAR:
 			poll_clear(&app->poll, hold_is_stuck(&app->hold), now);
 			take_poll_events(app);
+			// As for a read
+			if(under_way(app)) app->requesting = true;
 			break;
 
 		case NAV_DO_DISMISS:
@@ -761,10 +791,7 @@ int app_backlight(const app_t *app, uint64_t now_ms)
 
 bool app_busy(const app_t *app)
 {
-	dtc_flow_phase_t phase = app->poll.flow.phase;
-
-	return phase == DTC_FLOW_READ_SENT || phase == DTC_FLOW_READING || phase == DTC_FLOW_CLEAR_SENT || phase == DTC_FLOW_CLEARING ||
-	       app->nav.screen == NAV_DTC_CONFIRM || app->uploading;
+	return under_way(app) || app->nav.screen == NAV_DTC_CONFIRM || app->uploading;
 }
 
 uint32_t app_take_events(app_t *app)

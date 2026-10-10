@@ -4045,7 +4045,7 @@ static void test_read_through_pause(void)
 	run_to(38100);
 	check(view() == CONN_VIEW_NO_ANSWER && app->poll.lost && phase() == DTC_FLOW_READING && on(NAV_DTC_BUSY) && app_busy(app),
 	      "the third round without an answer, at 38000: the connection shows no answer - and the read waits for the adapter, where it was given up on the vehicle");
-	shows("busy_paused", "the progress while the read waits: the connection is interrupted and the adapter reads on; no step of the state of 16 s ago, a red ring");
+	shows("busy_paused", "the progress while the read waits: the connection is interrupted and the display waits for the WiCAN; no step of the state of 16 s ago, a red ring");
 	wican.dead = false;
 	run_to(43100);
 	check(view() == CONN_VIEW_SCAN && phase() == DTC_FLOW_READING && has_line("big: 12/18") && has_line("permille: 666") && has_line("ring: none"),
@@ -4054,7 +4054,8 @@ static void test_read_through_pause(void)
 	run_to(59100);
 	check(view() == CONN_VIEW_NO_ANSWER && phase() == DTC_FLOW_READING && wican.phase == WICAN_DTC_DONE && wican.result_seq == 1687630824 && wican.result_count == 2,
 	      "the link drops out a second time, and the adapter ends its scan of 18 control units with two trouble codes while nobody hears it");
-	shows("busy_paused", "the progress in the second pause: the same - what the display knows is that the adapter read on");
+	shows("busy_paused", "the progress in the second pause, in which the adapter ends its scan unheard: the same - the line says what the display does, and that is true whatever "
+	      "the adapter does meanwhile");
 	wican.dead = false;
 	run_to(64300);
 	check(on(NAV_DTC_LIST) && phase() == DTC_FLOW_LIST && app->poll.flow.read_seq == 1687630824 && app->summary.codes == 2 && app->poll.flow.list_end_ms == 56000 && !app_busy(app),
@@ -4105,20 +4106,18 @@ static void test_read_through_pause(void)
 	run_to(21000);
 	stride = 200;
 	run_to(200600);
-	check(on(NAV_DTC_BUSY) && phase() == DTC_FLOW_READING && app_busy(app) && has_line("line: WiCAN liest weiter"),
+	check(on(NAV_DTC_BUSY) && phase() == DTC_FLOW_READING && app_busy(app) && has_line("line: Warte auf WiCAN"),
 	      "the adapter is silent for 179.96 s after it accepted the read: the display still waits, and no idle time leaves the progress");
 	run_to(201000);
 	check(phase() == DTC_FLOW_FAILED && !app_busy(app) && sent[POLL_DTC_READ] == 1, "silent for more than 180 s after the acceptance: the read is given up");
 	shows("failed_silent", "the failure of a read whose adapter never answered again: no answer, under the red ring of the silence");
 	run_to(201200);
-	check(on(NAV_PAGES) && phase() == DTC_FLOW_FAILED && has_line("line: WiCAN antwortet nicht") && light() == 0,
-	      "nobody touched the display for 180 s: one tick later it is back on the value pages, as from every screen left alone for 120 s, and dark by the standby rule; "
-	      "the failure is kept to be looked at");
+	shows("failed_silent", "nobody touched the display for 180 s, and the failure does not give way to the value pages with the next tick: who waited for the read sees what became of it");
 	stride = STEP_MS;
 
-	// The adapter comes back after more than two minutes: the list is there, and the idle time of the display,
-	// which nobody touched since the read was asked for at 20440, is over. The rounds of the silent adapter go
-	// out every 14 s by then; the one of 153000 is answered.
+	// The adapter comes back after more than two minutes: the list is there, and nobody touched the display since
+	// the read was asked for at 20440. The rounds of the silent adapter go out every 14 s by then; the one of
+	// 153000 is answered.
 	drive();
 	run_to(20000);
 	short_press();
@@ -4134,22 +4133,17 @@ static void test_read_through_pause(void)
 	check(on(NAV_DTC_LIST) && phase() == DTC_FLOW_LIST && app->list_lines == 7 && app->poll.flow.list_end_ms == 24000,
 	      "the adapter answers again at 153000: the list of the scan that ended 129 s before is on the screen with the next tick");
 	run_to(153600);
-	check(on(NAV_PAGES) && phase() == DTC_FLOW_LIST && app->poll.has_list && app->list_lines == 7,
-	      "nobody touched the display for more than 120 s: one tick later it is back on the value pages, as from every screen but the progress - the list is kept");
+	check(on(NAV_DTC_LIST) && phase() == DTC_FLOW_LIST && app->poll.has_list && app->list_lines == 7 && has_line("row: > head | 3 Fehler | 3 Steuergeräte · 35 s | enabled"),
+	      "nobody touched the display for more than 120 s, and the list does not give way to the value pages with the next tick (test_request_ends() has the times)");
 	stride = STEP_MS;
-	short_press();
-	short_press();
-	turn(1);
-	short_press();
-	check(on(NAV_DTC_LIST) && has_line("row: > head | 3 Fehler | 3 Steuergeräte · 35 s | enabled"), "the menu leads to that list: Fehlerspeicher, Liste ansehen");
 
 	// The display leaves the network during the read, and finds it again at once
 	scene_dtc();
 	short_press();
 	run_to(3100);
 	lose_wifi();
-	check(view() == CONN_VIEW_NO_WIFI && phase() == DTC_FLOW_READING && app_busy(app) && has_line("line: Verbindung unterbrochen") && has_line("line: WiCAN liest weiter") && has_line("ring: red"),
-	      "the network is lost during the own read: the read waits, and the progress says that the connection is interrupted");
+	check(view() == CONN_VIEW_NO_WIFI && phase() == DTC_FLOW_READING && app_busy(app) && has_line("line: Verbindung unterbrochen") && has_line("line: Warte auf WiCAN") && has_line("ring: red"),
+	      "the network is lost during the own read: the read waits, and the progress says that the connection is interrupted and that the display waits for the WiCAN");
 	run(100);
 	check(view() == CONN_VIEW_SCAN && phase() == DTC_FLOW_READING && has_line("big: 0/3") && wifi.joins == 2, "the network is still there: joined again, the first state shows the scan, the progress goes on");
 	run_to(6300);
@@ -4188,7 +4182,8 @@ static void test_read_through_pause(void)
 	check(phase() == DTC_FLOW_READ_SENT && app->poll.flow.posted && wican.seq == 42 && app->poll.flow.sent_ms == 2540, "the scene: the read went out at 2540, the adapter took it, its answer got lost");
 	run_to(18100);
 	check(view() == CONN_VIEW_NO_ANSWER && phase() == DTC_FLOW_READ_SENT && app_busy(app) && on(NAV_DTC_BUSY), "then the adapter falls silent: the read waits for it");
-	shows("busy_paused_sent", "the progress while a read without an answer waits: the connection is interrupted, the display waits for the answer - it does not say that the adapter reads");
+	shows("busy_paused", "the progress while a read without an answer waits: the screen of an accepted read that waits, byte for byte - the display waits for the WiCAN and claims "
+	      "nothing about it");
 	wican.dead = false;
 	run_to(23300);
 	check(on(NAV_DTC_LIST) && phase() == DTC_FLOW_LIST && app->poll.flow.read_seq == 42 && app->list_lines == 7 && sent[POLL_DTC_READ] == 1 && wican.next_seq == 43,
@@ -4223,7 +4218,371 @@ static void test_read_through_pause(void)
 	check(on(NAV_DTC) && phase() == DTC_FLOW_IDLE && !can_clear() && can_read() && sent[POLL_DTC_CLEAR] == 1, "acknowledged: the user reads again before anything can be cleared");
 }
 
-/* What lies over the clear dialog -------------------------------------------------------------------- */
+/* The end of a request counts as an input ----------------------------------------------------------- */
+
+// drive(), then the own read, asked for and accepted at 20440 with a press that began at 20340: the last input
+// of the stories below. It is 20480.
+static void scene_reading(void)
+{
+	drive();
+	run_to(20000);
+	short_press();
+	short_press();
+	short_press();
+}
+
+// ... its adapter falls silent at once, and the user leaves the progress for the value pages with a long
+// press that began at 36120 and was reported at 36920. From 37200 on a reading every 200 ms.
+static void scene_waiting_on_pages(void)
+{
+	scene_reading();
+	wican.dead = true;
+	run_to(36100);
+	long_press();
+	run_to(37200);
+	stride = 200;
+}
+
+// scene_dialog(), then a clear that takes its time: the knob held from 7600 on, the clear accepted at 10600 by
+// an adapter that goes on only as the story says. The last inputs: the press began at 7620, the knob reported
+// it as a long one at 8420. From 11000 on a reading every 200 ms.
+static void scene_slow_clear(void)
+{
+	scene_dialog();
+	wican.manual = true;
+	switch_pressed = true;
+	run_to(10620);
+	switch_pressed = false;
+	adapter_step(1);
+	run_to(11000);
+	stride = 200;
+}
+
+// Nothing has counted as an input since `nav_ms` (nav) and `light_ms` (the standby rule)
+static bool idle_since(uint64_t nav_ms, uint64_t light_ms)
+{
+	return app->nav.last_input_ms == nav_ms && app->last_input_ms == light_ms;
+}
+
+// app.h: when a fault memory request of the display ends, that moment counts as an input for the idle time of
+// nav and for the one of the standby rule, and for nothing else. Measured on the vehicle on 2026-10-10 was a
+// link that drops out in phases; a read waits through such a pause since then (dtc_flow.h). Not measured but
+// seen in these tests before this rule: a read that ended later than 120 s behind the last input showed its
+// list, or its failure, for one tick.
+static void test_request_ends(void)
+{
+	// A read ends with its list. The adapter is silent from 20480 on and answers the round of 153000.
+	scene_reading();
+	check(phase() == DTC_FLOW_READING && on(NAV_DTC_BUSY) && idle_since(20440, 20340) && now == 20480,
+	      "the scene of the read: accepted at 20440, the press that asked for it began at 20340");
+	wican.dead = true;
+	run_to(21000);
+	stride = 200;
+	run_to(150000);
+	check(phase() == DTC_FLOW_READING && on(NAV_DTC_BUSY) && idle_since(20440, 20340),
+	      "while a request is under way, accepted and waiting for its adapter, nothing counts as an input: 129.5 s behind the press both idle times count from it");
+	wican.dead = false;
+	run_to(153200);
+	check(phase() == DTC_FLOW_LIST && on(NAV_DTC_BUSY) && idle_since(20440, 20340), "the round of 153000 brings the list; before the next tick the app has not learned that the read ended");
+	run_to(153400);
+	check(on(NAV_DTC_LIST) && idle_since(153200, 153200),
+	      "the end of a read with its list counts as an input: the tick of 153200 learns of it, 132.76 s behind the last press, restarts both idle times and shows the list");
+	run_to(273200);
+	shows("list_kept", "the list of a read that ended 132 s behind the last input is still there 119.8 s later, with the tick of 273000: it may be cleared for 5:51 more");
+	run_to(273400);
+	shows("page_motor", "... and gone 120 s behind its end, with the tick of 273200: the value pages are back, as from every screen nobody touches");
+	check(phase() == DTC_FLOW_LIST && app->poll.has_list && app->list_lines == 7 && idle_since(153200, 153200), "the list is kept to be looked at, and leaving it was no input");
+	stride = STEP_MS;
+	short_press();
+	short_press();
+	turn(1);
+	short_press();
+	check(on(NAV_DTC_LIST) && has_line("row: > head | 3 Fehler | 3 Steuergeräte · 35 s | enabled"), "the menu leads to that list: Fehlerspeicher, Liste ansehen");
+
+	// A read ends as failed: its adapter stays silent, and the read is given up 180 s behind its acceptance - in
+	// a turn of the network task that hands out no request and is followed by no app_net()
+	scene_reading();
+	wican.dead = true;
+	run_to(21000);
+	stride = 200;
+	run_to(200800);
+	check(phase() == DTC_FLOW_FAILED && on(NAV_DTC_BUSY) && idle_since(20440, 20340), "the read is given up at 200600; before the next tick the app has not learned of it");
+	run_to(201000);
+	check(on(NAV_DTC_FAILED) && idle_since(200800, 200800) && light() == 80,
+	      "the end of a failed read counts as an input: the tick of 200800 learns of it, 180.36 s behind the last press, restarts both idle times and shows the failure");
+	run_to(320800);
+	shows("failed_silent", "the failure of a read that was given up 180 s behind the last input is still there 119.8 s later, with the tick of 320600");
+	check(light() == 80, "... and the screen that shows it is lit");
+	run_to(321000);
+	shows("no_answer", "... and gone 120 s behind it, with the tick of 320800: the value pages are back, the adapter does not answer");
+	check(phase() == DTC_FLOW_FAILED && light() == 0 && idle_since(200800, 200800),
+	      "the failure is kept; on the value pages there is nothing to show, and the standby time of 60 s is over as well: the screen is dark at once");
+	stride = STEP_MS;
+
+	// A clear ends with its outcome, 130 s behind the hold that confirmed it
+	scene_slow_clear();
+	check(phase() == DTC_FLOW_CLEARING && app->poll.flow.accepted_ms == 10600 && on(NAV_DTC_BUSY) && idle_since(8420, 7620),
+	      "the scene of a clear that takes its time: accepted at 10600; the press of the hold began at 7620 and was reported at 8420");
+	run_to(140000);
+	check(phase() == DTC_FLOW_CLEARING && on(NAV_DTC_BUSY) && idle_since(8420, 7620), "129.4 s into the clear: under way, and no idle time has started anew");
+	run_to(140200);
+	adapter_done();
+	run_to(141200);
+	check(phase() == DTC_FLOW_CLEARED && on(NAV_DTC_BUSY) && idle_since(8420, 7620), "the round of 141000 brings the outcome; before the next tick the app has not learned that the clear ended");
+	run_to(141400);
+	shows("cleared", "the end of a clear with its outcome counts as an input: the tick of 141200 shows the outcome ...");
+	check(idle_since(141200, 141200), "... and restarts both idle times, 132.78 s behind the last report of the knob");
+	app_tick(app, 141200 + 119999);
+	check(on(NAV_DTC_CLEARED) && idle_since(141200, 141200), "to the millisecond: 119999 ms behind its end the outcome is still there, and the ticks in between were no inputs");
+	app_tick(app, 141200 + 120000);
+	check(on(NAV_PAGES) && phase() == DTC_FLOW_CLEARED && app->cleared_lines == 4, "... and 120000 ms behind it the value pages are back; the outcome is kept");
+	stride = STEP_MS;
+
+	// A clear ends as unknown: the adapter restarts at 135200
+	scene_slow_clear();
+	run_to(135200);
+	adapter_restart(&wican, 777, 100);
+	run_to(136200);
+	check(phase() == DTC_FLOW_UNKNOWN && on(NAV_DTC_BUSY) && idle_since(8420, 7620), "the state of 136000 shows another start of the adapter: the outcome of the clear is unknown; the app learns of it with the next tick");
+	run_to(136400);
+	shows("unknown", "the end of a clear as unknown counts as an input: the tick of 136200 shows that nobody knows what was cleared ...");
+	check(idle_since(136200, 136200), "... and restarts both idle times");
+	run_to(256200);
+	check(on(NAV_DTC_FAILED) && phase() == DTC_FLOW_UNKNOWN, "119.8 s later the unknown outcome is still there");
+	run_to(256400);
+	check(on(NAV_PAGES) && phase() == DTC_FLOW_UNKNOWN, "... and 120 s behind it the value pages are back; the user is still to read again");
+	stride = STEP_MS;
+
+	// A clear ends as failed: the adapter gives it up at its engine check
+	scene_slow_clear();
+	run_to(135200);
+	adapter_failed("engine_running");
+	run_to(136400);
+	check(phase() == DTC_FLOW_FAILED && on(NAV_DTC_FAILED) && has_line("title: Fehlgeschlagen") && idle_since(136200, 136200), "the end of a clear as failed counts as an input as well");
+	stride = STEP_MS;
+
+	// A request that is withdrawn ends, too: the progress gives way to the menu
+	scene_dtc();
+	check(idle_since(2380, 2280) && now == 2420, "the scene of the fault memory menu: its press was reported at 2380 and began at 2280");
+	run_to(60020);
+	app_do(app, NAV_DO_READ, now);
+	check(phase() == DTC_FLOW_READ_SENT && app->poll.flow.to_send == DTC_FLOW_SEND_READ, "a read asked for at 60020 waits for the task of the network");
+	lose_wifi();
+	check(phase() == DTC_FLOW_IDLE && sent[POLL_DTC_READ] == 0 && idle_since(2380, 2280), "the network goes before the read was sent: it is withdrawn and has done nothing");
+	run_to(60300);
+	check(phase() == DTC_FLOW_IDLE && idle_since(60200, 60200), "a request that was withdrawn has ended as well: the tick of 60200 counts that as an input");
+
+	// ... and so has a clear that did not arrive: the states of 11000 and 12000 show nothing of it, its list is back
+	scene_dialog();
+	wican.lose = true;
+	switch_pressed = true;
+	run_to(10620);
+	switch_pressed = false;
+	run_to(12200);
+	check(phase() == DTC_FLOW_LIST && on(NAV_DTC_BUSY) && idle_since(8420, 7620), "a clear confirmed at 10600 did not arrive: with the state of 12000 the flow is back at its list");
+	run_to(12300);
+	check(on(NAV_DTC_LIST) && idle_since(12200, 12200), "that is the end of a request as well: the tick of 12200 counts it as an input and shows the list again");
+
+	// The end is seen however soon it comes: a request that begins and ends between two ticks
+	scene_dtc();
+	wican.refuse = 409;
+	wican.refuse_reason = "busy";
+	short_press();
+	check(phase() == DTC_FLOW_FAILED && on(NAV_DTC_BUSY) && idle_since(2540, 2440), "a read asked for at 2540 and refused in the same turn, between the ticks of 2400 and 2600");
+	run_to(2700);
+	shows("failed_busy", "the tick of 2600 never saw that read under way and shows its failure all the same ...");
+	check(idle_since(2600, 2600), "... as an input: a request is known from where it was asked for, not only from the ticks");
+	scene_dialog();
+	wican.refuse = 409;
+	wican.refuse_reason = "stale_seq";
+	run_to(7620);
+	switch_pressed = true;
+	run_to(10640);
+	switch_pressed = false;
+	check(sent[POLL_DTC_CLEAR] == 1 && clear_sent_ms == 10620 && phase() == DTC_FLOW_FAILED && on(NAV_DTC_BUSY) && idle_since(8440, 7640),
+	      "a clear confirmed at 10620 and refused in the same turn, between the ticks of 10600 and 10800");
+	run_to(10900);
+	shows("failed_stale", "the tick of 10800 never saw that clear under way and shows its failure all the same ...");
+	check(idle_since(10800, 10800), "... as an input");
+	// A second request that begins before a tick saw the first one ended takes its place: asked for at 2580
+	scene_dtc();
+	wican.refuse = 409;
+	wican.refuse_reason = "busy";
+	short_press();
+	app_do(app, NAV_DO_READ, now);
+	run_to(2700);
+	check(phase() == DTC_FLOW_READING && sent[POLL_DTC_READ] == 2 && on(NAV_DTC_BUSY) && idle_since(2540, 2440),
+	      "a read refused at 2540 and asked for again at 2580: the tick of 2600 finds a request under way and notes no end");
+	run_to(6300);
+	check(on(NAV_DTC_LIST) && idle_since(6200, 6200), "the end of the second read is noted as every end: its list came with the state of 6000, the tick of 6200 shows it");
+	// ... and whoever asked for it: the tick knows a request it finds under way
+	scene_dtc();
+	wican.manual = true;
+	poll_read(&app->poll, now);
+	run_to(2900);
+	check(phase() == DTC_FLOW_READING && idle_since(2380, 2280), "a read that was asked of the poll itself, not through app_do(): accepted and under way at the ticks of 2600 and 2800");
+	adapter_failed("can_bus_off");
+	run_to(3300);
+	check(phase() == DTC_FLOW_FAILED && idle_since(3200, 3200), "its end counts as an input like every other: the tick of 3200 notes it");
+
+	// The end is noted before nav follows the flow, and it holds for whatever screen the user went to meanwhile:
+	// the menu, opened at 4100, would be left with the tick of 124200
+	scene_dtc();
+	wican.manual = true;
+	short_press();
+	long_press();
+	run_to(3980);
+	short_press();
+	check(on(NAV_MENU) && phase() == DTC_FLOW_READING && idle_since(4100, 4000) && now == 4140, "the scene: the own read under way since 2540, the user in the menu since 4100");
+	run_to(5000);
+	stride = 200;
+	run_to(123400);
+	adapter_failed("can_bus_off");
+	run_to(124200);
+	check(on(NAV_MENU) && phase() == DTC_FLOW_FAILED && idle_since(4100, 4000), "the state of 124000 shows the read failed; the tick of 124000, 119.9 s behind the last input, left the menu standing");
+	run_to(124400);
+	check(on(NAV_MENU) && idle_since(124200, 124200),
+	      "the tick of 124200, 120.1 s behind the last input, learns of the end before it looks at the idle time: the menu stays - the end of a request keeps the screen the user is on");
+	run_to(244200);
+	check(on(NAV_MENU), "119.8 s behind that end the menu is still there");
+	run_to(244400);
+	check(on(NAV_PAGES) && phase() == DTC_FLOW_FAILED, "... and 120 s behind it the value pages are back");
+	stride = STEP_MS;
+
+	// A screen that is dark by the standby rule lights up
+	scene_waiting_on_pages();
+	check(on(NAV_PAGES) && phase() == DTC_FLOW_READING && idle_since(36920, 36120) && light() == 80 && now == 37200,
+	      "the scene: the read waits for a silent adapter, the user went back to the value pages with a long press that began at 36120");
+	run_to(96200);
+	check(light() == 0 && phase() == DTC_FLOW_READING, "60 s behind that press the screen is dark by the standby rule: an adapter that does not answer is nothing to show. The read waits on");
+	run_to(200800);
+	check(phase() == DTC_FLOW_FAILED && light() == 0 && idle_since(36920, 36120), "the read is given up at 200600; before the next tick the screen is still dark");
+	run_to(201000);
+	shows("no_answer", "the tick of 200800 learns of the end and lights the screen: on the value pages, where the user went - the end opens no screen");
+	check(light() == 80 && idle_since(200800, 200800) && phase() == DTC_FLOW_FAILED, "the end of a request lights a screen that is dark by the standby rule: the idle time of the backlight starts anew");
+	check(app_backlight(app, 200800 + 59999) == 80 && app_backlight(app, 200800 + 60000) == 0, "... for the standby time: 60 s behind the end it is dark again");
+	stride = STEP_MS;
+	short_press();
+	check(on(NAV_MENU), "a press on the screen that lit up for the end of the read is passed on: it opens the menu");
+	short_press();
+	turn(1);
+	short_press();
+	shows("failed_silent", "Fehlerspeicher, Liste ansehen: the failure is there to be looked at");
+
+	// ... and with a standby time longer than the idle time of nav: the screen stays lit behind the outcome
+	garage();
+	strcpy(flash.settings, "{\"standby_s\":300}");
+	flash.has_settings = true;
+	start();
+	run_to(20000);
+	short_press();
+	short_press();
+	short_press();
+	wican.dead = true;
+	run_to(21000);
+	stride = 200;
+	run_to(201000);
+	check(on(NAV_DTC_FAILED) && phase() == DTC_FLOW_FAILED && idle_since(200800, 200800) && light() == 80, "the scene with a standby time of 300 s: the read was given up, its failure shows since 200800 on a lit screen");
+	run_to(321000);
+	check(on(NAV_PAGES) && light() == 80, "the idle time of the backlight started anew although the screen was lit: back on the value pages 120 s later, 300.66 s behind the last press, the light stays on");
+	check(app_backlight(app, 200800 + 299999) == 80 && app_backlight(app, 200800 + 300000) == 0, "... until 300 s behind the end of the read");
+	stride = STEP_MS;
+
+	// Nothing wakes a screen the heat keeps dark
+	scene_waiting_on_pages();
+	run_to(150000);
+	app_temperature(app, 85, true);
+	check(app->heat == GUARD_HEAT_OFF && light() == 0 && on(NAV_PAGES), "the scene: dark by the standby rule since 96120, and at 150000 the heat switches the light off as well");
+	run_to(201000);
+	check(phase() == DTC_FLOW_FAILED && light() == 0 && idle_since(200800, 36120),
+	      "the end of a request does not wake a screen the heat keeps dark: nav is told of it, the idle time of the backlight stays what the last hand left");
+	app_temperature(app, 79, true);
+	check(app->heat == GUARD_HEAT_DIM && light() == 0, "the heat lets go: the screen stays dark by the standby rule - it does not light up for an outcome of the past");
+	stride = STEP_MS;
+	short_press();
+	check(on(NAV_PAGES) && light() == 30, "a press wakes it as always, limited to 30");
+	// Limited by the heat is not kept dark by it: such a screen lights up, at its limit
+	scene_waiting_on_pages();
+	run_to(150000);
+	app_temperature(app, 75, true);
+	check(app->heat == GUARD_HEAT_DIM && light() == 0, "the scene: dark by the standby rule since 96120, and at 150000 the heat limits the backlight to 30");
+	run_to(201000);
+	check(phase() == DTC_FLOW_FAILED && light() == 30 && idle_since(200800, 200800), "the end of a request lights a screen the heat only limits: dark by standby, it lights up at 30");
+	stride = STEP_MS;
+	// ... while the progress shows: the outcome comes in the dark and is there when the light comes back
+	scene_reading();
+	wican.dead = true;
+	run_to(21000);
+	stride = 200;
+	run_to(150000);
+	app_temperature(app, 85, true);
+	run_to(201000);
+	check(on(NAV_DTC_FAILED) && light() == 0 && idle_since(200800, 20340), "the read ends while the heat keeps the progress dark: the failure shows unseen, and nav counts its idle time from it");
+	run_to(220000);
+	app_temperature(app, 69, true);
+	shows("failed_silent", "the heat lets go 19 s later: the failure is still on the screen ...");
+	check(light() == 80, "... which is lit, as every screen that shows something");
+	run_to(320800);
+	check(on(NAV_DTC_FAILED), "119.8 s behind the end the failure is still there");
+	run_to(321000);
+	check(on(NAV_PAGES), "... and 120 s behind it the value pages are back");
+	stride = STEP_MS;
+
+	// A press that began on a dark screen is dropped as before
+	scene_waiting_on_pages();
+	run_to(200200);
+	stride = STEP_MS;
+	run_to(200280);
+	switch_pressed = true;
+	run_to(200320);
+	check(app->woke && light() == 80 && app->last_input_ms == 200300 && phase() == DTC_FLOW_READING, "the scene: a press that began on the dark screen at 200300 woke it and is held; the read still waits");
+	run_to(200700);
+	check(phase() == DTC_FLOW_FAILED && idle_since(200600, 200600) && app->woke, "the read ends while the knob is held, noted at 200600: the press stays one that began in the dark");
+	switch_pressed = false;
+	run(100);
+	check(on(NAV_PAGES) && light() == 80, "what the knob reports of that press is dropped as before: no menu opens, although the end of the read came on a lit screen");
+	short_press();
+	check(on(NAV_MENU), "the next press opens the menu");
+
+	// A scan of somebody else ends without any of this
+	drive();
+	wican.ignition = false;
+	run_to(62200);
+	check(view() == CONN_VIEW_ECU_OFFLINE && light() == 0 && idle_since(0, 0), "the scene: ignition off, nobody at the display since its start, dark by the standby rule");
+	wican.manual = true;
+	wican.seq = 99;
+	wican.http = false;
+	wican.clear = false;
+	wican.phase = WICAN_DTC_RUNNING;
+	run_to(63200);
+	check(view() == CONN_VIEW_SCAN && light() == 80 && phase() == DTC_FLOW_IDLE && !app_busy(app), "Node-RED reads the fault memory over MQTT: a scan is something to show, the screen is lit while it runs");
+	adapter_done();
+	run_to(64400);
+	check(view() == CONN_VIEW_ECU_OFFLINE && phase() == DTC_FLOW_IDLE && idle_since(0, 0) && light() == 0,
+	      "the scan of somebody else ends: no input - no idle time starts anew, and the screen is dark again as soon as the state shows the scan over");
+
+	// It is no input for anything else. The release of the web interface, given at 2540, is not renewed
+	scene_released();
+	check(app->access.open_until_ms == 602540 && now == 5460, "the scene of the release: given at 2540, it ends at 602540");
+	short_press();
+	short_press();
+	short_press();
+	run_to(10300);
+	check(on(NAV_DTC_LIST) && idle_since(10200, 10200) && app->access.open_until_ms == 602540 && access_seconds_left(&app->access, now) == 593,
+	      "the end of a request renews nothing of the web release: the read asked for at 5900 ended with its list, noted at 10200, and the release still ends at 602540");
+	// "Update in Ordnung?" is not answered, and the failure is not acknowledged
+	garage();
+	machine.update_pending = true;
+	start();
+	run(2100);
+	wican.refuse = 409;
+	wican.refuse_reason = "busy";
+	app_do(app, NAV_DO_READ, now);
+	run_to(2300);
+	check(phase() == DTC_FLOW_FAILED && idle_since(2200, 2200) && app->update_pending && done.valid == 0 && has_line("over: update") && on(NAV_PAGES),
+	      "the end of a request confirms and acknowledges nothing: under the update question a read fails, noted at 2200 - the question waits on, the failure is kept, no screen is left");
+}
+
 /* What lies over the clear dialog -------------------------------------------------------------------- */
 
 static void test_dialog_under_question(void)
@@ -4556,11 +4915,13 @@ enum
 	PROMISE_MEMORY,     // a byte outside of the app
 	PROMISE_PAUSE,      // a read that went out was given up as unanswered although no state said so and its 180 s were not
 	                    // over, the loss of the network ended one, or it left a clear under way
+	PROMISE_END,        // the end of a request of the display was not noted as an input by the tick behind it, or a tick
+	                    // made something else of nav than that and what nav_tick() says
 	PROMISE_HEAL,       // no way back to live values on the first page
 	PROMISES,
 };
 
-static const char *const PROMISE_NAMES[PROMISES] = {"clear", "danger", "store", "old list", "scene", "light", "wake", "world", "layout", "info", "memory", "pause", "heal"};
+static const char *const PROMISE_NAMES[PROMISES] = {"clear", "danger", "store", "old list", "scene", "light", "wake", "world", "layout", "info", "memory", "pause", "end", "heal"};
 
 #define RESTARTS        (APP_EVENT_REBOOT | APP_EVENT_FACTORY_RESET | APP_EVENT_PREVIOUS_FIRMWARE | APP_EVENT_INSTALL_FIRMWARE)
 // The events with one cause each that the run knows before the call
@@ -4601,13 +4962,20 @@ typedef struct
 	long silenced;              // reads given up as unanswered in a step without an answered state: their time was over
 	long lost_reads;            // losses of the network while a read that went out was under way
 	long lost_clears;           // ... while a clear of the display was under way or waited to be sent
+	long ended[5];              // requests of the display whose end a tick noted: with a list, as failed, with the outcome of a
+	                            // clear, as unknown, and withdrawn without a trace (back to nothing read, or to the list)
+	long ended_late;            // ... while the progress showed, 120 s or more behind the last input: the outcome that tick
+	                            // showed would have been left by the next one
+	long ended_dark;            // ... on a screen that was dark by the standby rule, and lit up
+	long ended_hot;             // ... on a screen the heat kept dark, which nothing wakes
 } run_result_t;
 
 // What the run knows by itself
 typedef struct
 {
 	uint64_t started;           // the time of the start
-	uint64_t last_input;        // the last press, detent, tap or swipe
+	uint64_t last_input;        // the last press, detent, tap or swipe, or the tick that noted the end of a request of the
+	                            // display on a screen the heat did not keep dark
 	bool woke;                  // the press that is going on began on a dark screen
 	guard_heat_t heat;
 	int temp;
@@ -4628,6 +4996,9 @@ typedef struct
 	int confirmed;              // clears that a hold confirmed and that were not handed out yet
 	dtc_flow_phase_t phase;     // of the flow, as last seen
 	bool paused;                // the read that is under way has waited for an adapter that was out of sight
+	bool requesting;            // a request of the display was under way at the last tick, or was seen under way since ...
+	bool clearing;              // ... and the last one seen was a clear
+	nav_t ticked;               // what the tick of this step has to make of nav
 	uint64_t net_ms;            // the latest time the task of the network read: the one the poll counts with
 
 	// Around the call that is going on
@@ -4801,12 +5172,25 @@ static uint32_t acts(int row, uint64_t time, bool by_touch)
 	return 0;
 }
 
+// A request of the display is under way in this phase
+static bool goes_on(dtc_flow_phase_t flow)
+{
+	return flow == DTC_FLOW_READ_SENT || flow == DTC_FLOW_READING || flow == DTC_FLOW_CLEAR_SENT || flow == DTC_FLOW_CLEARING;
+}
+
 // The phase of the flow changed. Only a hold that is complete with this very reading makes it wait to send
 // a clear.
 static void follow_phase(bool by_hold)
 {
 	dtc_flow_phase_t seen = phase();
 
+	// A request begins with a call of the screen task alone, and every such call is looked at here before the
+	// network task has its turn: none begins and ends unseen
+	if(goes_on(seen))
+	{
+		m.requesting = true;
+		m.clearing = seen == DTC_FLOW_CLEAR_SENT || seen == DTC_FLOW_CLEARING;
+	}
 	if(seen == m.phase) return;
 
 	if(seen == DTC_FLOW_CLEAR_SENT)
@@ -4917,7 +5301,8 @@ static void honest(void)
 		}
 	}
 	// The progress says that the connection is interrupted exactly while a read waits for an adapter that is out
-	// of sight, and then shows nothing it does not know: no step, and that the adapter reads only if it accepted
+	// of sight, and then shows nothing it does not know: no step, and one line in both phases of the read - that
+	// the display waits for the WiCAN, nothing of what the adapter does
 	if(on(NAV_DTC_BUSY) && shown.kind == SCENE_PROGRESS)
 	{
 		dtc_flow_phase_t flow = phase();
@@ -4926,7 +5311,7 @@ static void honest(void)
 		bool says = shown.line_count > 0 && strcmp(shown.lines[0], "Verbindung unterbrochen") == 0;
 
 		if(says != waits) broke(PROMISE_SCENE, "the progress does not tell of the interrupted connection while a read waits for an adapter out of sight, or tells of it otherwise");
-		else if(says && (strcmp(shown.big, "…") != 0 || shown.permille != 0 || shown.line_count != 2 || strcmp(shown.lines[1], flow == DTC_FLOW_READING ? "WiCAN liest weiter" : "Warte auf Antwort") != 0))
+		else if(says && (strcmp(shown.big, "…") != 0 || shown.permille != 0 || shown.line_count != 2 || strcmp(shown.lines[1], "Warte auf WiCAN") != 0))
 		{
 			broke(PROMISE_SCENE, "the progress of a read that waits shows a step, or says something else than what the display knows of it");
 		}
@@ -5166,7 +5551,7 @@ static void behind(bool stepped, bool quick)
 	const poll_t *poll = &app->poll;
 
 	if(app->clock_ms != given_ms) broke(PROMISE_WORLD, "the time of the app is not the latest it was given");
-	if(app->last_input_ms != m.last_input) broke(PROMISE_WAKE, "the idle time does not count from the last press, detent, tap or swipe");
+	if(app->last_input_ms != m.last_input) broke(PROMISE_WAKE, "the idle time does not count from the last press, detent, tap or swipe, or from the end of a request of the display");
 	if(app->hold.open != on(NAV_DTC_CONFIRM)) broke(PROMISE_WORLD, "the hold dialog is not open exactly while the clear dialog shows");
 	if(app->events != 0) broke(PROMISE_WORLD, "an event is left behind app_take_events()");
 	if(quick && phase() == m.phase && app->nav.screen == m.nav.screen && app->nav.page == m.nav.page && app->nav.row == m.nav.row && app->nav.value == m.nav.value)
@@ -5306,15 +5691,42 @@ static void run_button(void)
 	if(memcmp(&m.twin, &app->nav, sizeof(nav_t)) != 0) broke(PROMISE_WAKE, "what knob and hold reported of the reading was not passed on to nav as app.h says");
 	if(m.toggles_release && access_is_open(&app->access, m.time) == m.was_open) broke(PROMISE_WORLD, "a press on Freigabe did not give the release or take it back");
 
-	// The tick of this step: the update nobody confirmed, and the brightness screen that nobody leaves
+	// The tick of this step: the update nobody confirmed, the end of a request of the display, and the
+	// brightness screen that nobody leaves
 	if(now % 200 == 0)
 	{
+		dtc_flow_phase_t flow = phase();
+		// The first tick behind the end: a request was under way at the tick before or began since, and none is now
+		bool ended = m.requesting && !goes_on(flow);
+		nav_world_t seen;
+
 		if(app->update_pending && m.time >= m.started + APP_UPDATE_CONFIRM_MS)
 		{
 			m.must |= APP_EVENT_REBOOT;
 			tally->reboots_late++;
 		}
-		if(on(NAV_BRIGHTNESS) && over_at(m.time) == NAV_OVER_NONE && m.time - app->nav.last_input_ms >= NAV_IDLE_MS) m.must |= APP_EVENT_STORE_SETTINGS;
+		// What the tick makes of nav, asked of a copy: the end of a request is an input that acts on nothing -
+		// written here without nav -, and then nav follows what happened without the user
+		app_world(app, &seen, m.time);
+		m.ticked = app->nav;
+		if(ended)
+		{
+			bool was_dark = m.heat != GUARD_HEAT_OFF && dark_at(m.time);
+
+			// A list behind a clear is the one the clear came from: it did not arrive, or was never sent
+			tally->ended[flow == DTC_FLOW_LIST && !m.clearing ? 0 : flow == DTC_FLOW_FAILED ? 1 : flow == DTC_FLOW_CLEARED ? 2 : flow == DTC_FLOW_UNKNOWN ? 3 : 4]++;
+			if(on(NAV_DTC_BUSY) && m.time - app->nav.last_input_ms >= NAV_IDLE_MS) tally->ended_late++;
+			m.ticked.clock_ms = m.time;
+			m.ticked.last_input_ms = m.time;
+			// Nothing wakes a screen the heat keeps dark; every other one counts its standby time from here
+			if(m.heat == GUARD_HEAT_OFF) tally->ended_hot++;
+			else m.last_input = m.time;
+			if(was_dark && !dark_at(m.time)) tally->ended_dark++;
+		}
+		// The brightness screen that nobody leaves, by its rule: 120 s without an input, and the end of a request
+		// is one
+		if(on(NAV_BRIGHTNESS) && over_at(m.time) == NAV_OVER_NONE && !ended && m.time - app->nav.last_input_ms >= NAV_IDLE_MS) m.must |= APP_EVENT_STORE_SETTINGS;
+		nav_tick(&m.ticked, &seen, m.time);
 	}
 	m.page = app->nav.page;
 }
@@ -5323,6 +5735,13 @@ static void run_tick(void)
 {
 	info_holds();
 	m.page = app->nav.page;
+
+	// The end of a request of the display was an input for nav, before nav followed the flow, and nothing else was
+	if(memcmp(&m.ticked, &app->nav, sizeof(nav_t)) != 0)
+	{
+		broke(PROMISE_END, "the tick did not make of nav what the end of a request, noted as an input that acts on nothing, and nav_tick() behind it say");
+	}
+	m.requesting = goes_on(phase());
 
 	// Behind the tick nothing is kept of a question that does not wait any more
 	if(access_asking(&app->access, m.time) == ACCESS_ASK_NONE && (app->has_wifi_asked || app->ask_detail[0] != '\0' || !all_bytes(&app->wifi_asked, sizeof(app->wifi_asked), 0)))
@@ -5613,13 +6032,16 @@ static void network_goes(void)
 }
 
 // The configuration the adapter of the run started with. A real one reads it when it starts and runs it
-// until it starts again; the faults of a run also swap it under a running adapter.
+// until it starts again; the faults of a run also swap it under a running adapter - and back: swapped_under
+// tells that one of them did since the adapter started, whatever the configuration is by now.
 static const char *started_with;
+static bool swapped_under;
 
 static void adapter_starts(void)
 {
 	adapter_restart(&wican, wican.boot + 1, (uint32_t)(1 + pick(1000)));
 	started_with = wican.config;
+	swapped_under = false;
 }
 
 // A world in which nothing is wrong: the adapter the display is bound to, awake, with the W906 standing still
@@ -5638,6 +6060,7 @@ static void calm(void)
 	wican.swallow = false;
 	wican.no_result = false;
 	wican.manual = false;
+	if(wican.config != w906_config) swapped_under = true;
 	wican.config = w906_config;
 	wican.values = NULL;
 	wifi.join_fails = false;
@@ -5694,6 +6117,7 @@ static void trouble(void)
 			// Another vehicle
 			wican.config = wican.config == w906_config ? other_config : w906_config;
 			wican.values = wican.config == w906_config ? NULL : other_values;
+			swapped_under = true;
 			if(chance(70)) adapter_starts();
 			break;
 		case 15:
@@ -5890,14 +6314,26 @@ static void release(void)
 }
 
 // The link to the adapter drops out while the progress of a read shows, as measured on the vehicle on
-// 2026-10-10: the adapter falls silent, or its network goes out of range. Mostly for less than a minute; three
-// times in ten for longer than a read is given.
-static void link_drops_out(void)
+// 2026-10-10: the adapter falls silent, or its network goes out of range. Four times in ten for less than a
+// minute; three times in ten for longer than the idle time of nav and shorter than a read is given, so that the
+// list comes to a display nobody touched for more than 120 s; three times in ten for longer than a read is given.
+// Who waits does not always watch the progress: three times in ten the user goes back to the value pages -
+// seven times in ten where the pause is one of the longest -, where an adapter out of sight is nothing to show
+// and the standby rule switches the light off, and now and then the board gets too hot in the middle of the
+// wait. The read ends on a dark screen then.
+// only_long: never for less than a minute - half of the time for longer than a read is given, else for longer
+// than the idle time of nav.
+static void link_drops_out(bool only_long)
 {
 	bool network = chance(40);
 	int seconds = 16 + pick(40);
+	int length = pick(only_long ? 60 : 100);
+	bool leaves, hot;
 
-	if(chance(30)) seconds = 185 + pick(20);
+	if(length < 30) seconds = 185 + pick(20);
+	else if(length < 60) seconds = 125 + pick(50);
+	leaves = chance(length < 30 ? 70 : 30);
+	hot = chance(15);
 	doing = "the link drops out during the read";
 	if(network)
 	{
@@ -5905,9 +6341,12 @@ static void link_drops_out(void)
 		if(wifi.joined) network_goes();
 	}
 	else wican.dead = true;
+	if(leaves) long_press();
 	while(now % 200 != 0) step();
 	stride = 200;
-	run(1000u * (uint32_t)seconds);
+	run(500u * (uint32_t)seconds);
+	if(hot) feel(85 + pick(10), true);
+	run(500u * (uint32_t)seconds);
 	stride = STEP_MS;
 
 	doing = "the link is back";
@@ -5915,6 +6354,29 @@ static void link_drops_out(void)
 	wifi.in_range_count = 3;
 	// The next round of the connection is up to 10 s away, the next scan for the network up to 30 s
 	run(1000u * (uint32_t)(2 + pick(40)));
+}
+
+// A read whose end nobody stands by for: asked for the honest way in a world where nothing is wrong, and then
+// the link drops out for longer than the idle time of nav. The list, or the failure, comes to a display that
+// nobody touched for more than two minutes - the case the end of a request counts as an input for.
+// No other fault is drawn meanwhile: in a run with many of them hardly a pause would last as long as it is
+// meant to, and the link would be back before the read is given up.
+static void read_unwatched(void)
+{
+	bool was_quiet = quiet;
+
+	doing = "a read nobody stands by for";
+	quiet = true;
+	calm();
+	run(1000u * (uint32_t)(2 + pick(20)));
+	to_menu(0);
+	if(on(NAV_DTC))
+	{
+		focus_on(0);
+		short_press();
+	}
+	if(on(NAV_DTC_BUSY) && (phase() == DTC_FLOW_READ_SENT || phase() == DTC_FLOW_READING)) link_drops_out(true);
+	quiet = was_quiet;
 }
 
 // Something the user sets out to do, done the honest way
@@ -5943,7 +6405,7 @@ static void intent(void)
 				focus_on(0);
 				short_press();
 			}
-			if(on(NAV_DTC_BUSY) && (phase() == DTC_FLOW_READ_SENT || phase() == DTC_FLOW_READING) && chance(45)) link_drops_out();
+			if(on(NAV_DTC_BUSY) && (phase() == DTC_FLOW_READ_SENT || phase() == DTC_FLOW_READING) && chance(45)) link_drops_out(false);
 			if(chance(70)) wait_for_scan(pick(30));
 			break;
 		case 1:
@@ -5979,7 +6441,7 @@ static void intent(void)
 				focus_on(0);
 				short_press();
 			}
-			if(on(NAV_DTC_BUSY) && (phase() == DTC_FLOW_READ_SENT || phase() == DTC_FLOW_READING) && chance(25)) link_drops_out();
+			if(on(NAV_DTC_BUSY) && (phase() == DTC_FLOW_READ_SENT || phase() == DTC_FLOW_READING) && chance(25)) link_drops_out(false);
 			wait_for_scan(40);
 			run(1200);
 			if(on(NAV_DTC_LIST))
@@ -6308,7 +6770,8 @@ static void one(void)
 		valid = !chance(15);
 		feel(40 + pick(55), valid);
 	}
-	else intent();
+	else if(what_now < 99) intent();
+	else read_unwatched();
 }
 
 // Live values on the first page: the adapter answers, the first page of the views shows, at least one of
@@ -6339,7 +6802,11 @@ static bool heal(void)
 	// catalogue of the vehicle before until the adapter starts anew or the network is joined again, and a
 	// display without built-in views then shows the values of that vehicle, which never come. That is no
 	// state a real adapter leaves the display in - it takes up a new configuration with a restart.
-	if(wican.config != started_with) adapter_starts();
+	// The same holds for a configuration that was swapped and swapped back while the adapter ran: it is the
+	// one the adapter started with again, and the display still holds entries of the vehicle in between,
+	// whose values came while it was there (run 10 of 2026-10-10 ended that way: 41 entries instead of 36,
+	// the first of the generated views made of four values that never come).
+	if(wican.config != started_with || swapped_under) adapter_starts();
 	stride = STEP_MS;
 	switch_pressed = false;
 	switch_ok = true;
@@ -6392,6 +6859,7 @@ static void random_run(uint32_t number, run_result_t *result)
 	else garage();
 	calm();
 	started_with = wican.config;
+	swapped_under = false;
 	if(chance(40))
 	{
 		strcpy(flash.settings, settings[pick(COUNT(settings))]);
@@ -6473,6 +6941,8 @@ static void test_random_runs(void)
 		"in every random run no byte outside of the app is written",
 		"in every random run a read that went out is given up as unanswered only in a step in which the adapter answered with its state, or when more than 180 s have passed "
 		"since it was accepted or handed out; the loss of the network ends no such read, makes the outcome of a clear that went out unknown and takes one back that still waited",
+		"in every random run the first tick behind the end of a request of the display notes it as an input that acts on nothing before nav follows the flow, and every tick "
+		"makes of nav exactly that and what nav_tick() says: no tick is an input otherwise",
 		"after every random run a healthy adapter, honest inputs and time lead back to live values on the first page",
 	};
 	run_result_t result;
@@ -6541,6 +7011,9 @@ static void test_random_runs(void)
 	printf("  random runs: %ld steps behind which a read that went out waited for an adapter out of sight, %ld looks at a progress that said so, %ld lists of reads that had "
 	       "waited, %ld reads given up by their time alone; the network lost %ld times during a read that went out and %ld times during a clear\n",
 	       result.paused_steps, result.paused_screens, result.paused_lists, result.silenced, result.lost_reads, result.lost_clears);
+	printf("  random runs: requests of the display whose end a tick noted as an input: %ld with a list, %ld as failed, %ld with the outcome of a clear, %ld as unknown, %ld withdrawn; "
+	       "%ld of them on the progress 120 s or more behind the last input, %ld on a screen dark by standby that lit up, %ld on a screen the heat kept dark\n",
+	       result.ended[0], result.ended[1], result.ended[2], result.ended[3], result.ended[4], result.ended_late, result.ended_dark, result.ended_hot);
 
 	check(complete && status != -1 && WIFEXITED(status) && WEXITSTATUS(status) == 0, "24 random runs of 240 deeds each: no crash and no hang");
 	for(int i = 0; i < PROMISES; i++) check(complete && result.broken[i] == 0, promises[i]);
@@ -6571,6 +7044,9 @@ static void test_random_runs(void)
 	check(complete && result.paused_steps >= 3000 && result.paused_screens >= 2000 && result.paused_lists >= 10 && result.silenced >= 2 && result.lost_reads >= 5 && result.lost_clears >= 2,
 	      "the random runs let reads wait for an adapter that is out of sight and look at their progress, let such reads end with their list and by their time alone, and lose "
 	      "the network during reads and during clears");
+	check(complete && result.ended[0] >= 50 && result.ended[1] >= 12 && result.ended[2] >= 5 && result.ended[3] >= 2 && result.ended_late >= 8 && result.ended_dark >= 3 && result.ended_hot >= 3,
+	      "the random runs let requests of the display end with a list, as failed, with the outcome of a clear and as unknown - on a progress nobody touched for 120 s and more, on "
+	      "screens dark by standby that light up, and on screens the heat keeps dark");
 }
 
 
@@ -6614,6 +7090,7 @@ int main(void)
 	test_events_add_up();
 	test_more_failures();
 	test_read_through_pause();
+	test_request_ends();
 	test_dialog_under_question();
 	test_replaced();
 	test_real_adapter();

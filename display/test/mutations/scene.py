@@ -91,7 +91,8 @@ PAUSED = "\tbool paused = reading && (view == CONN_VIEW_NO_WIFI || view == CONN_
 IF_PAUSED = "\tif(paused)\n\t{\n\t\t// The state the display still holds"
 PAUSE_BIG = "\t\tappend(scene->big, sizeof(scene->big), \"…\");\n"
 PAUSE_SAYS = "\t\tadd_text(scene, \"Verbindung unterbrochen\");\n"
-PAUSE_WHAT = "\t\tadd_text(scene, accepted ? \"WiCAN liest weiter\" : \"Warte auf Antwort\");\n"
+# One line in both phases of the read: it says what the display does, nothing of the adapter
+PAUSE_WHAT = "\t\tadd_text(scene, \"Warte auf WiCAN\");\n"
 PAUSE_END = PAUSE_WHAT + "\t\treturn;\n"
 
 # The list
@@ -884,12 +885,18 @@ MUTATIONS = [
     ("scene_busy_pause_not_said", T, F, PAUSE_SAYS, ""),
     ("scene_busy_pause_second_line_missing", T, F, PAUSE_END, "\t\treturn;\n"),
     ("scene_busy_pause_lines_swapped", T, F, PAUSE_SAYS + PAUSE_WHAT, PAUSE_WHAT + PAUSE_SAYS),
-    ("scene_busy_pause_read_without_answer_reads_on", T, F, PAUSE_WHAT, "\t\tadd_text(scene, \"WiCAN liest weiter\");\n"),
-    ("scene_busy_pause_accepted_read_waits_for_answer", T, F, PAUSE_WHAT, "\t\tadd_text(scene, \"Warte auf Antwort\");\n"),
-    ("scene_busy_pause_second_lines_swapped", T, F, PAUSE_WHAT, PAUSE_WHAT.replace("accepted ? ", "!accepted ? ")),
+    # the second line is the same in both phases: none of them gets a wording of its own back, and none loses the line
+    ("scene_busy_pause_accepted_read_claims_that_the_adapter_reads_on", T, F, PAUSE_WHAT,
+     "\t\tadd_text(scene, accepted ? \"WiCAN liest weiter\" : \"Warte auf WiCAN\");\n"),
+    ("scene_busy_pause_read_without_answer_waits_for_an_answer", T, F, PAUSE_WHAT,
+     "\t\tadd_text(scene, accepted ? \"Warte auf WiCAN\" : \"Warte auf Antwort\");\n"),
+    ("scene_busy_pause_second_line_only_of_an_accepted_read", T, F, PAUSE_WHAT, "\t\tif(accepted) add_text(scene, \"Warte auf WiCAN\");\n"),
+    ("scene_busy_pause_second_line_only_of_a_read_without_answer", T, F, PAUSE_WHAT, "\t\tif(!accepted) add_text(scene, \"Warte auf WiCAN\");\n"),
+    ("scene_busy_pause_claims_a_scan_that_was_seen_done_goes_on", T, F, PAUSE_WHAT,
+     "\t\tadd_text(scene, state != NULL && state->dtc.phase == WICAN_DTC_DONE ? \"WiCAN liest weiter\" : \"Warte auf WiCAN\");\n"),
     text("scene_text_busy_pause", "\"Verbindung unterbrochen\"", "\"Verbindung unterbrochen …\""),
-    text("scene_text_busy_pause_reads_on", "\"WiCAN liest weiter\"", "\"WiCAN liest weiter …\""),
-    text("scene_text_busy_pause_waits", "\"Warte auf Antwort\"", "\"Warte auf Antwort …\""),
+    text("scene_text_busy_pause_waits", "\"Warte auf WiCAN\"", "\"Warte auf WiCAN …\""),
+    text("scene_text_busy_pause_waits_for_an_answer", "\"Warte auf WiCAN\"", "\"Warte auf Antwort\""),
     text("scene_text_busy_pause_big", PAUSE_BIG + PAUSE_SAYS, PAUSE_BIG.replace("…", "...") + PAUSE_SAYS),
 
     # the list of the own read

@@ -66,7 +66,8 @@ int settings_to_json(const settings_t *settings, char *out, size_t size);
 // showing: the display has something to show that changes (values of a running vehicle, a fault memory
 //          scan, a dialog). Without it - no WiFi, adapter asleep, ignition off - the screen goes dark
 //          after the standby time, so that a display on permanent power does not light the cab all night.
-// idle_ms: time since the last input at the knob or the screen
+// idle_ms: time since the last input at the knob or the screen, or since what the caller counts as one (app.h:
+//          the end of a fault memory request of the display)
 int settings_backlight(const settings_t *settings, bool showing, uint64_t idle_ms);
 
 #endif

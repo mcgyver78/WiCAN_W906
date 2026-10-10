@@ -187,9 +187,12 @@ typedef struct
 	int temp_c;                     // the last reading that succeeded
 	bool has_temp;                  // the latest reading succeeded
 	int brightness_preview;         // while the brightness screen is shown: the value being set, else -1
-	uint64_t last_input_ms;
+	uint64_t last_input_ms;         // the standby rule counts from here: the last press, detent, tap or swipe, or
+	                                // the end of a fault memory request of the display (see below)
 	bool woke;                      // the press that is going on began on a dark screen: what the knob reports
 	                                // of it is dropped
+	bool requesting;                // a fault memory request of the display was under way when app_tick() last
+	                                // looked, or began since: its end is still to be noted (see below)
 	uint64_t clock_ms;              // the latest time seen: it follows the calls but never runs backwards
 	uint32_t events;
 	json_token_t *work;
@@ -249,6 +252,39 @@ void app_choose_layout(app_t *app);
  * A press is made with the reading with which the switch begins to count as pressed (knob.h); what the
  * knob reports of a press that began on a dark screen, short or long, is dropped. The idle time restarts
  * with every press, detent, tap and swipe, on a dark screen and on a lit one.
+ *
+ * The end of a fault memory request of the display counts as an input for the two idle times - the one of
+ * nav.h, after which every screen but the value pages is left (NAV_IDLE_MS), and the one of the standby rule -
+ * and for nothing else. A read that waited through a pause of the connection (dtc_flow.h) can end minutes
+ * after the last hand was at the display: without this its list, or its failure after DTC_FLOW_WAIT_MS of
+ * silence, stood on the screen for one tick before the value pages came back, and behind such a failure
+ * the screen went dark at once. Who reads and waits is to see what became of it.
+ * - A request ends when the flow leaves the phases in which one is under way (READ_SENT, READING, CLEAR_SENT,
+ *   CLEARING), whatever it ends as: a read with its list (LIST) or as failed (FAILED), a clear with its outcome
+ *   (CLEARED), as failed (FAILED) or as unknown (UNKNOWN). A request that is withdrawn before it was sent and a
+ *   clear that did not arrive (IDLE, LIST; dtc_flow.h) end as well: the progress gives way to the menu or the
+ *   list there, too. Only the own flow is looked at: a scan somebody else started - the adapter scanning for a
+ *   phone or for Node-RED - ends without any of this, whatever the state of the adapter shows.
+ * - app_tick() is where the app learns of it, the one place: the first tick behind the end, before nav_tick()
+ *   follows the flow, and with the time of that tick. Nothing tells the app earlier: a read that is given up
+ *   for the silence of its adapter ends in poll_prepare(), and a poll_prepare() that hands out no request is
+ *   followed by no app_net(). A request the tick finds under way is one whose end it will note, whoever asked
+ *   for it; one that began behind the last tick is noted where it is asked for (app_do()), so its end is seen
+ *   however soon it comes. (A second request that begins behind an end no tick has seen yet takes the place of
+ *   the first: that end is not noted, and the input that asked again is younger than it.)
+ * - nav is told of an input that acts on nothing (nav.h: a swipe without a direction): its idle time starts
+ *   anew. The outcome nav_tick() shows with that very tick stays for NAV_IDLE_MS unless somebody acts - and
+ *   so does any other screen the user went to while the request ran.
+ * - The idle time of the backlight starts anew: a screen that is dark by the standby rule lights up, for the
+ *   standby time where there is nothing to show. Not while the heat keeps the screen dark (the level is
+ *   GUARD_HEAT_OFF): nothing wakes that, and the idle time of the backlight stays what the last hand left -
+ *   the screen does not light up for an outcome of the past when the heat lets go either. nav is told all the
+ *   same: an outcome that came in that dark is still on the screen if the light comes back within NAV_IDLE_MS.
+ * - It is no input in any other sense. Nothing is confirmed, answered or acknowledged by it: the outcome and
+ *   the failure stay until the user leaves them, a question of the browser and "Update in Ordnung?" wait on.
+ *   The release of the web interface is not renewed (access.h: a change through the web alone does that), the
+ *   hold of the clear dialog is not touched, and a press that began on a dark screen is dropped as before,
+ *   also if the screen lit up for an outcome while the knob was held.
  */
 
 // One reading of the switch of the knob (board, every 20 ms). Feeds knob_sample() and hold_sample() (with
@@ -279,7 +315,8 @@ void app_tap(app_t *app, int row, uint64_t now_ms);
 // there. In the clear dialog it is also hold_activity(), as every swipe there.
 void app_swipe(app_t *app, int dx, int dy, uint64_t now_ms);
 
-// About five times a second: nav_tick(), the time of an unconfirmed update (APP_EVENT_REBOOT once, with the
+// About five times a second: the end of a fault memory request of the display is noted as an input for the
+// idle times (see above), then nav_tick(), the time of an unconfirmed update (APP_EVENT_REBOOT once, with the
 // first tick from APP_UPDATE_CONFIRM_MS after the start on at which it is not confirmed; the platform
 // restarts when it has carried out what waits), the info lines, and the end of a
 // firmware upload that has brought nothing for APP_UPLOAD_IDLE_MS (as app_web_upload_end() with ok false:
@@ -349,6 +386,8 @@ const char *app_host(const app_t *app);
  * What nav asks for, carried out here (also used by app_web.h). Where it touches the poll (read, clear,
  * dismiss), the events of the poll are taken at once, as app_net() does: the lines on the screen must not
  * wait for the network task. NAV_DO_NOTHING and what is no member of the enum: nothing.
+ * A request that is under way behind NAV_DO_READ or NAV_DO_CLEAR is noted as begun: app_tick() sees its end
+ * also if that comes before the next tick (see "The end of a fault memory request" above).
  *   NAV_DO_READ               poll_read()
  *   NAV_DO_HOLD_OPEN          hold_open(); if it refuses (the switch hangs) the dialog is left again
  *                             (nav_hold() with HOLD_STUCK)

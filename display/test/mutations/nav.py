@@ -162,6 +162,23 @@ MUTATIONS = [
      TAP_BODY, "\tuint64_t last_input_ms = nav->last_input_ms;\n\n" +
      TAP_BODY.replace(TAP_ROW, "\t\tif(row < 0 || row >= nav_rows(nav, world))\n\t\t{\n\t\t\tnav->last_input_ms = last_input_ms;\n\t\t\treturn NAV_DO_NOTHING;\n\t\t}\n")),
     ("nav_swipe_is_no_input", T, F, SWIPE, SWIPE.replace("note_input", "advance")),
+    # a swipe without direction is the input that acts on nothing, everywhere: the caller passes it for the end of a
+    # fault memory request of the display (app.h)
+    ("nav_swipe_without_direction_is_no_input", T, F, SWIPE,
+     SWIPE.replace("\tnote_input(nav, now_ms);\n", "\tif(direction != 0) note_input(nav, now_ms);\n\telse advance(nav, now_ms);\n")),
+    ("nav_swipe_without_direction_is_no_input_under_an_overlay", T, F, SWIPE,
+     SWIPE.replace("\tnote_input(nav, now_ms);\n", "\tif(direction != 0 || nav_overlay(world) == NAV_OVER_NONE) note_input(nav, now_ms);\n\telse advance(nav, now_ms);\n")),
+    ("nav_swipe_without_direction_is_no_input_under_a_question", T, F, SWIPE,
+     SWIPE.replace("\tnote_input(nav, now_ms);\n", "\tif(direction != 0 || nav_overlay(world) != NAV_OVER_ASK) note_input(nav, now_ms);\n\telse advance(nav, now_ms);\n")),
+    ("nav_swipe_without_direction_is_no_input_on_the_progress", T, F, SWIPE,
+     SWIPE.replace("\tnote_input(nav, now_ms);\n", "\tif(direction != 0 || nav->screen != NAV_DTC_BUSY) note_input(nav, now_ms);\n\telse advance(nav, now_ms);\n")),
+    ("nav_swipe_without_direction_is_no_input_on_an_outcome", T, F, SWIPE,
+     SWIPE.replace("\tnote_input(nav, now_ms);\n", "\tif(direction != 0 || (nav->screen != NAV_DTC_LIST && nav->screen != NAV_DTC_CLEARED && nav->screen != NAV_DTC_FAILED)) note_input(nav, now_ms);\n"
+                   "\telse advance(nav, now_ms);\n")),
+    ("nav_swipe_without_direction_acknowledges_a_failure", T, F, SWIPE,
+     SWIPE.replace("\tnote_input(nav, now_ms);\n", "\tnote_input(nav, now_ms);\n\tif(direction == 0 && nav->screen == NAV_DTC_FAILED) return press(nav, world);\n")),
+    ("nav_swipe_without_direction_leaves_the_progress", T, F, SWIPE,
+     SWIPE.replace("\tnote_input(nav, now_ms);\n", "\tnote_input(nav, now_ms);\n\tif(direction == 0 && nav->screen == NAV_DTC_BUSY) return back(nav, world);\n")),
     ("nav_ignored_swipe_is_no_input", T, F,
      SWIPE, SWIPE.replace("note_input", "advance").replace("return NAV_DO_NOTHING;\n\n", "return NAV_DO_NOTHING;\n\n\tnote_input(nav, now_ms);\n")),
 

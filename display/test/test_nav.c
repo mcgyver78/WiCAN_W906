@@ -1992,6 +1992,25 @@ static void test_idle(void)
 	nav_swipe(&nav, 0, &world, now = input + 100000);
 	check(nav.last_input_ms == input + 100000, "a swipe without direction on the value pages is an input as well");
 
+	// A swipe without direction is the input that acts on nothing: what the caller passes for the moment at which
+	// a fault memory request of the display ends (app.h)
+	stayed = 0;
+	for(int overlay = NAV_OVER_NONE; overlay <= NAV_OVER_UPDATE; overlay++)
+	{
+		for(int screen = 0; screen < SCREENS; screen++)
+		{
+			reach((nav_screen_t)screen, true);
+			set_overlay((nav_overlay_t)overlay);
+			before = nav;
+			now += 100;
+			if(nav_swipe(&nav, 0, &world, now) == NAV_DO_NOTHING && stays(&before) && nav.last_input_ms == now && before.last_input_ms != now) stayed++;
+			else printf("  %s under overlay %d: a swipe without direction changed something, or was no input\n", screen_names[screen], overlay);
+			set_overlay(NAV_OVER_NONE);
+		}
+	}
+	check(stayed == 4 * SCREENS, "a swipe without direction on every screen, with nothing over it and under an upload, a question and the update question: nothing is to be carried out, "
+	      "nothing of the screen changes, and the idle time starts anew");
+
 	// The hold is none
 	reach(NAV_DTC_LIST, false);
 	input = now;
@@ -2012,6 +2031,16 @@ static void test_idle(void)
 	world.cleared_lines = 2;
 	check(tick_at(input + 200000) == NAV_DO_NOTHING && at(NAV_DTC_CLEARED, 0) && tick_at(input + 200000) == NAV_DO_NOTHING && page_is(2),
 	      "a request that ended after the idle time: its outcome is shown by one tick, the next returns to the value pages");
+	// ... unless the caller passes the end as an input before the tick that follows the flow (app.h)
+	reach(NAV_DTC_CONFIRM, true);
+	input = now;
+	nav_hold(&nav, HOLD_CONFIRMED, &world, now = input + 4000);
+	world.flow = DTC_FLOW_CLEARED;
+	world.cleared_lines = 2;
+	nav_swipe(&nav, 0, &world, now = input + 200000);
+	check(at(NAV_DTC_BUSY, 0) && tick_at(input + 200000) == NAV_DO_NOTHING && at(NAV_DTC_CLEARED, 0), "the end of a request passed as a swipe without direction: the progress stays until the tick, which shows the outcome");
+	check(tick_at(input + 319999) == NAV_DO_NOTHING && at(NAV_DTC_CLEARED, 0) && tick_at(input + 320000) == NAV_DO_NOTHING && page_is(2),
+	      "... and that outcome stays: it is still there 119999 ms behind the end and left for the value pages after 120000 ms");
 
 	// An overlay
 	for(int overlay = NAV_OVER_UPLOAD; overlay <= NAV_OVER_UPDATE; overlay++)

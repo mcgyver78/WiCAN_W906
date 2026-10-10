@@ -3,6 +3,6 @@ ring: red
 title: Fehlerspeicher lesen
 note:
 line: Verbindung unterbrochen
-line: WiCAN liest weiter
+line: Warte auf WiCAN
 big: …
 permille: 0

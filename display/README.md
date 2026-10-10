@@ -33,7 +33,14 @@ erwiesen und stehen hier, damit niemand sie wiederholt:
 - „Mit eingeschaltetem Hotspot ist die Strecke gut": In zehn Minuten einer Mitschrift stimmte das (kein
   einziger Fehlschlag gegen zwei bis sieben je Minute davor und danach), in einer späteren Messung nicht.
 
-Versuch dagegen, noch ohne Beleg am Gerät: Das Display spricht nur 802.11b/g (`main/net.c`).
+**Gefunden (2026-10-10): Die Leitungen zum Bildschirm stören den eigenen Empfang.** Eine Versuchs-Firmware
+hat ihre Treiberstärke alle zwei Minuten zwischen der normalen und der schwächsten Stufe gewechselt, ein PC
+hat 70 Minuten lang gepingt: mit normaler Stufe 15,5 % Verlust (284 von 1830), mit der schwächsten 3,5 % (62
+von 1780), bei gleicher Empfangsstärke; in 15 von 16 Nachbarpaaren verlor die schwächste weniger. Die
+schwächste Stufe ist jetzt fest eingestellt (`components/board/board.c`). Was an Verlust bleibt, ist noch nicht
+untersucht.
+
+Ohne Beleg geblieben und trotzdem noch drin: Das Display spricht nur 802.11b/g (`main/net.c`).
 
 Damit ein Aussetzer kein Lesen mehr kostet: Ein Lesen des Fehlerspeichers, das der WiCAN angenommen hat,
 übersteht eine Verbindungspause; das Display holt die Liste, wenn er wieder antwortet, und gibt erst nach
@@ -199,7 +206,7 @@ Slot noch ein zurückgenommenes Update, steht es danach wieder unter „Vorherig
 
 ## Erster Tag am Board
 
-Im Quelltext sind 51 Stellen mit `CHECK:` markiert (21 in `components/board/board.c`, 9 in `main/main.c`,
+Im Quelltext sind 52 Stellen mit `CHECK:` markiert (22 in `components/board/board.c`, 9 in `main/main.c`,
 5 in `main/screen.c`, 10 in `main/net.c`, 3 in `main/web.c`, 2 in `main/web/index.html`, 1 in
 `sdkconfig.defaults`). Jede sagt, was zu beobachten ist und was zu ändern ist, wenn es anders kommt:
 

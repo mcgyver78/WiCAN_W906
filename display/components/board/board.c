@@ -15,6 +15,7 @@
 #include "esp_log.h"
 #include "esp_check.h"
 #include "esp_timer.h"
+#include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "driver/ledc.h"
 #include "driver/pulse_cnt.h"
@@ -418,6 +419,35 @@ esp_err_t board_init(void)
  * an upload. The two bounce buffers take 38.4 KB of the internal RAM, twice what the design counted
  * with. If it gets tight: the set of the ESPHome lessons above has buffers of half the size.
  */
+/*
+ * The twenty lines to the panel are driven with the weakest drive the pins have. They toggle at up to
+ * 12 MHz a few centimetres from the antenna, and with the default drive the receiver of the board hears
+ * them: the radio link failed at about -69 dBm, where a healthy ESP32-S3 has 20 dB to spare.
+ *
+ * Measured on the board in the vehicle on 2026-10-10 with a firmware that alternated the drive every two
+ * minutes, 70 minutes, pings from a PC five a second, the same signal strength in both (-65 dBm at the
+ * median): with the default drive (GPIO_DRIVE_CAP_2) 284 of 1830 pings were lost (15.5 %), with the
+ * weakest (GPIO_DRIVE_CAP_0) 62 of 1780 (3.5 %); of 16 neighbouring pairs of two minutes the weakest lost
+ * fewer in 15. The picture was the same in both, by eye.
+ * CHECK: the picture stays clean on every screen, also with the housing warm: the weakest drive makes the
+ * slowest edges. If single pixels flicker or colours tear, try GPIO_DRIVE_CAP_1 for the pixel clock alone
+ * first (it is the line the panel takes the others by).
+ */
+static void panel_lines_quiet(void)
+{
+	static const int pins[] = { BOARD_PANEL_DE, BOARD_PANEL_VSYNC, BOARD_PANEL_HSYNC, BOARD_PANEL_PCLK, BOARD_PANEL_DATA_PINS };
+
+	for(size_t i = 0; i < sizeof(pins) / sizeof(pins[0]); i++)
+	{
+		esp_err_t err = gpio_set_drive_capability((gpio_num_t)pins[i], GPIO_DRIVE_CAP_0);
+
+		if(err != ESP_OK)
+		{
+			ESP_LOGE(TAG, "panel: drive of GPIO %d stays as it is: %s", pins[i], esp_err_to_name(err));
+		}
+	}
+}
+
 static esp_err_t panel_create(esp_lcd_panel_io_handle_t io, esp_lcd_panel_handle_t *panel)
 {
 	const esp_lcd_rgb_panel_config_t rgb_config =
@@ -470,6 +500,11 @@ static esp_err_t panel_create(esp_lcd_panel_io_handle_t io, esp_lcd_panel_handle
 	{
 		// The init sequence, then the RGB signals start
 		err = esp_lcd_panel_init(*panel);
+	}
+	if(err == ESP_OK)
+	{
+		// With the signals running, as in the measurement: the driver has done with the pins by now
+		panel_lines_quiet();
 	}
 	if(err != ESP_OK)
 	{

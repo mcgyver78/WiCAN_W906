@@ -3,6 +3,18 @@
 F = "main/web.c"
 S = "web_sim"
 
+# accepts_gzip()
+TOKEN = "(c != '\\0' && strchr(\"!#$%&'*+-.^_`|~\", c) != NULL);"
+WEIGHT_NAME = "\t\t\tif((*list != 'q' && *list != 'Q') || list[1] != '=')\n"
+WEIGHT_ZERO = "\t\t\t\t\t\trefused = refused && *list == '0';\n"
+WEIGHT_ZERO_DIGITS = "digits < 3 && *list >= '0' && *list <= '9'; digits++)"
+WEIGHT_ONE_DIGITS = "digits < 3 && *list == '0'; digits++)"
+WEIGHT_NONE = "\t\t\telse\n\t\t\t{\n\t\t\t\treturn false;\n\t\t\t}\n\t\t\tlist = blanks(list);\n"
+ELEMENT_END = "\t\tif(length == 0 || (*list != ',' && *list != '\\0'))\n\t\t{\n\t\t\treturn false;\n\t\t}\n"
+GZIP = "\t\tif(length == 4 && (name[0] | 0x20) == 'g' && (name[1] | 0x20) == 'z' && (name[2] | 0x20) == 'i' &&\n" \
+       "\t\t   (name[3] | 0x20) == 'p')\n"
+REFUSED = "\t\t\tif(refused)\n\t\t\t{\n\t\t\t\treturn false;\n\t\t\t}\n"
+
 # read_request()
 SATURATE = "\t\tif(value > UINT32_MAX)\n\t\t{\n\t\t\treturn UINT32_MAX;\n\t\t}"
 CUT_QUERY = "\t\t*query++ = '\\0';"
@@ -35,7 +47,14 @@ STORED_FIRST = "\tplatform_stored();\n\tread_request(req, &request);\n\n" \
 REFUSAL = "web_error_body(decision.error, room->out, APP_WEB_OUT_SIZE)"
 FRAME = "\t\thttpd_resp_set_hdr(req, \"X-Frame-Options\", \"DENY\");\n"
 FRAME_POLICY = "\t\thttpd_resp_set_hdr(req, \"Content-Security-Policy\", \"frame-ancestors 'none'\");\n"
-PAGE = "\t\treturn answer(req, 200, WEB_TYPE_PAGE, page_start, (size_t)(page_end - page_start));\n"
+CODINGS = "\t\tconst char *list = header_value(req, \"Accept-Encoding\", codings, sizeof(codings));\n"
+PAGE_SIZE = "\t\tsize_t size = (size_t)(page_end - page_start);\n"
+VARY = "\t\thttpd_resp_set_hdr(req, \"Vary\", \"Accept-Encoding\");\n"
+LIST_WHOLE = "strlen(list) < sizeof(codings) - 1 && "
+LIST_NAMES = "accepts_gzip(list) &&\n"
+CODING = "\t\t   httpd_resp_set_hdr(req, \"Content-Encoding\", \"gzip\") == ESP_OK)\n"
+PAGE_GZ = "\t\t\tbody = page_gz_start;\n\t\t\tsize = (size_t)(page_gz_end - page_gz_start);\n"
+PAGE = "\t\treturn answer(req, 200, WEB_TYPE_PAGE, body, size);\n"
 WHOLE_BODY = "!receive(req, room->body, request.length, false)))"
 CALL_TIME = "\tnow = platform_now_ms();\n\tplatform_lock();\n\tswitch(decision.route)"
 EVENTS = "\tplatform_events();\n\tplatform_unlock();\n\treturn answer(req, status, WEB_TYPE_JSON, room->out, length);\n}\n\n" \
@@ -99,10 +118,47 @@ MUTATIONS = [
     ("web_refusal_with_another_word", S, F, REFUSAL, "web_error_body(\"not_found\", room->out, APP_WEB_OUT_SIZE)"),
     ("web_page_may_be_framed", S, F, FRAME, ""),
     ("web_page_without_its_frame_policy", S, F, FRAME_POLICY, ""),
-    ("web_page_sent_as_json", S, F, PAGE,
-     "\t\treturn answer(req, 200, WEB_TYPE_JSON, page_start, (size_t)(page_end - page_start));\n"),
-    ("web_page_cut_by_a_byte", S, F, PAGE,
-     "\t\treturn answer(req, 200, WEB_TYPE_PAGE, page_start, (size_t)(page_end - page_start) - 1);\n"),
+    ("web_page_sent_as_json", S, F, PAGE, "\t\treturn answer(req, 200, WEB_TYPE_JSON, body, size);\n"),
+    ("web_page_cut_by_a_byte", S, F, PAGE_SIZE, "\t\tsize_t size = (size_t)(page_end - page_start) - 1;\n"),
+
+    # the page in its two forms
+    ("web_page_never_compressed", S, F, LIST_NAMES, "accepts_gzip(list) && false &&\n"),
+    ("web_page_compressed_without_being_asked", S, F, CODINGS,
+     "\t\tconst char *list = header_value(req, \"Accept-Encoding\", codings, sizeof(codings)) != NULL ? codings : \"gzip\";\n"),
+    ("web_page_compressed_whatever_the_list_names", S, F, LIST_NAMES, "(accepts_gzip(list), true) &&\n"),
+    ("web_cut_list_of_codings_read", S, F, LIST_WHOLE, ""),
+    ("web_room_too_small_for_the_list_of_a_browser", S, F, "static char codings[64];", "static char codings[16];"),
+    ("web_page_without_vary", S, F, VARY, ""),
+    ("web_compressed_page_without_its_coding", S, F, CODING, "\t\t   true)\n"),
+    ("web_compressed_page_although_its_coding_was_refused", S, F, CODING,
+     "\t\t   (httpd_resp_set_hdr(req, \"Content-Encoding\", \"gzip\"), true))\n"),
+    ("web_plain_page_named_gzip", S, F, PAGE_GZ, ""),
+    ("web_compressed_page_cut_by_a_byte", S, F, PAGE_GZ,
+     "\t\t\tbody = page_gz_start;\n\t\t\tsize = (size_t)(page_gz_end - page_gz_start) - 1;\n"),
+    ("web_every_answer_named_gzip", S, F, ANSWER_TYPE,
+     "\thttpd_resp_set_type(req, type);\n\thttpd_resp_set_hdr(req, \"Content-Encoding\", \"gzip\");\n"),
+    ("web_every_answer_with_vary", S, F, ANSWER_TYPE,
+     "\thttpd_resp_set_type(req, type);\n\thttpd_resp_set_hdr(req, \"Vary\", \"Accept-Encoding\");\n"),
+
+    # what a list of codings says
+    ("web_any_coding_of_four_letters_is_gzip", S, F, GZIP, "\t\tif(length == 4)\n"),
+    ("web_coding_that_begins_like_gzip", S, F, GZIP, GZIP.replace("length == 4", "length >= 4")),
+    ("web_gzip_only_in_small_letters", S, F, GZIP, GZIP.replace("(name[0] | 0x20) == 'g'", "name[0] == 'g'")),
+    ("web_star_names_gzip", S, F, GZIP,
+     GZIP.replace("if(length == 4", "if((length == 1 && name[0] == '*') || (length == 4").replace("== 'p')\n", "== 'p'))\n")),
+    ("web_weight_0_is_a_yes", S, F, REFUSED, "\t\t\tnamed = named || refused;\n"),
+    ("web_refusal_overruled_by_a_second_mention", S, F, REFUSED, "\t\t\tif(refused)\n\t\t\t{\n\t\t\t\tcontinue;\n\t\t\t}\n"),
+    ("web_weight_0_with_decimals_is_a_yes", S, F, WEIGHT_ZERO, "\t\t\t\t\t\trefused = false;\n"),
+    ("web_weight_with_four_decimals", S, F, WEIGHT_ZERO_DIGITS, WEIGHT_ZERO_DIGITS.replace("digits < 3", "digits < 4")),
+    ("web_weight_above_1", S, F, WEIGHT_ONE_DIGITS, "digits < 3 && *list >= '0' && *list <= '9'; digits++)"),
+    ("web_weight_1_with_four_decimals", S, F, WEIGHT_ONE_DIGITS, WEIGHT_ONE_DIGITS.replace("digits < 3", "digits < 4")),
+    ("web_weight_without_a_number", S, F, WEIGHT_NONE, "\t\t\tlist = blanks(list);\n"),
+    ("web_parameter_that_is_no_weight", S, F, WEIGHT_NAME, "\t\t\tif(*list == '\\0' || list[1] == '\\0')\n"),
+    ("web_element_without_a_name", S, F, ELEMENT_END, ELEMENT_END.replace("length == 0 || ", "")),
+    ("web_list_read_past_what_is_no_element", S, F, ELEMENT_END,
+     "\t\tif(length == 0)\n\t\t{\n\t\t\treturn false;\n\t\t}\n"
+     "\t\twhile(*list != ',' && *list != '\\0')\n\t\t{\n\t\t\tlist++;\n\t\t}\n"),
+    ("web_name_of_any_characters", S, F, TOKEN, "(c != '\\0' && strchr(\" \\t,;\", c) == NULL);"),
     ("web_function_called_without_the_whole_body", S, F, WHOLE_BODY,
      "(receive(req, room->body, request.length, false), false)))"),
     ("web_time_ahead", S, F, CALL_TIME,

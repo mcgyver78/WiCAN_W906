@@ -39,6 +39,99 @@ CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
 CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
 
+# TCP for the radio link of this board, which is weak and loses packets (README.md). The defaults of
+# ESP-IDF v5.5.2 let a connection have four segments on their way in each direction; the driver logs
+# "tcp tx win: 5760, tcp rx win: 5760, tcp mss: 1440".
+#
+# Measured on the device on 2026-10-10, from a Mac in the same network: small answers of the web interface
+# take 30 to 130 ms, the page of 60189 bytes 1.4 to 4.9 s - its first byte after 30 to 125 ms, then 12 to
+# 41 KB/s, with no ping lost at that moment.
+# NOT measured: where that time goes. Nobody has looked at the packets. Read in the lwIP of that version
+# (espressif/esp-lwip at fd432e4e): a segment that was lost is sent again at once when three duplicate ACKs
+# have come for it (tcp_in.c), and otherwise when the retransmission timer has run out. The timer counts
+# steps of 500 ms, begins with three of them (CONFIG_LWIP_TCP_RTO_TIME below) and, calculated on a PC with
+# the estimate of tcp_in.c for round trips shorter than one step, stays at three, now and then four or
+# five: 1 to 1.5 s for the first loss of a segment, twice that if it is lost again (tcp.c). Three
+# duplicates take three segments that arrive behind the lost one. Of four on their way only the loss of the
+# first is mended that way, of eight the loss of each of the first five; the last three segments of an
+# answer are left to the timer in any case. One to three timers in a page of 42 segments would give the
+# times measured: an assumption, until it is measured again.
+# CHECK: with the first firmware that has these lines: the driver logs "tcp tx win: 11520", "tcp rx win:
+# 11520" (wifi_init.c prints what was configured); the time of the page and of a firmware upload; heap_min
+# in GET /api/info after an upload. If the internal RAM runs short, the two 11520 go back to 5760 and the
+# mail box to 6, the three together.
+#
+# What they cost is internal RAM, of which 74 KB are free and 57 KB were the lowest (heap and heap_min of
+# the device, as they were named for this change on 2026-10-10). None of the numbers allocates anything:
+# each is a limit, and nothing is taken while nothing is on its way.
+#
+# The segment the numbers below count in, and the three numbers of the WiFi driver they have to fit: defaults
+# of ESP-IDF v5.5.2, written down so that they do not change unseen. The ten static RX buffers are 16 KB
+# that are taken when the WiFi starts, as before. The dynamic buffers are internal RAM as well, one per
+# frame, at most 1.6 KB, given back when the frame is sent or was read. 32 full ones are 51 KB, nearly all
+# there is: they are NOT raised to make room for larger windows.
+CONFIG_LWIP_TCP_MSS=1440
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=10
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=32
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=32
+# What a connection may hold of an answer that is written and not yet confirmed: eight segments instead of
+# four. Kconfig of lwIP: "This value must be at least 2x the MSS size, and the default is 4x the default MSS
+# size.", and "Setting a smaller default SNDBUF size can save some RAM, but will decrease performance."
+# RAM: up to 5760 bytes more for a connection with a large answer on its way (the page, the values, the
+# catalogue; lwIP keeps its copy until the client has confirmed it), and up to four more frames in the TX
+# buffers of the WiFi driver at that moment, 6.4 KB. Nothing for an answer of four segments or less.
+# It also lets a connection queue 32 pieces instead of 16 (lwIP, TCP_SND_QUEUELEN in opt.h): the compressed
+# page leaves in 18 small pieces before its body (main/web.c, on_open()), two more than the 16 took without
+# waiting for the client.
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=11520
+# What a client may send before the display has read it: eight segments instead of four, so that behind a
+# lost segment of a firmware enough others arrive for its sender to notice at once. Kconfig of lwIP:
+# "Setting a smaller default receive window size can save some RAM, but will significantly decrease
+# performance." (More than 65535 needs window scaling, which Kconfig offers only with WiFi and lwIP in the
+# PSRAM.)
+# RAM: what was received and is not yet read stays in the dynamic RX buffers of the WiFi driver ("the Wi-Fi
+# forwards the packet to LwIP by reference by default", WiFi guide of ESP-IDF): eight frames instead of four
+# for a connection nobody reads at that moment, 6.4 KB more. The web server reads one connection at a time.
+# At the worst - four clients of the web server that each send a body nobody reads yet, the adapter, MQTT -
+# six connections ask for 48 frames, and there are 32: frames are dropped until something is read. With the
+# old window the six came to 24.
+# The rule of that guide ("How to Improve Wi-Fi Performance"): the window in KB "should be configured to the
+# value of WIFI_DYNAMIC_RX_BUFFER_NUM", and "in case of multiple streams, this value needs to be reduced
+# proportionally" (the same for the send buffer and the TX buffers). 32 buffers are 16 KB each for two
+# streams, the browser and the adapter, and 10.7 KB each for three, once there is MQTT. 11520 bytes are
+# 11.25 KB: within the rule for two, 5 % above it for three - and three full windows are 24 frames of 32.
+CONFIG_LWIP_TCP_WND_DEFAULT=11520
+# The mail box of a socket holds the segments that wait to be read. Kconfig of lwIP: "The recommended value
+# is: LWIP_TCP_WND_DEFAULT/TCP_MSS + 2", and "If the mail box is full, the LWIP drops the packets."
+# 11520 / 1440 + 2. RAM: a queue of pointers for every TCP socket, 16 bytes more each (sys_arch.c).
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=10
+# Segments that arrive behind a lost one are kept until it has come: the default, written down because the
+# next line needs it. Kconfig of lwIP: "Disable this option to save some RAM during TCP sessions, at the
+# expense of increased retransmissions if segments arrive out of order."
+CONFIG_LWIP_TCP_QUEUE_OOSEQ=y
+# ... and the display tells the sender which ones it has (selective ACKs, RFC 2018), so that only what is
+# missing has to be sent again. This is for what the display receives: a firmware, a layout, the answers of
+# the adapter. Where it sends, lwIP reads no such list. Kconfig of lwIP: "TCP will support sending selective
+# acknowledgements (SACKs)."; off by default. Used with a client that offers it when it connects (tcp_in.c).
+# RAM: 32 bytes for every connection (four ranges, tcp.h), and code in the flash that nobody has measured.
+CONFIG_LWIP_TCP_SACK_OUT=y
+# How many of them are kept for a connection: the default of ESP-IDF. With the larger window it is no
+# longer all that can come: of eight segments on their way seven can arrive behind a lost first one, and
+# the last three of those are dropped unreported and have to be sent again (tcp_in.c; their duplicate ACKs
+# go out all the same). Seven would keep them all and is NOT taken: each one kept is a dynamic RX buffer,
+# and the Kconfig of lwIP recommends "0 <= TCP_OOSEQ_MAX_PBUFS <=
+# CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM/(MAX_TCP_NUMBER + 1)", "to ensure that the MAC layer has enough RX
+# buffer to receive packets". The display has up to six connections - four of the web server (WEB_SOCKETS
+# in main/web.c), the adapter, later MQTT -, and 32 / 7 is 4. Seven would take 49 buffers, up to 27 KB more
+# of the internal RAM, or a web server that keeps a single connection.
+CONFIG_LWIP_TCP_OOSEQ_MAX_PBUFS=4
+# The time before a segment is sent again without three duplicates, see above: the default while
+# CONFIG_LWIP_TCP_HIGH_SPEED_RETRANSMISSION is on, as it is by default, written down because the reasoning
+# above counts with it. Kconfig of lwIP: "In bad network environment, recommend set value of rto time to
+# 1500." Not lowered: Kconfig names no smaller value for any case, and by the calculation above a smaller
+# one would last for the first answers of a connection only. RAM: none.
+CONFIG_LWIP_TCP_RTO_TIME=1500
+
 # RGB panel (components/board): the frame buffer lies in the PSRAM, and an interrupt copies it a few lines
 # at a time into two bounce buffers in the internal RAM, which the DMA sends. board.c refuses to compile
 # without the first of the settings below, and with the one that is named as left out.

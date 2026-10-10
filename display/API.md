@@ -64,6 +64,25 @@ device only and has not run anywhere yet.
 
 Paths are exact: no trailing slash, no upper case. A query string is only allowed where the table shows one.
 
+The page has two forms. A client whose `Accept-Encoding` names `gzip` gets it compressed, with
+`Content-Encoding: gzip` - a third of the bytes, made by the build of the firmware -, every other client as
+it is. Both answers carry `Vary: Accept-Encoding`. No other answer is ever compressed.
+"Names" is read narrowly (`accepts_gzip()` in `main/web.c`, after RFC 9110, 12.5.3):
+
+- The header is a list of codings separated by commas, each with an optional weight `;q=` of 0 to 1 with at
+  most three decimals. One of them is `gzip`, in letters of any case, and none is `gzip` with the weight 0,
+  which refuses it. `gzip, deflate, br` is a yes, `gzip;q=0.5` as well, `gzip;q=0` and `gzip, gzip;q=0` are not.
+- Weights are not compared: any weight above 0 is a yes, also next to a coding with a higher one. The
+  display sends the smaller form to whoever reads it.
+- `*` names nothing and is no yes; neither is `x-gzip`.
+- Everything else gets the page as it is: no `Accept-Encoding`, an empty one, a header that is not such a
+  list from its first byte to its last (`gzip;q=2`, `gzip;level=9`), one of 63 bytes or more (browsers send
+  13 to 23), and also a client that refuses the plain page (`identity;q=0`) - there is no third form and
+  no `406`. Of two `Accept-Encoding` lines in one request only the first is read.
+
+Status of the two forms (2026-10-10): run in the simulation of `main/web.c` on a PC and in the mock of
+`tools/`, which follows the same rules. Not yet built for the device.
+
 One request at a time: the server of the display has a single task. What follows from that, on the device
 (`main/web.c`; the mock in `tools/` does not model it):
 
@@ -73,8 +92,9 @@ One request at a time: the server of the display has a single task. What follows
   request is refused (`413` where nothing else refuses it first) and the connection is closed. No client
   sends leading zeros.
 - The page is sent with `X-Frame-Options: DENY` and `Content-Security-Policy: frame-ancestors 'none'`: it
-  cannot be shown inside the page of another site. No other answer carries a header beyond status, type and
-  length, and none an `Access-Control-Allow-*` header.
+  cannot be shown inside the page of another site. With `Vary` and, where it is compressed,
+  `Content-Encoding` (above) these are all the headers it has. No other answer carries a header beyond
+  status, type and length, and none an `Access-Control-Allow-*` header.
 - Before a request is served, everything the requests before it asked to store is stored. A request that
   arrives after one that restarts the display (`POST /api/reboot`, a confirmed reset or installation) gets no
   answer any more: the display is gone half a second after it has answered that one.

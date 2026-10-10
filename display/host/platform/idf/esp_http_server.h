@@ -30,6 +30,7 @@ enum http_method
 
 #define ESP_ERR_HTTPD_BASE          (0xb000)
 #define ESP_ERR_HTTPD_RESULT_TRUNC  (ESP_ERR_HTTPD_BASE + 4)
+#define ESP_ERR_HTTPD_RESP_HDR      (ESP_ERR_HTTPD_BASE + 5)
 
 typedef void *httpd_handle_t;
 typedef enum http_method httpd_method_t;
@@ -45,6 +46,7 @@ typedef struct httpd_config
 	size_t max_req_hdr_len;
 	uint16_t max_open_sockets;
 	uint16_t max_uri_handlers;
+	uint16_t max_resp_headers;
 	bool lru_purge_enable;
 	uint16_t recv_wait_timeout;
 	httpd_open_func_t open_fn;
@@ -56,6 +58,7 @@ typedef struct httpd_config
 		.max_req_hdr_len    = CONFIG_HTTPD_MAX_REQ_HDR_LEN, \
 		.max_open_sockets   = 7, \
 		.max_uri_handlers   = 8, \
+		.max_resp_headers   = 8, \
 		.lru_purge_enable   = false, \
 		.recv_wait_timeout  = 5, \
 		.open_fn = NULL, \

@@ -4,7 +4,8 @@
 The page runs in a browser, and there is none here: what is checked is its text. It names no path that
 API.md does not name, every request goes through the one function that adds the header of a change, it
 has none of the constructs that make HTML or code out of text, it loads nothing from anywhere, and it is
-small enough for the flash. Whether its buttons do what they say is not checked here.
+small enough for the flash - and, compressed as the display sends it, for the radio link. Whether its
+buttons do what they say is not checked here.
 
 The mock is asked what API.md says the display answers: the examples (where display/test/fixtures has
 the text, byte for byte) and each refusal, in the documented order. That holds the mock to API.md, not
@@ -15,6 +16,9 @@ that is wrong in one place - and expects the check that guards it to fail.
 
   python -m unittest -v          in display/tools, as the CI does
 """
+import base64
+import gzip
+import hashlib
 import http.client
 import os
 import re
@@ -22,6 +26,7 @@ import unittest
 from unittest import mock
 
 import mock_display
+import page_gz
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PAGE = os.path.join(HERE, "..", "main", "web", "index.html")
@@ -30,6 +35,11 @@ FIXTURES = os.path.join(HERE, "..", "test", "fixtures")
 
 # Below 60 KB, counted as the project counts its flash (partitions.csv: "nvs 128 KB" is 0x20000)
 SIZE_MAX = 60 * 1024
+# The page as a browser gets it: compressed (main/web.c, page_gz.py), over a radio link that is slow. Below
+# 24 KB, counted the same way: at the slowest rate measured on the device - 12 KB a second, for the plain
+# page of 60189 bytes, 2026-10-10 - that is two seconds. The page of that day compresses to 20464 bytes.
+# Another zlib than the one of this Python may make a few bytes more or less of the same page.
+COMPRESSED_MAX = 24 * 1024
 HOST = "192.168.1.77"
 SLOT = mock_display.SLOT_SIZE
 
@@ -187,6 +197,11 @@ def size_problems(data):
     return ["%d bytes, at most %d" % (len(data), SIZE_MAX - 1)] if len(data) >= SIZE_MAX else []
 
 
+def compressed_problems(data):
+    size = len(page_gz.compress(data))
+    return ["%d bytes when it is compressed, at most %d" % (size, COMPRESSED_MAX - 1)] if size >= COMPRESSED_MAX else []
+
+
 class Page(unittest.TestCase):
     def setUp(self):
         with open(PAGE, "rb") as file:
@@ -216,7 +231,12 @@ class Page(unittest.TestCase):
         self.assertEqual(external_problems(self.page), [])
 
     def test_size(self):
+        # Of the page as it is: that is what lies in the flash, next to the compressed one, and what a
+        # client gets that does not read gzip
         self.assertEqual(size_problems(self.data), [])
+
+    def test_compressed_size(self):
+        self.assertEqual(compressed_problems(self.data), [])
 
 
 # ----------------------------------------------------------------------------------------------------
@@ -993,6 +1013,47 @@ class Api(unittest.TestCase):
         display.update_ok()
         self.assertEqual(self.call("POST", "/api/reset")[0], 202)
 
+    def test_the_page_compressed(self):
+        with open(PAGE, "rb") as file:
+            page = file.read()
+        packed = page_gz.compress(page)
+        kind = "text/html; charset=utf-8"
+        vary = ("Vary", "Accept-Encoding")
+
+        def ask(accept, method="GET", target="/"):
+            """The answer to a client that sent this Accept-Encoding (None: it sent none): status, type, which
+            form of the page the body is, and the headers the answer has besides"""
+            headers = {"host": HOST}
+            if accept is not None:
+                headers["accept-encoding"] = accept
+            status, kind, body, more = self.display.handle(method, target, headers, reader(b""))
+            return status, kind, {page: "as it is", packed: "compressed"}.get(body, "no page"), more
+
+        # As it is without the header, for a list that does not name gzip, that refuses it, or that is no
+        # list of codings: the answer says only that there is another form
+        for accept in (None, "", "identity", "deflate, br", "*", "*;q=1", "x-gzip", "gzipx", "gzip;q=0", "gzip; q=0.000",
+                       "GZIP;Q=0", "gzip, gzip;q=0", "identity;q=0", "gzip;q=2", "gzip;q=1.5", "gzip;q=0.5000",
+                       "gzip;q=", "gzip;level=9", "gzip;q=0.5;x=1", "gzip deflate", "(x), gzip", ";q=1, gzip"):
+            with self.subTest(accept=accept):
+                self.assertEqual(ask(accept), (200, kind, "as it is", (vary,)))
+        # Compressed for a client that names gzip, and named so
+        for accept in ("gzip", "gzip, deflate", "gzip, deflate, br", "gzip, deflate, br, zstd", "GZip", ",gzip,",
+                       "deflate, gzip;q=0.5", "gzip;q=1.000", "gzip ; q=0.001", "gzip;q=0.1, identity;q=1", "*;q=0, gzip"):
+            with self.subTest(accept=accept):
+                self.assertEqual(ask(accept), (200, kind, "compressed", (vary, ("Content-Encoding", "gzip"))))
+        # ... into fewer bytes, which unpack to the page
+        self.assertLess(len(packed), len(page))
+        self.assertTrue(gzip.decompress(packed) == page)
+        # A list of 63 bytes or more has no room in the display and is not read
+        self.assertEqual(ask("gzip," + "br," * 19)[2], "compressed")
+        self.assertEqual(ask("gzip, " + "br," * 19)[2:], ("as it is", (vary,)))
+        self.assertEqual(ask("br," * 21 + "gzip")[2:], ("as it is", (vary,)))
+        # No other answer has a second form
+        self.assertEqual(ask("gzip", target="/api/info"), (200, "application/json", "no page", ()))
+        self.assertEqual(ask("gzip", target="/api/nothing")[::3], (404, ()))
+        self.assertEqual(ask("gzip", target="/?x=1")[::3], (400, ()))
+        self.assertEqual(ask("gzip", method="HEAD")[::3], (405, ()))
+
     # ------------------------------------------------------------------------------------------------
     # The server
 
@@ -1029,9 +1090,18 @@ class Api(unittest.TestCase):
             ask("POST", "/api/reboot", change),
             ask("POST", "/api/ota", dict(change, **{"Content-Length": "5000"}), mock_display.firmware_image(size=5000)),
             ask("GET", "/mock/firmware?wican", own),
+            # As a browser asks for the page
+            ask("GET", "/", dict(own, **{"Accept-Encoding": "gzip, deflate"})),
         ]
-        self.assertEqual([status for status, _, _ in answers], [200, 200, 404, 405, 403, 403, 200, 403, 200, 411, 202, 200])
+        self.assertEqual([status for status, _, _ in answers], [200, 200, 404, 405, 403, 403, 200, 403, 200, 411, 202, 200, 200])
         self.assertEqual((answers[0][1]["content-type"], answers[0][2]), ("text/html; charset=utf-8", page))
+        # The page in its two forms: each says that there is another, and the compressed one what it is
+        self.assertEqual((answers[0][1].get("vary"), answers[0][1].get("content-encoding")), ("Accept-Encoding", None))
+        self.assertEqual((answers[12][1].get("vary"), answers[12][1].get("content-encoding")), ("Accept-Encoding", "gzip"))
+        self.assertEqual(answers[12][1]["content-type"], "text/html; charset=utf-8")
+        self.assertEqual(answers[12][1]["content-length"], str(len(answers[12][2])))
+        self.assertTrue(gzip.decompress(answers[12][2]) == page)
+        self.assertEqual([headers.get("vary", headers.get("content-encoding")) for _, headers, _ in answers[1:12]], [None] * 11)
         self.assertEqual(answers[1][1]["content-type"], "application/json")
         self.assertEqual(answers[4][2], fixture("app_web_locked.json").encode("utf-8"))
         self.assertEqual(answers[5][2], b"{\"error\":\"host\"}")
@@ -1120,7 +1190,18 @@ PAGE_MUTATIONS = {
     "size_problems": {
         "one byte too many": lambda page: page + " " * (SIZE_MAX - len(page.encode("utf-8"))),
     },
+    "compressed_problems": {
+        "text that does not compress": lambda page: page + noise(8192),
+    },
 }
+
+
+def noise(count):
+    """Letters and digits without any order in them, the same with every call"""
+    text = ""
+    while len(text) < count:
+        text += base64.b64encode(hashlib.sha256(text.encode("ascii")).digest()).decode("ascii")
+    return text[:count]
 
 
 class WrongRoute(mock_display.Display):
@@ -1278,6 +1359,71 @@ class AnswersTheStrip(mock_display.Display):
         return super().control(method, target, dict(headers, **{"x-display": "1"}))
 
 
+class CompressesAsItLikes(mock_display.Display):
+    """The page compressed, but not into the bytes the build of the firmware makes"""
+
+    def handle(self, method, target, headers, read):
+        answer = super().handle(method, target, headers, read)
+        if answer is not None and ("Content-Encoding", "gzip") in answer[3]:
+            return answer[:2] + (gzip.compress(gzip.decompress(answer[2]), 1, mtime=1),) + answer[3:]
+        return answer
+
+
+class WithoutHeader(mock_display.Display):
+    """A display whose answers lack one of the headers they have besides status, type and length"""
+    name = None
+
+    def handle(self, method, target, headers, read):
+        answer = super().handle(method, target, headers, read)
+        if answer is None:
+            return None
+        return answer[:3] + (tuple(header for header in answer[3] if header[0] != self.name),)
+
+
+class NamesNoCoding(WithoutHeader):
+    name = "Content-Encoding"
+
+
+class NamesNoOtherForm(WithoutHeader):
+    name = "Vary"
+
+
+class CompressesEverything(mock_display.Display):
+    """Every answer says that it is compressed"""
+
+    def handle(self, method, target, headers, read):
+        answer = super().handle(method, target, headers, read)
+        if answer is None or answer[3]:
+            return answer
+        return answer[:3] + ((("Content-Encoding", "gzip"),),)
+
+
+class SendsNoMore(mock_display.Handler):
+    """A server that sends status, type, length and body, and not the headers an answer has besides"""
+
+    def _answer(self):
+        self.wfile = Untold(self.wfile)
+        super()._answer()
+
+    do_GET = do_POST = do_PUT = do_OPTIONS = _answer
+
+
+class Untold:
+    """A stream whose answers do not say that the page has two forms, nor which one this is"""
+
+    def __init__(self, stream):
+        self.stream = stream
+
+    def write(self, data):
+        head, mark, body = data.partition(b"\r\n\r\n")
+        for line in (b"\r\nVary: Accept-Encoding", b"\r\nContent-Encoding: gzip"):
+            head = head.replace(line, b"")
+        return self.stream.write(head + mark + body)
+
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+
+
 class AllowsOrigins(mock_display.Handler):
     def _answer(self):
         self.wfile = Tapped(self.wfile)
@@ -1333,6 +1479,7 @@ API_MUTATIONS = {
     "test_refusals_in_the_documented_order": WrongRoute,
     "test_busy_keeps_the_adapter": ForgetsWhileItReads,
     "test_heat": AsksInTheDark,
+    "test_the_page_compressed": ("accepts_gzip", lambda value: True),
     "test_over_http": ("Handler", AllowsOrigins),
     "test_the_strip_is_no_part_of_the_display": AnswersTheStrip,
 }
@@ -1344,6 +1491,10 @@ API_MUTATIONS_MORE = {
     "test_refusals": [("BODY_SMALL_MAX", 513), ("OUT_SIZE", 60000), AsksForBrokenUploads],
     "test_release": [("OPEN_MS", 601 * 1000)],
     "test_ota_that_breaks_or_comes_late": [AsksForBrokenUploads],
+    "test_the_page_compressed": [("accepts_gzip", lambda value: value is not None and "gzip" in value),
+                                 ("accepts_gzip", lambda value: False), ("CODINGS_ROOM", 80), ("CODINGS_ROOM", 63),
+                                 CompressesAsItLikes, NamesNoCoding, NamesNoOtherForm, CompressesEverything],
+    "test_over_http": [("Handler", SendsNoMore)],
 }
 
 
@@ -1364,7 +1515,7 @@ def failures(name, mutation):
 
 class CounterCheck(unittest.TestCase):
     def test_every_check_of_the_page_is_broken_once(self):
-        checks = {"request_problems", "construct_problems", "external_problems", "size_problems"}
+        checks = {"request_problems", "construct_problems", "external_problems", "size_problems", "compressed_problems"}
         self.assertEqual(set(PAGE_MUTATIONS), checks)
         self.assertEqual({name for name in globals() if name.endswith("_problems")}, checks)
 
@@ -1378,7 +1529,8 @@ class CounterCheck(unittest.TestCase):
                     found = {"request_problems": lambda: request_problems(broken, api_text),
                              "construct_problems": lambda: construct_problems(broken),
                              "external_problems": lambda: external_problems(broken),
-                             "size_problems": lambda: size_problems(broken.encode("utf-8"))}[check]()
+                             "size_problems": lambda: size_problems(broken.encode("utf-8")),
+                             "compressed_problems": lambda: compressed_problems(broken.encode("utf-8"))}[check]()
                     self.assertNotEqual(found, [])
 
     def test_a_request_api_md_no_longer_names_is_found(self):

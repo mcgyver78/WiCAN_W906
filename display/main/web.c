@@ -32,8 +32,10 @@
  * the moment before that. What does not become a request at all - a method the parser does not know, a
  * line or headers too long, a client that falls silent - would be answered by the server with a text of its
  * own: on_error() is registered for all of that and closes the connection without an answer. No header is
- * ever set here but status, type and length, and with the page the two that forbid to show it in a frame
- * (handle()).
+ * ever set here but status, type and length, and with the page four more: the two that forbid to show it in
+ * a frame, Vary, and Content-Encoding where the page is sent compressed (handle()). Of the headers of a
+ * request the first line of each name is read (the server hands out no other). Nothing a client sent is
+ * logged but the length of a firmware.
  *
  * One request at a time: the server has a single task, which runs the handler of one request to its end
  * before it looks at the next connection (httpd_main.c), and nothing in this file runs in another task
@@ -80,10 +82,13 @@ typedef struct
 
 _Static_assert(WEB_BODY_SMALL_MAX <= WEB_BODY_LAYOUT_MAX, "the room for a body is that of the layout");
 
-// The page: main/web/index.html, embedded as it is (EMBED_FILES in CMakeLists.txt, no zero behind it). The
-// build names the symbols after the file name alone.
+// The page, twice (CMakeLists.txt, no zero behind either): main/web/index.html as it is, and compressed by
+// the build into its own directory - index.html.gz, one gzip member (tools/page_gz.py). The build names the
+// symbols after the file name alone.
 extern const char page_start[] asm("_binary_index_html_start");
 extern const char page_end[] asm("_binary_index_html_end");
+extern const char page_gz_start[] asm("_binary_index_html_gz_start");
+extern const char page_gz_end[] asm("_binary_index_html_gz_end");
 
 static web_room_t *room;
 // A block of the firmware. In the internal RAM, unlike every other buffer: the flash driver writes from
@@ -100,6 +105,10 @@ static uint32_t slot_size;
 static char host[64];
 static char header[4];
 static char length_text[16];
+// Accept-Encoding, asked for with the page alone: the codings the client reads. Browsers send 13 to 23
+// bytes ("gzip, deflate", "gzip, deflate, br, zstd"). Cut, a refusal can read like a yes ("gzip;q=0" behind
+// "gzip"): a list that fills its room is not read either (handle()).
+static char codings[64];
 static bool close_after;    // nothing more can be read from this connection once the answer is sent
 
 static const char *status_line(int status)
@@ -161,6 +170,126 @@ static uint32_t length_of(const char *text)
 		text++;
 	}
 	return *text == '\0' ? (uint32_t)value : UINT32_MAX;
+}
+
+// A character of a name as HTTP has them (RFC 9110, 5.6.2: token)
+static bool is_token(char c)
+{
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+	       (c != '\0' && strchr("!#$%&'*+-.^_`|~", c) != NULL);
+}
+
+static const char *blanks(const char *text)
+{
+	while(*text == ' ' || *text == '\t')
+	{
+		text++;
+	}
+	return text;
+}
+
+/*
+ * Whether a client that sent this Accept-Encoding reads gzip: the page is sent compressed to nobody else.
+ * `list` is the value of the header (RFC 9110, 12.5.3): codings separated by commas, each with an optional
+ * weight ";q=" of 0 to 1 with at most three decimals.
+ *
+ * True only for a list that says so beyond doubt:
+ *   - it is such a list from its first byte to its last. One element that is none - no name, another
+ *     parameter than the weight, a weight that is no such number, anything behind it - and nothing of the
+ *     list counts;
+ *   - one of its elements is "gzip", in letters of any case, and no element "gzip" has the weight 0, which
+ *     is the refusal. Named twice, once with it, is refused.
+ * A weight above 0 is a yes whatever the other weights are. The display does not rank: it has the page in
+ * two forms and sends the smaller one to whoever reads it. "*", every coding that is not named, names
+ * nothing and is no yes; neither is "x-gzip", which is the same coding under an old name.
+ *
+ * Whoever gets no yes gets the plain page, which every client reads: also the one that refuses it
+ * ("identity;q=0"), for which the display has no third form and no status of its own.
+ */
+static bool accepts_gzip(const char *list)
+{
+	bool named = false;
+
+	for(;;)
+	{
+		const char *name;
+		size_t length;
+		bool refused = false;
+
+		// The next element; a list may have empty ones
+		while(*list == ' ' || *list == '\t' || *list == ',')
+		{
+			list++;
+		}
+		if(*list == '\0')
+		{
+			return named;
+		}
+
+		name = list;
+		while(is_token(*list))
+		{
+			list++;
+		}
+		length = (size_t)(list - name);
+		list = blanks(list);
+		if(*list == ';')
+		{
+			list = blanks(list + 1);
+			if((*list != 'q' && *list != 'Q') || list[1] != '=')
+			{
+				return false;
+			}
+			list += 2;
+			if(*list == '0')
+			{
+				// 0, 0.0, 0.00 and 0.000 refuse
+				refused = true;
+				list++;
+				if(*list == '.')
+				{
+					list++;
+					for(int digits = 0; digits < 3 && *list >= '0' && *list <= '9'; digits++)
+					{
+						refused = refused && *list == '0';
+						list++;
+					}
+				}
+			}
+			else if(*list == '1')
+			{
+				list++;
+				if(*list == '.')
+				{
+					list++;
+					for(int digits = 0; digits < 3 && *list == '0'; digits++)
+					{
+						list++;
+					}
+				}
+			}
+			else
+			{
+				return false;
+			}
+			list = blanks(list);
+		}
+		// An element has a name, and behind it and its weight nothing but the next element follows
+		if(length == 0 || (*list != ',' && *list != '\0'))
+		{
+			return false;
+		}
+
+		if(length == 4 && (name[0] | 0x20) == 'g' && (name[1] | 0x20) == 'z' && (name[2] | 0x20) == 'i' &&
+		   (name[3] | 0x20) == 'p')
+		{
+			if(refused)
+			{
+				return false;
+			}
+			named = true;
+		}
+	}
 }
 
 // What web_route() wants to know, as it was received: nothing is decoded
@@ -448,13 +577,31 @@ static esp_err_t handle(httpd_req_t *req)
 	}
 	if(decision.route == WEB_ROUTE_PAGE)
 	{
+		const char *list = header_value(req, "Accept-Encoding", codings, sizeof(codings));
+		const char *body = page_start;
+		size_t size = (size_t)(page_end - page_start);
+
 		// The page must not be shown inside the page of somebody else: a click that is led into it there
 		// is a request of the page itself, with its header and all, while the release is open. Said in the
 		// two ways browsers know; the policy the page carries cannot say it (frame-ancestors does not
 		// count in a <meta>). The server keeps the pointers until the answer is sent: constants.
 		httpd_resp_set_hdr(req, "X-Frame-Options", "DENY");
 		httpd_resp_set_hdr(req, "Content-Security-Policy", "frame-ancestors 'none'");
-		return answer(req, 200, WEB_TYPE_PAGE, page_start, (size_t)(page_end - page_start));
+		// The page has two forms, and a header of the request decides which one is sent. Whatever keeps
+		// answers between a client and the display is told so with every one of them: it must not hand the
+		// compressed page to a client that never said it reads it.
+		httpd_resp_set_hdr(req, "Vary", "Accept-Encoding");
+		// Compressed for the client that reads gzip: a third of the bytes, over a radio link that is slow.
+		// And only together with the header that says what the bytes are. The server has room for eight
+		// headers of an answer (max_resp_headers in HTTPD_DEFAULT_CONFIG) and this is the fourth; should it
+		// be refused all the same, the plain page is sent.
+		if(list != NULL && strlen(list) < sizeof(codings) - 1 && accepts_gzip(list) &&
+		   httpd_resp_set_hdr(req, "Content-Encoding", "gzip") == ESP_OK)
+		{
+			body = page_gz_start;
+			size = (size_t)(page_gz_end - page_gz_start);
+		}
+		return answer(req, 200, WEB_TYPE_PAGE, body, size);
 	}
 	if(decision.route == WEB_ROUTE_OTA)
 	{
@@ -512,6 +659,14 @@ static esp_err_t on_error(httpd_req_t *req, httpd_err_code_t error)
 // A new connection. Without this the stack holds the end of a small answer back until the client has
 // confirmed its beginning, which a client does with a delay of its own: every answer would be late, and the
 // one before a restart, or before the network is left (net.c), might not leave at all.
+// What it costs, read in the sources and never looked at on the wire: the server hands an answer to the
+// stack in pieces - status, type and length in one, four for every header set here, the empty line, then
+// the body (httpd_resp_send(), httpd_txrx.c) - and with this option a piece does not wait for the next one
+// (lwIP: tcp_output() behind every write, tcp_do_output_nagle()). While the client lets it leave at once,
+// each piece in front of the body is a small segment of its own: two with a JSON answer, 14 with the page,
+// 18 with the compressed page. A connection queues 32 pieces that are not yet confirmed (TCP_SND_QUEUELEN
+// with the send buffer of sdkconfig.defaults; 16 with the default of ESP-IDF, where the 17th waits for
+// the client).
 static esp_err_t on_open(httpd_handle_t hd, int fd)
 {
 	int on = 1;

@@ -110,6 +110,23 @@ jobs:
       - name: LVGL is compiled with the assertion handler of components/ui (abort, not a loop)
         run: python3 display/tools/check_build.py --commands display/build/compile_commands.json
 
+      # The page is embedded twice, plain and compressed; the compressed one is made by the build. That the
+      # build went through does not show that what it embedded unpacks to the page
+      - name: The compressed page of the build unpacks to the page
+        run: |
+          PACKED=$(find display/build -name index.html.gz | head -n 1)
+          test -n "$PACKED"
+          python3 display/tools/page_gz.py --check display/main/web/index.html "$PACKED"
+
+      # sdkconfig.defaults is a wish list: a name that is misspelt or out of its range is dropped without a word
+      - name: The settings of lwIP have arrived in the configuration
+        run: |
+          grep -x "CONFIG_LWIP_TCP_SND_BUF_DEFAULT=11520" display/sdkconfig
+          grep -x "CONFIG_LWIP_TCP_WND_DEFAULT=11520" display/sdkconfig
+          grep -x "CONFIG_LWIP_TCP_RECVMBOX_SIZE=10" display/sdkconfig
+          grep -x "CONFIG_LWIP_TCP_SACK_OUT=y" display/sdkconfig
+          grep -x "CONFIG_ESP_TASK_WDT_PANIC=y" display/sdkconfig
+
       - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:

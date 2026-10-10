@@ -56,7 +56,7 @@ nicht geklärt). Nicht geprüft am Board: Fehlerspeicher löschen, Zurücknehmen
 | Zeichencode (`components/ui`, LVGL 9.5.0) | in der CI gebaut; ein Renderer ohne Display zeichnet 79 von Hand gebaute Bildschirme und gut 200 Szenen aus den Tests der Logik und prüft, dass nichts über den Kreis ragt, sich überlappt oder abgeschnitten wird. Die Bilder hängen als Artefakt `wican-display-screens` am CI-Lauf. |
 | Plattform (`main`: Start, Bildschirm-Task, WLAN, HTTP, Flash) | übersetzt und linkt für den ESP32-S3. Gegen ESP-IDF v5.5.2 und LVGL 9.5.0 gegengelesen. Dazu laufen `main.c`, `screen.c`, `net.c` und `web.c` unverändert auf dem PC gegen die echte Logik, mit Platzhaltern für ESP-IDF, FreeRTOS und LVGL (`host/platform`, in der CI). Die Platzhalter sind ein nach den Quellen geschriebenes Modell: Sie zeigen, dass die Plattform ihre eigenen Regeln hält, nicht, dass Treiber, Scheduler und Flash sich so verhalten wie gelesen. |
 | Board-Schicht (`components/board`) | Pins, Zeiten und die Panel-Initialisierung sind aus dem Schaltplan und den Beispielen des Herstellers gelesen. Am Board bestätigt (2026-10-09): Bild, Farben, Hintergrundlicht, Expander, Touch, Taster, Encoder. Gemessen ist nur die Zahl der Zählschritte je Raste. |
-| Webseite (`main/web/index.html`) | in Chromium gegen einen Display-Mock auf dem PC ausprobiert. Nicht auf einem Telefon, nicht in Safari oder Firefox. |
+| Webseite (`main/web/index.html`) | in Chromium gegen einen Display-Mock auf dem PC ausprobiert. Nicht auf einem Telefon, nicht in Safari oder Firefox. Die Firmware bettet sie zweimal ein, wie sie ist und vom Build mit gzip gepackt (`tools/page_gz.py`), und schickt die gepackte an jeden Browser, der gzip annimmt: aus 60189 Bytes werden 20464 (gemessen am 2026-10-10 an der Seite des Commits 863a2c9, mit der zlib 1.2.12 des Mac). Das läuft in der Simulation von `web.c` und im Mock; gebaut und am Board gesehen ist es noch nicht. |
 | WiCAN-Firmware (HTTP-Weg für den Fehlerspeicher) | auf dem Adapter im Fahrzeug geflasht und gemessen (2026-10-04): Lesen über HTTP funktioniert, MQTT unverändert. Löschen über HTTP ist am Fahrzeug noch nicht getestet. Siehe `tools/w906/API.md`. |
 
 ## Aufbau
@@ -72,7 +72,8 @@ layouts            das eingebaute Layout für den W906 (35 Werte auf 7 Seiten)
 test               Tests der Logik, Mutationslisten, redproof.py
 host               der Renderer ohne Display
 host/platform      die Plattform auf dem PC: Simulationen von main.c, screen.c, net.c und web.c, ihre Mutationen
-tools              Prüfungen für Partitionstabelle, Layouts, Webseite und Build; mock_display.py
+tools              Prüfungen für Partitionstabelle, Layouts, Webseite und Build; mock_display.py; page_gz.py packt
+                   die Webseite für den Build der Firmware, die Simulation und den Mock
 API.md             die Weboberfläche des Displays
 ```
 
@@ -206,8 +207,8 @@ Slot noch ein zurückgenommenes Update, steht es danach wieder unter „Vorherig
 
 ## Erster Tag am Board
 
-Im Quelltext sind 52 Stellen mit `CHECK:` markiert (22 in `components/board/board.c`, 9 in `main/main.c`,
-5 in `main/screen.c`, 10 in `main/net.c`, 3 in `main/web.c`, 2 in `main/web/index.html`, 1 in
+Im Quelltext sind 54 Stellen mit `CHECK:` markiert (22 in `components/board/board.c`, 9 in `main/main.c`,
+5 in `main/screen.c`, 11 in `main/net.c`, 3 in `main/web.c`, 2 in `main/web/index.html`, 2 in
 `sdkconfig.defaults`). Jede sagt, was zu beobachten ist und was zu ändern ist, wenn es anders kommt:
 
 ```bash

@@ -50,6 +50,8 @@ COPIED = [
     "display/components/ui/ui.h",
     "display/layouts",
     "display/host/platform",
+    # compresses the page for every simulation, as the build of the firmware does (the Makefile)
+    "display/tools/page_gz.py",
     "display/test/fixtures/catalog_stored.json",
     "tools/w906/fixtures",
 ]

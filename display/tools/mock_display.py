@@ -8,7 +8,8 @@ test_page.py holds it against the examples of display/API.md.
   python3 mock_display.py --port 8907
   python3 mock_display.py --upload-rate 64   a firmware arrives with 64 KiB a second (0: at once)
 
-  http://127.0.0.1:8907/        the page, read from its file with every request
+  http://127.0.0.1:8907/        the page, read from its file with every request, and compressed for
+                                every client that says it reads gzip, as the display sends it
   http://127.0.0.1:8907/mock    the same page under a strip with what one does at the device:
                                 release on and off, press the knob, press it long (refuse), and the
                                 situations around it. The page itself knows nothing of /mock.
@@ -22,7 +23,7 @@ or to wican-display.local in the Host header, and so does the mock.
 In a test:
 
   display = mock_display.Display(clock=mock_display.SimulatedClock())
-  status, kind, body = display.handle("GET", "/api/info", {"host": "192.168.1.77"}, lambda count: b"")
+  status, kind, body, more = display.handle("GET", "/api/info", {"host": "192.168.1.77"}, lambda count: b"")
   display.release(True); display.clock.advance(601)      no real waiting
   server = mock_display.Server(display).start(); ...; server.close()
 
@@ -30,6 +31,12 @@ Taken from the sources, read and written a second time here:
   - which request is what and what is refused before a handler runs (components/core/web_route.c),
     in that order; what each request does and answers (app_web.c), with the order locked, busy,
     asking, hot, the rest; the bodies (web_json.c, catalog.c, settings.c), byte for byte
+  - the page in its two forms (main/web.c, accepts_gzip() and handle()): compressed by page_gz.py,
+    as the build of the firmware compresses it, for a client whose Accept-Encoding names gzip, and
+    as it is for every other; Vary with both. The bytes are those of the device only where its
+    build has the same zlib as the Python that runs the mock. accepts_gzip() here was held against
+    the one of web.c once, on 2026-10-10, by a program that is not part of the repository: 320005
+    lists made at random, the same answer to each. Nothing repeats that when either side changes
   - the release and the question to the knob (access.c): 10 minutes after the last accepted change,
     30 minutes at most, 60 seconds for the knob, a press in the first 1.5 seconds does not count,
     known are the last ticket and the one before it
@@ -81,6 +88,8 @@ Not modelled:
   - the display ends an upload that brings nothing for 30 seconds from its own clock (app_tick);
     the mock ends it when its socket has been silent for that long
   - every answer ends its connection, the HTTP server of the device keeps connections
+  - the two headers with which the device forbids to show its page in a frame: the strip /mock
+    shows it in one. And every answer of the mock says "Cache-Control: no-store", none of the device
   - a Content-Length that is no number is answered 411 here; the HTTP server of ESP-IDF refuses
     such a request by itself. A method the Python server does not know gets its 501
 """
@@ -94,6 +103,8 @@ import sys
 import threading
 import time
 
+import page_gz
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 PAGE = os.path.join(HERE, "..", "main", "web", "index.html")
 BUILTIN_LAYOUT = os.path.join(HERE, "..", "layouts", "w906_default.json")
@@ -104,6 +115,9 @@ BODY_LAYOUT_MAX = 16384
 BODY_SMALL_MAX = 512
 # display/partitions.csv: ota_0 and ota_1
 SLOT_SIZE = 0x400000
+# main/web.c: the room for the value of Accept-Encoding, with the zero behind it. A value that fills it
+# is not read.
+CODINGS_ROOM = 64
 # app_web.h
 OUT_SIZE = 20480
 UPLOAD_LEFT_S = 300
@@ -186,11 +200,16 @@ REASONS = {200: "OK", 202: "Accepted", 400: "Bad Request", 403: "Forbidden", 404
            405: "Method Not Allowed", 409: "Conflict", 411: "Length Required", 413: "Content Too Large",
            422: "Unprocessable Content", 500: "Internal Server Error"}
 JSON = "application/json"
+PAGE_TYPE = "text/html; charset=utf-8"
 
 # An IPv4 address or the name of the display, with or without a port (web_host_allowed()). Letters are
 # compared without case, and only the letters of ASCII have a second form.
 HOST = re.compile(r"(?:wican-display\.local|(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}"
                   r"(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9]))(?::[0-9]{1,5})?", re.ASCII | re.IGNORECASE)
+
+# An element of Accept-Encoding (RFC 9110, 12.5.3) without the blanks around it: the name of a coding, and
+# optionally its weight, 0 to 1 with at most three decimals
+CODING = re.compile(r"([!#$%&'*+\-.^_`|~0-9A-Za-z]+)[ \t]*(?:;[ \t]*[qQ]=(0(?:\.[0-9]{0,3})?|1(?:\.0{0,3})?))?", re.ASCII)
 
 MISSING = object()
 
@@ -990,8 +1009,8 @@ class Display:
 
     def handle(self, method, target, headers, read):
         """One request. headers: the names in lower case. read(count): the next bytes of the body, fewer
-        than asked for if the connection broke. Returns (status, content type, body as bytes), or None
-        if the display gives no answer."""
+        than asked for if the connection broke. Returns (status, content type, body as bytes, the
+        headers the answer has besides as (name, value)), or None if the display gives no answer."""
         path, mark, query = target.partition("?")
         length = content_length(headers) or 0
 
@@ -1002,7 +1021,12 @@ class Display:
             route, more = self.route(method, path, query, headers, self.now())
             if route == "page":
                 with open(self.page, "rb") as file:
-                    return 200, "text/html; charset=utf-8", file.read()
+                    page = file.read()
+                # web.c: the page has two forms, and the answer says so with both of them
+                more = (("Vary", "Accept-Encoding"),)
+                if accepts_gzip(headers.get("accept-encoding")):
+                    return 200, PAGE_TYPE, page_gz.compress(page), more + (("Content-Encoding", "gzip"),)
+                return 200, PAGE_TYPE, page, more
             if route is None:
                 status, body = more[0], error_body(more[1])
             elif method == "GET":
@@ -1038,7 +1062,7 @@ class Display:
         # An answer that has no room in the buffer of the display
         if len(data) >= OUT_SIZE:
             status, data = 500, error_body("too_large").encode("utf-8")
-        return status, JSON, data
+        return status, JSON, data, ()
 
     @staticmethod
     def _drop(read, count):
@@ -1223,7 +1247,7 @@ class Display:
         if HOST.fullmatch(headers.get("host", "")) is None:
             return 403, JSON, error_body("host").encode("utf-8")
         if method == "GET" and path == "/mock":
-            return 200, "text/html; charset=utf-8", STRIP.encode("utf-8")
+            return 200, PAGE_TYPE, STRIP.encode("utf-8")
         if method == "GET" and path == "/mock/firmware":
             images = {"good": firmware_image(), "wican": firmware_image("wican-fw", "4.21"),
                       "chip": firmware_image(chip=0x0005), "text": b"Das ist keine Firmware.\n" * 8}
@@ -1271,6 +1295,27 @@ class Display:
             "busy": self.reading, "hot": self.hot, "uploading": self.uploading, "adapter": self.adapter,
             "update_pending": self.update_pending, "version": self.version, "source": self.source,
         }, ensure_ascii=False)
+
+
+def accepts_gzip(value):
+    """accepts_gzip() of main/web.c, and what handle() there asks before it: whether a client that sent
+    this Accept-Encoding gets the page compressed. Only if the value has room, is a list of codings from
+    its first byte to its last, names gzip, and nowhere names it with the weight 0. "*" names nothing."""
+    if value is None or len(value) >= CODINGS_ROOM - 1:
+        return False
+    named = False
+    for element in value.split(","):
+        element = element.strip(" \t")
+        if element == "":
+            continue
+        found = CODING.fullmatch(element)
+        if found is None:
+            return False
+        if found.group(1).lower() == "gzip":
+            if found.group(2) is not None and float(found.group(2)) == 0:
+                return False
+            named = True
+    return named
 
 
 def content_length(headers):
@@ -1392,10 +1437,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if answer is None:
             self._log("no answer")
             return
-        status, kind, body = answer
+        # The strip answers with three parts, the display with a fourth: the headers an answer has besides
+        status, kind, body = answer[:3]
         head = ["HTTP/1.0 %d %s" % (status, REASONS[status]), "Content-Type: " + kind,
-                "Content-Length: %d" % len(body), "Cache-Control: no-store", "", ""]
-        self.wfile.write("\r\n".join(head).encode("iso-8859-1") + body)
+                "Content-Length: %d" % len(body), "Cache-Control: no-store"]
+        head += ["%s: %s" % header for answered in answer[3:] for header in answered]
+        self.wfile.write("\r\n".join(head + ["", ""]).encode("iso-8859-1") + body)
         self._log("%d %s" % (status, body.decode("utf-8") if kind == JSON and len(body) < 160 else "(%d bytes)" % len(body)))
 
     def _log(self, outcome):

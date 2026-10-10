@@ -1239,9 +1239,25 @@ async function storeWifi()
 	const known = stored.some(profile => profile.ssid === ssid);
 	let r;
 
-	if(ssid === "" || bytes(ssid) > 32 || bytes(request.host) > 39 || (password !== "" && (bytes(password) < 8 || bytes(password) > 64)))
+	// Each field by itself: one sentence for all of them left the reader to guess which one it was
+	if(ssid === "")
 	{
-		tell("wmsg", "Das geht so nicht: Der Name des Netzes hat 1 bis 32 Bytes, ein Passwort 8 bis 64 (leer für ein offenes Netz), die Adresse höchstens 39.", "bad");
+		tell("wmsg", "Der Name des Netzes fehlt. Auch um nur Passwort oder Adresse eines gespeicherten Netzes zu ändern, gehört sein Name hinein, genau wie er oben steht.", "bad");
+		return;
+	}
+	if(bytes(ssid) > 32)
+	{
+		tell("wmsg", "Der Name des Netzes ist zu lang: höchstens 32 Bytes (Umlaute zählen doppelt).", "bad");
+		return;
+	}
+	if(password !== "" && (bytes(password) < 8 || bytes(password) > 64))
+	{
+		tell("wmsg", "Im Feld Passwort stehen " + bytes(password) + " Bytes, ein Passwort hat 8 bis 64. Leer lassen heißt: das gespeicherte bleibt, bei einem neuen Netz ist es offen. Hat der Browser das Feld von selbst gefüllt, hilft „Passwort zeigen“.", "bad");
+		return;
+	}
+	if(bytes(request.host) > 39)
+	{
+		tell("wmsg", "Die Adresse des Adapters ist zu lang: höchstens 39 Bytes.", "bad");
 		return;
 	}
 	// Without the member the display keeps the password it has stored for this network

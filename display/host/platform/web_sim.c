@@ -3,20 +3,24 @@
  * after the other, against the real core and stand-ins for the HTTP server of ESP-IDF and for the flash.
  * "make" in this directory builds and runs it; redproof.py breaks web.c in one place at a time
  * (mutations/web.py) and expects a check to fail. It runs in this directory: the page it compares the
- * answer to GET / with is ../../main/web/index.html.
+ * answer to GET / with is ../../main/web/index.html, and the compressed page is build/index.html.gz, which
+ * the Makefile makes of it as the build of the firmware does. No zlib is linked here: that the compressed
+ * file unpacks to exactly the page is checked by the Makefile, with Python's gzip, before the simulations
+ * run (display/tools/page_gz.py --check).
  *
  * What the server does here, and what that rests on (ESP-IDF v5.5.2, read, not run):
  *   a request       comes to the one handler web.c registers, with its method, its URI and its headers. A
- *                   header value is copied as httpd_req_get_hdr_value_str() copies it: cut where it has no
- *                   room, and reported as cut only from two bytes too many on (httpd_parse.c, the strlcpy()
- *                   and the comparison behind it).
+ *                   header value is copied as httpd_req_get_hdr_value_str() copies it: that of the first
+ *                   line with the name, cut where it has no room, and reported as cut only from two bytes
+ *                   too many on (httpd_parse.c, the strlcpy() and the comparison behind it).
  *   the length      req->content_len is the server's own reading of Content-Length: 32 bit of what its
  *                   parser counted, and 0 where those are all ones (httpd_parse.c). That many bytes are
  *                   what httpd_req_recv() hands out, never more (httpd_txrx.c).
  *   a body          arrives in pieces of `chunk` bytes, each taking `recv_ms`; a receive can time out
  *                   (HTTPD_SOCK_ERR_TIMEOUT), and 0 is the client that has closed. While the server waits the
  *                   screen task can go on ticking the app.
- *   the answer      one per request: status, type, the headers set before it, the body
+ *   the answer      one per request: status, type, the headers set before it, the body. A header is
+ *                   refused when max_resp_headers of them are set, eight by default (httpd_txrx.c).
  *   the flash       esp_ota_begin(), _write(), _end() and _abort() counted, the bytes written kept; a write
  *                   or the check of the image can be made to fail
  *   the lock        a counter. Taking it twice is a failed check, and so is everything that waits or writes
@@ -261,6 +265,7 @@ static struct
 	const char *out_names[WIRE_HEADERS];
 	const char *out_values[WIRE_HEADERS];
 	int out_headers;
+	int out_refused;        // headers the server had no room for
 	char answer[WIRE_ANSWER + 1];
 	size_t answer_length;
 	bool answered;
@@ -370,13 +375,17 @@ esp_err_t httpd_resp_set_type(httpd_req_t *r, const char *type)
 esp_err_t httpd_resp_set_hdr(httpd_req_t *r, const char *field, const char *value)
 {
 	(void)r;
-	// The server keeps the two pointers until the answer is sent, and has room for eight
-	if(CHECK(!wire.answered && wire.out_headers < WIRE_HEADERS))
+	CHECK(!wire.answered);
+	// The server keeps the two pointers until the answer is sent, and has room for as many as its
+	// configuration says: one more is refused, and the answer leaves without it (httpd_txrx.c)
+	if(wire.out_headers >= the_config.max_resp_headers || wire.out_headers >= WIRE_HEADERS)
 	{
-		wire.out_names[wire.out_headers] = field;
-		wire.out_values[wire.out_headers] = value;
-		wire.out_headers++;
+		wire.out_refused++;
+		return ESP_ERR_HTTPD_RESP_HDR;
 	}
+	wire.out_names[wire.out_headers] = field;
+	wire.out_values[wire.out_headers] = value;
+	wire.out_headers++;
 	return ESP_OK;
 }
 
@@ -404,9 +413,26 @@ esp_err_t httpd_resp_send(httpd_req_t *r, const char *buf, ssize_t length)
 
 #define HOST    "192.168.4.1"
 
+static const char *out_header(const char *name);
+
 static void state(void)
 {
-	printf("   status '%s' answer '%.200s'\n", wire.status, wire.answer);
+	// A compressed answer is no text
+	if(out_header("Content-Encoding") == NULL)
+	{
+		printf("   status '%s' answer '%.200s'\n", wire.status, wire.answer);
+	}
+	else
+	{
+		printf("   status '%s' answer of %zu bytes, %s\n", wire.status, wire.answer_length, out_header("Content-Encoding"));
+	}
+	for(int i = 0; i < wire.headers; i++)
+	{
+		if(strcasecmp(wire.names[i], "Accept-Encoding") == 0)
+		{
+			printf("   asked with Accept-Encoding '%s'\n", wire.values[i]);
+		}
+	}
 }
 
 static void begin(int method, const char *uri)
@@ -528,6 +554,8 @@ static uint8_t file[10000];
 static char large[200000];
 static char page[WIRE_ANSWER];
 static size_t page_length;
+static char page_gz[WIRE_ANSWER];
+static size_t page_gz_length;
 static char number[32];
 
 static void test_start(void)
@@ -540,6 +568,14 @@ static void test_start(void)
 	page_length = fread(page, 1, sizeof(page), source);
 	fclose(source);
 	NEED(page_length > 0 && page_length < sizeof(page));
+	// The compressed page as the Makefile made it: a gzip member (RFC 1952: 1f 8b, deflate) that is smaller
+	// than the page, or no check below could tell the two forms apart
+	source = fopen("build/index.html.gz", "rb");
+	NEED(source != NULL);
+	page_gz_length = fread(page_gz, 1, sizeof(page_gz), source);
+	fclose(source);
+	NEED(page_gz_length > 18 && page_gz_length < page_length);
+	NEED((uint8_t)page_gz[0] == 0x1f && (uint8_t)page_gz[1] == 0x8b && page_gz[2] == 8);
 
 	platform_app = sim_alloc(sizeof(app_t));
 	memset(&boot, 0, sizeof(boot));
@@ -560,6 +596,8 @@ static void test_start(void)
 		CHECK(the_error_handler[i] != NULL && the_error_handler[i](&req, (httpd_err_code_t)i) == ESP_FAIL);
 	}
 	CHECK(the_config.uri_match_fn == httpd_uri_match_wildcard && the_config.max_uri_handlers == 1 && the_config.open_fn != NULL);
+	// The page is answered with four headers at most: the room the server has by default is not cut
+	CHECK(the_config.max_resp_headers >= 4);
 	// A new connection is told not to hold a small answer back: the one before a restart has to leave
 	CHECK(the_config.open_fn != NULL && the_config.open_fn(&the_config, 5) == ESP_OK && nodelay == 1);
 	CHECK(web_start() == ESP_ERR_INVALID_STATE);
@@ -750,8 +788,8 @@ static void test_firmware(void)
 	CHECK(wire.timeouts < 1000000 - 5 && wire.timeouts > 1000000 - 12);
 }
 
-// The page says that it must not be shown in a frame; no other answer has a header of its own, and none
-// ever lets another origin in
+// The page says that it must not be shown in a frame, and that it has another form for another request
+// (test_compressed()); no other answer has a header of its own, and none ever lets another origin in
 static void test_headers(void)
 {
 	begin_get("/");
@@ -759,11 +797,185 @@ static void test_headers(void)
 	CHECK(out_header("X-Frame-Options") != NULL && strcmp(out_header("X-Frame-Options"), "DENY") == 0);
 	CHECK(out_header("Content-Security-Policy") != NULL &&
 	      strstr(out_header("Content-Security-Policy"), "frame-ancestors 'none'") != NULL);
-	CHECK(wire.out_headers == 2 && out_header("Access-Control-Allow-Origin") == NULL);
+	CHECK(out_header("Vary") != NULL && strcmp(out_header("Vary"), "Accept-Encoding") == 0);
+	CHECK(wire.out_headers == 3 && wire.out_refused == 0 && out_header("Access-Control-Allow-Origin") == NULL);
 	begin_get("/api/info");
 	CHECK(run() == ESP_OK && wire.out_headers == 0);
 	begin_get("/nope");
 	CHECK(run() == ESP_OK && wire.out_headers == 0);
+}
+
+// GET / from a client that sent this Accept-Encoding; NULL: it sent none
+static esp_err_t get_page(const char *accept)
+{
+	begin_get("/");
+	if(accept != NULL)
+	{
+		hdr("Accept-Encoding", accept);
+	}
+	return run();
+}
+
+static bool header_is(const char *name, const char *value)
+{
+	const char *sent = out_header(name);
+
+	return sent != NULL && strcmp(sent, value) == 0;
+}
+
+// What the answer with the page has in both of its forms: all it had before there were two, and Vary
+static bool is_page(void)
+{
+	return strcmp(wire.status, "200 OK") == 0 && strcmp(wire.type, "text/html; charset=utf-8") == 0 &&
+	       header_is("X-Frame-Options", "DENY") && header_is("Content-Security-Policy", "frame-ancestors 'none'") &&
+	       header_is("Vary", "Accept-Encoding") && out_header("Access-Control-Allow-Origin") == NULL;
+}
+
+// The page as it is: no word of a coding, and the bytes of index.html
+static bool is_plain(void)
+{
+	return is_page() && wire.out_headers == 3 && out_header("Content-Encoding") == NULL &&
+	       wire.answer_length == page_length && memcmp(wire.answer, page, page_length) == 0;
+}
+
+// The compressed page: named gzip, and the bytes of index.html.gz
+static bool is_compressed(void)
+{
+	return is_page() && wire.out_headers == 4 && header_is("Content-Encoding", "gzip") &&
+	       wire.answer_length == page_gz_length && memcmp(wire.answer, page_gz, page_gz_length) == 0;
+}
+
+// Each of these lists, up to the NULL behind them, gets the page in this form. A check that fails says
+// which list it was (state()).
+static void pages(const char *const *lists, bool compressed)
+{
+	for(; *lists != NULL; lists++)
+	{
+		CHECK(get_page(*lists) == ESP_OK && (compressed ? is_compressed() : is_plain()) && wire.out_refused == 0);
+	}
+}
+
+// A list of exactly `length` bytes that ends with `end`: codings nobody asks the display for in front of it
+static const char *list_of(size_t length, const char *end)
+{
+	static char list[200];
+	size_t filled = length - strlen(end);
+
+	NEED(length < sizeof(list) && strlen(end) + 3 <= length);
+	for(size_t i = 0; i < filled; i++)
+	{
+		// "br,br,br," and blanks up to the end
+		list[i] = i >= filled - filled % 3 ? ' ' : "br,"[i % 3];
+	}
+	strcpy(list + filled, end);
+	NEED(strlen(list) == length);
+	return list;
+}
+
+// The page goes compressed to the client that says it reads gzip, and as it is to every other one
+static void test_compressed(void)
+{
+	// What browsers send; in another order, in other letters, with the blanks and the empty elements a
+	// list may have
+	static const char *const named[] =
+	{
+		"gzip", "gzip, deflate", "gzip, deflate, br", "gzip, deflate, br, zstd",
+		"deflate, gzip", "br,gzip,deflate", "GZip", "GZIP, DEFLATE", ", gzip ,", "deflate\t,\tgzip", NULL
+	};
+	// A weight above 0 is a yes, whatever the other codings weigh and whatever else is refused
+	static const char *const weighted[] =
+	{
+		"gzip;q=1", "gzip;q=1.", "gzip;q=1.0", "gzip;q=1.000", "gzip;q=0.5", "gzip;q=0.001", "gzip;q=0.01",
+		"gzip; q=0.8", "gzip ;Q=0.8 , identity;q=0.1", "br;q=1.0, gzip;q=0.8, *;q=0.1", "gzip;q=0.1, identity;q=1",
+		"identity;q=0, gzip", "*;q=0, gzip", "deflate;q=0, gzip", NULL
+	};
+	// No list that names gzip
+	static const char *const unnamed[] =
+	{
+		"", ",", "identity", "deflate", "deflate, br, zstd", "identity;q=1, deflate;q=0.5", NULL
+	};
+	// "*" names nothing, and a coding that only begins or ends like gzip is another one
+	static const char *const others[] =
+	{
+		"*", "*;q=1", "deflate, *", "x-gzip", "gzipx", "xgzip", "gzip2", "gzip-9", "gzi", "g", NULL
+	};
+	// The weight 0 refuses, however it is written and wherever it stands
+	static const char *const refused[] =
+	{
+		"gzip;q=0", "gzip;q=0.", "gzip;q=0.0", "gzip;q=0.00", "gzip;q=0.000", "gzip ; q=0", "GZIP;Q=0",
+		"deflate, gzip;q=0, br", "gzip;q=0, *", NULL
+	};
+	// ... also next to a second mention that does not
+	static const char *const twice[] = { "gzip, gzip;q=0", "gzip;q=0, gzip", "gzip;q=0.5, deflate, gzip;q=0.0", NULL };
+	// The client that refuses the plain page as well gets it: there is no third form
+	static const char *const nothing[] = { "identity;q=0", "*;q=0", "gzip;q=0, identity;q=0", NULL };
+	// What is no list of codings counts for nothing, also where it names gzip: an element without a name
+	// or with a name that is none, a parameter that is no weight, a weight that is no number from 0 to 1
+	// with three decimals at most, and anything behind an element
+	static const char *const broken[] =
+	{
+		";q=1, gzip", "(x), gzip", "\"gzip\"", "gzip/1.0", "gzip=1",
+		"gzip;x=1", "gzip;level=9", "gzip;", "gzip;q", "gzip;q=", "gzip;q=, deflate", "gzip;q= 1",
+		"gzip;q=2", "gzip;q=1.5", "gzip;q=1.0000", "gzip;q=0.5000", "gzip;q=0.0001", "gzip;q=.5", "gzip;q=-1",
+		"gzip;q=0.5;x=1", "gzip deflate", "gzip q=1", "gzip, br;q=9", "gzip, deflate br", NULL
+	};
+	uint16_t headers_max = the_config.max_resp_headers;
+
+	pages(named, true);
+	pages(weighted, true);
+	CHECK(get_page(NULL) == ESP_OK && is_plain());
+	pages(unnamed, false);
+	pages(others, false);
+	pages(refused, false);
+	pages(twice, false);
+	pages(nothing, false);
+	pages(broken, false);
+
+	// A list that has no room is not read, whatever is left of it. This one refuses gzip just behind the
+	// byte where its room ends: cut, it reads like a yes. The server says that it was cut; web.c does not ask.
+	CHECK(get_page(list_of(sizeof(codings) + 3, ", gzip;q=0")) == ESP_OK && is_plain());
+	// ... this one is cut by its last byte, which makes another coding of gzip, and the server does not
+	// report it (httpd_parse.c)
+	CHECK(get_page(list_of(sizeof(codings), ", gzipx")) == ESP_OK && is_plain());
+	// ... so one that fills its room is not read either, though this one is whole
+	CHECK(get_page(list_of(sizeof(codings) - 1, ", gzip")) == ESP_OK && is_plain());
+	// ... and the longest that is read is one byte shorter
+	CHECK(get_page(list_of(sizeof(codings) - 2, ", gzip")) == ESP_OK && is_compressed());
+	CHECK(get_page(list_of(sizeof(codings) - 2, ", gzip;q=0")) == ESP_OK && is_plain());
+
+	// The server has no room for the header that names the coding: then the page as it is. Never the
+	// compressed bytes without their name.
+	the_config.max_resp_headers = 3;
+	CHECK(get_page("gzip") == ESP_OK && is_plain() && wire.out_refused == 1);
+	the_config.max_resp_headers = headers_max;
+	CHECK(get_page("gzip") == ESP_OK && is_compressed() && wire.out_refused == 0);
+
+	// A request for the page that brings a body: answered like the others, and the body is dropped behind
+	// the answer as behind every other
+	begin_get("/");
+	hdr("Accept-Encoding", "gzip");
+	body("hello", 5, "5");
+	CHECK(run() == ESP_OK && is_compressed() && wire.received_after_answer == 5 && wire.remaining == 0);
+
+	// No other answer is compressed or says that it has another form, whatever its client reads: the
+	// routes that are no page, and the page where web_route() refuses the request
+	begin_get("/api/info");
+	hdr("Accept-Encoding", "gzip");
+	CHECK(run() == ESP_OK && status_is("200") && strcmp(wire.type, "application/json") == 0 && wire.out_headers == 0 &&
+	      wire.answer_length == strlen(wire.answer) && strstr(wire.answer, "\"project\":\"wican-display\"") != NULL);
+	begin_get("/nope");
+	hdr("Accept-Encoding", "gzip");
+	CHECK(run() == ESP_OK && status_is("404") && answer_is("{\"error\":\"not_found\"}") && wire.out_headers == 0);
+	begin_get("/?x=1");
+	hdr("Accept-Encoding", "gzip");
+	CHECK(run() == ESP_OK && status_is("400") && answer_is("{\"error\":\"query\"}") && wire.out_headers == 0);
+	begin(HTTP_GET, "/");
+	hdr("Accept-Encoding", "gzip");
+	CHECK(run() == ESP_OK && status_is("403") && answer_is("{\"error\":\"host\"}") && wire.out_headers == 0);
+	begin(HTTP_HEAD, "/");
+	hdr("Host", HOST);
+	hdr("Accept-Encoding", "gzip");
+	CHECK(run() == ESP_FAIL && status_is("405") && answer_is("{\"error\":\"method\"}") && wire.out_headers == 0);
 }
 
 // A length with zeros in front, cut in its room: never the number that is left of it
@@ -866,6 +1078,7 @@ int main(void)
 	test_layout();
 	test_firmware();
 	test_headers();
+	test_compressed();
 	test_lengths();
 	test_slow_clients();
 	test_upload_not_recorded();

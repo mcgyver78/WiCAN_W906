@@ -7,30 +7,41 @@ mit dem WiCAN; der bisherige Weg WiCAN → MQTT → Node-RED bleibt daneben best
 Hardware: Elecrow CrowPanel 2.1inch-HMI ESP32 Rotary Display (ESP32-S3R8, rundes IPS-Panel 480 × 480,
 Drehknopf mit Taster, Touch).
 
-## Stand (2026-10-09)
+## Stand (2026-10-10)
 
-Am 2026-10-09 lief die Firmware zum ersten Mal auf dem Board (Version `w906-v1.4.0-39-g5ba4322`, geschrieben
-ohne Board). An diesem Tag gesehen oder gemessen:
+Die Firmware läuft seit dem 2026-10-09 auf dem Board, seit dem 2026-10-10 im Fahrzeug. Gesehen oder gemessen:
 
 - Start ohne Fehler: Expander antwortet, Touch-Controller meldet sich als CST826 (Kennung 0x11), PSRAM 8 MB,
   WLAN-Treiber startet ohne eigenen NVS-Bereich, „safe mode 0".
-- Das Bild steht ruhig, Ring rot, Text richtig; Knopf und Touch gehen; Standby schaltet das Licht nach 60 s ab.
-- Hotspot, Eintragen eines Netzes über die Webseite, Beitritt, echte Werte vom WiCAN (`/api/values`).
+- Das Bild steht ruhig, Ring rot, Text richtig; Touch geht; Standby schaltet das Licht nach 60 s ab.
+- Knopf: Dieser Encoder liefert zwei Zählschritte je Raste (`KNOB_COUNTS_PER_DETENT`); damit ist eine Raste
+  eine Seite.
+- Hotspot, Eintragen eines Netzes über die Webseite, Beitritt, echte Werte vom WiCAN.
+- Update über die Webseite: hochladen, am Knopf installieren, „Update in Ordnung?" bestätigen.
+- Fehlerspeicher lesen vom Display aus (2026-10-10): 35 s, 18 von 18 Steuergeräten, die Liste steht auf dem
+  Display.
 
-Befunde desselben Tages:
+**Offen: die Funkstrecke des Boards ist schwach.** Zwei Meter vom Router empfängt das Display ihn mit −56 bis
+−69 dBm, rund 25 dB unter dem, was der Platz hergibt; der WiCAN in gleicher Entfernung verliert nichts. In guten
+Phasen gehen 2 % der Pings verloren, in schlechten 50 bis 100 %, dann scheitert schon der Beitritt. Auch in
+einer guten Phase ist die Strecke in beide Richtungen langsam (60 KB vom Display: 1,9 s im Mittel, bis 10 s).
+Das Gehäuse ist aus PETG, der Platz ist besser als der des WiCAN. Zwei Erklärungen haben sich als falsch
+erwiesen und stehen hier, damit niemand sie wiederholt:
 
-- Der Knopf liefert zwei Zählschritte je Raste, nicht vier: Es brauchte zwei Rasten für eine Seite. Berichtigt
-  (`KNOB_COUNTS_PER_DETENT`).
-- Mit dem Energiesparmodus des WLAN-Treibers gingen 51 % von 150 Pings zum Display verloren, Anfragen an den
-  WiCAN liefen phasenweise in ihre 4 s, die Webseite antwortete sekundenlang nicht. Mit eingeschaltetem Hotspot,
-  der das WLAN wach hält: 0 % Verlust, zwei Antworten des WiCAN je Sekunde. Berichtigt (`esp_wifi_set_ps` in
-  `main/net.c`).
-- Einmal meldete die Info-Seite als letzten Neustartgrund `wdt`. Ursache unbekannt, die Konsole lief zu der
-  Zeit nicht mit. **Offen.**
+- „Der Energiesparmodus des WLAN-Treibers ist schuld": Er ist abgeschaltet (das senkt die Antwortzeit von 154
+  auf 14 ms), die Verluste blieben.
+- „Mit eingeschaltetem Hotspot ist die Strecke gut": In zehn Minuten einer Mitschrift stimmte das (kein
+  einziger Fehlschlag gegen zwei bis sieben je Minute davor und danach), in einer späteren Messung nicht.
 
-Die beiden Berichtigungen sind auf dem PC geprüft; **auf dem Board gelaufen sind sie erst, wenn die Firmware
-mit ihnen aufgespielt ist.** Nicht geprüft am Board: Fehlerspeicher lesen und löschen, Update über die
-Webseite, Zurücknehmen eines Updates, Wärme im Gehäuse, alles Weitere der Liste unten.
+Versuch dagegen, noch ohne Beleg am Gerät: Das Display spricht nur 802.11b/g (`main/net.c`).
+
+Damit ein Aussetzer kein Lesen mehr kostet: Ein Lesen des Fehlerspeichers, das der WiCAN angenommen hat,
+übersteht eine Verbindungspause; das Display holt die Liste, wenn er wieder antwortet, und gibt erst nach
+180 s Stille auf. Das Löschen bleibt dabei, wie es war: Geht die Verbindung währenddessen verloren, ist der
+Ausgang unbekannt, und es muss neu gelesen werden.
+
+Ebenfalls offen: Nach jedem gewollten Neustart nennt die Info-Seite `wdt` als Grund (zweimal gesehen, Ursache
+nicht geklärt). Nicht geprüft am Board: Fehlerspeicher löschen, Zurücknehmen eines Updates, Wärme im Gehäuse.
 
 | Teil | Stand |
 |---|---|

@@ -435,6 +435,34 @@ static void view_no_answer(void)
 	expect_view(CONN_VIEW_NO_ANSWER);
 }
 
+// The adapter answered with `adapter` and then fell silent: three rounds without an answer, the time of grace
+// over. The connection still holds the state of before.
+static void view_fell_silent(void)
+{
+	conn_init(&conn, ID);
+	conn_wifi(&conn, true, NOW - 30000);
+	if(conn_next(&conn, NOW - 30000) != CONN_ASK_STATE) setup_failures++;
+	conn_got_state(&conn, CONN_GOT_OK, &adapter, NOW - 29900);
+	// What that round still asks for
+	for(int requests = 0; requests < 4; requests++)
+	{
+		conn_ask_t ask = conn_next(&conn, NOW - 29800);
+
+		if(ask == CONN_ASK_RESULT) conn_got_result(&conn, CONN_GOT_OK, NOW - 29800);
+		else if(ask == CONN_ASK_CATALOG) conn_got_catalog(&conn, CONN_GOT_OK, NOW - 29800);
+		else if(ask == CONN_ASK_VALUES) conn_got_values(&conn, CONN_GOT_OK, NOW - 29800);
+	}
+	for(int round = 0; round < 3; round++)
+	{
+		uint64_t ago = 20000 - (uint64_t)round * 5000;
+
+		if(conn_next(&conn, NOW - ago) != CONN_ASK_STATE) setup_failures++;
+		conn_got_state(&conn, CONN_GOT_FAILED, NULL, NOW - ago + 100);
+	}
+	if(conn_state(&conn) == NULL) setup_failures++;
+	expect_view(CONN_VIEW_NO_ANSWER);
+}
+
 static void view_foreign(void)
 {
 	SET(adapter.id, "ffffffffffff");
@@ -2166,6 +2194,69 @@ static void test_busy(void)
 	stage_busy(DTC_FLOW_LIST, 41);
 	screen("busy_over", "the progress while no request is under way any more: a title without action, no step, no line");
 
+	// A read that waits for an adapter that is out of sight
+	stage_busy(DTC_FLOW_READING, 41);
+	view_scan();
+	view_fell_silent();
+	check(conn_state(&conn) != NULL && conn_state(&conn)->dtc.seq == 41 && conn_state(&conn)->dtc.step == 5, "the scene: the adapter fell silent, and the connection still holds its state with the own read at 5 of 18");
+	screen("busy_read_paused", "the adapter fell silent at control unit 5 of 18 of the own read: the connection is interrupted and the adapter reads on - not the step of the last state, "
+	       "not \"ca. 35 s\"; the ring is that of the silence, red");
+	stage_busy(DTC_FLOW_READ_SENT, 0);
+	view_no_wifi();
+	screen("busy_read_paused_sent", "the network went before the POST of the read was answered: the connection is interrupted and the display waits for the answer - "
+	       "it does not say that the adapter reads");
+	stage_busy(DTC_FLOW_READING, 41);
+	view_connecting();
+	screen("busy_read_paused_joining", "back in a network in which the adapter has not answered yet: still interrupted, the ring yellow as while connecting");
+	for(int v = 0; v < COUNT(VIEWS); v++)
+	{
+		bool unseen = VIEWS[v].view == CONN_VIEW_NO_WIFI || VIEWS[v].view == CONN_VIEW_CONNECTING || VIEWS[v].view == CONN_VIEW_NO_ANSWER;
+
+		// Request 40: not the one a scan of the view shows
+		stage_busy(DTC_FLOW_READING, 40);
+		VIEWS[v].make();
+		build();
+		snprintf(what, sizeof(what), "the own read, accepted, in the view %s: %s", VIEWS[v].name,
+		         unseen ? "it waits for the adapter - \"Verbindung unterbrochen\", \"WiCAN liest weiter\", no hint" : "\"Auftrag gesendet\" and the hint");
+		check(head_is(SCENE_PROGRESS, "Fehlerspeicher lesen", "") && strcmp(scene->big, "…") == 0 && scene->permille == 0 &&
+		      (unseen ? lines_are("Verbindung unterbrochen", "WiCAN liest weiter", NULL, NULL) : lines_are("Auftrag gesendet", HINT, NULL, NULL)), what);
+		stage_busy(DTC_FLOW_READ_SENT, 0);
+		VIEWS[v].make();
+		build();
+		snprintf(what, sizeof(what), "the own read, sent and not answered, in the view %s: %s", VIEWS[v].name,
+		         unseen ? "it waits for the adapter - \"Verbindung unterbrochen\", \"Warte auf Antwort\", no hint" : "\"Auftrag gesendet\" and the hint");
+		check(head_is(SCENE_PROGRESS, "Fehlerspeicher lesen", "") && strcmp(scene->big, "…") == 0 && scene->permille == 0 &&
+		      (unseen ? lines_are("Verbindung unterbrochen", "Warte auf Antwort", NULL, NULL) : lines_are("Auftrag gesendet", HINT, NULL, NULL)), what);
+		// A clear does not wait, and no screen says that it does
+		for(int sent = 0; sent < 2; sent++)
+		{
+			stage_busy(sent ? DTC_FLOW_CLEAR_SENT : DTC_FLOW_CLEARING, 40);
+			VIEWS[v].make();
+			build();
+			snprintf(what, sizeof(what), "the own clear, %s, in the view %s: \"Auftrag gesendet\" and the hint as in every view - a clear does not wait for the adapter",
+			         sent ? "sent" : "accepted", VIEWS[v].name);
+			check(head_is(SCENE_PROGRESS, "Fehlerspeicher löschen", "") && strcmp(scene->big, "…") == 0 && scene->permille == 0 && lines_are("Auftrag gesendet", HINT, NULL, NULL), what);
+		}
+	}
+	stage_busy(DTC_FLOW_CLEARING, 42);
+	scan(WICAN_DTC_RUNNING, 42, true, 4, 18, "N15/5 Wählhebelmodul");
+	view_fell_silent();
+	build();
+	check(strcmp(scene->big, "4/18") == 0 && scene->permille == 222 && lines_are("Wählhebelmodul", HINT, NULL, NULL) && ring_is(RING_RED, 0),
+	      "the own clear with a connection that fell silent at its step 4 of 18: shown as before, for the moment until the outage ends it");
+	stage_busy(DTC_FLOW_READING, 41);
+	scan(WICAN_DTC_DONE, 41, false, 18, 18, "");
+	view_fell_silent();
+	build();
+	check(strcmp(scene->big, "…") == 0 && scene->permille == 0 && lines_are("Verbindung unterbrochen", "WiCAN liest weiter", NULL, NULL),
+	      "the own read with a connection that fell silent after the scan was done: it waits like every read - \"18/18\" would say that the result is on its way");
+	stage_busy(DTC_FLOW_READING, 41);
+	view_fell_silent();
+	world.flow = DTC_FLOW_IDLE;
+	input.read_block = DTC_FLOW_ALLOWED;
+	build();
+	check(lines_are("Verbindung unterbrochen", "WiCAN liest weiter", NULL, NULL), "that a read waits is told by its flow and by the view of the connection, whatever the world and the block of a read say");
+
 	for(int i = 0; i < COUNT(phases); i++)
 	{
 		// The world says the opposite: the title follows the flow, whose number and reason are shown with it
@@ -2233,7 +2324,13 @@ static void test_busy(void)
 	view_scan();
 	view_no_wifi();
 	build();
-	check(strcmp(scene->big, "…") == 0 && lines_are("Auftrag gesendet", HINT, NULL, NULL) && ring_is(RING_RED, 0), "the own read without a state of the adapter: no step, no crash");
+	check(strcmp(scene->big, "…") == 0 && lines_are("Verbindung unterbrochen", "WiCAN liest weiter", NULL, NULL) && ring_is(RING_RED, 0),
+	      "the own read without a network and without a state of the adapter: it waits - no step, no crash");
+	stage_busy(DTC_FLOW_CLEARING, 41);
+	view_scan();
+	view_no_wifi();
+	build();
+	check(strcmp(scene->big, "…") == 0 && lines_are("Auftrag gesendet", HINT, NULL, NULL) && ring_is(RING_RED, 0), "the own clear without a state of the adapter: no step, no crash");
 	stage_busy(DTC_FLOW_READING, 41);
 	view_no_api();
 	build();
@@ -4268,6 +4365,11 @@ static const char *const DTC_STANDS[] = {
 	"Stand des Löschens unbekannt",
 };
 static const int BUSY_LINES[] = {0, 2, 2, 0, 2, 2, 0, 0, 0};
+// A read waits for an adapter that is out of sight: by the phase of the request, and by the view of the
+// connection in the order of conn_view_t
+static const bool WAITS[] = {false, true, true, false, false, false, false, false, false};
+static const bool UNSEEN[] = {true, true, true, false, false, false, false, false, false, false};
+static const char *const WAIT_LINES[] = {"", "Warte auf Antwort", "WiCAN liest weiter", "", "", "", "", "", ""};
 
 static bool holds(when_t when)
 {
@@ -4331,6 +4433,7 @@ static const char *model_texts(scene_kind_t kind, conn_view_t view)
 		case NAV_DTC_BUSY:
 			title = BUSY_TITLES[phase];
 			lines = BUSY_LINES[phase];
+			if(WAITS[phase] && UNSEEN[view]) first = "Verbindung unterbrochen";
 			break;
 		case NAV_DTC_LIST:
 			title = "Fehlerspeicher";
@@ -4582,7 +4685,14 @@ static const char *model(void)
 		if(strcmp(scene->options[0], "Abbrechen") != 0 || strcmp(scene->options[1], on == NAV_CONFIRM ? "Ausführen" : "Löschen") != 0) return "the answers are not those of the dialog";
 	}
 	if(kind == SCENE_LEVEL && scene->permille != (nav.value < 0 ? 0 : nav.value > 100 ? 1000 : nav.value * 10)) return "the level is not the brightness";
-	if(kind == SCENE_PROGRESS && scene->line_count != 0 && strcmp(scene->lines[scene->line_count - 1], HINT) != 0) return "the last line of a progress is not the hint";
+	if(kind == SCENE_PROGRESS && scene->line_count != 0)
+	{
+		unsigned phase = (unsigned)flow.phase < 9 ? (unsigned)flow.phase : 0;
+		bool waits = WAITS[phase] && UNSEEN[view];
+
+		if(strcmp(scene->lines[scene->line_count - 1], waits ? WAIT_LINES[phase] : HINT) != 0) return "the last line of a progress is not the hint, or not what a read that waits says in its place";
+		if(waits && (strcmp(scene->big, "…") != 0 || scene->permille != 0)) return "a read that waits for the adapter shows a step";
+	}
 	return NULL;
 }
 
@@ -4596,6 +4706,8 @@ static void test_made_up(void)
 	// What the arc of a screen and the lines of fault memory and web access depend on
 	static int stands[9];
 	int own_arcs = 0, summed = 0, unsummed = 0, hotspots = 0, no_networks = 0;
+	// Progress screens of a read that waits for an adapter out of sight, by its phase, and of a clear in such a view
+	int waiting[2] = {0, 0}, unseen_clears = 0;
 	// The row Hotspot of the settings where it is visible: [kept][told of the safe mode][told that it is on]
 	int switches[2][2][2] = {{{0, 0}, {0, 0}}, {{0, 0}, {0, 0}}};
 	int differences = 0, dumps = 0, scenes = 0;
@@ -4755,6 +4867,11 @@ static void test_made_up(void)
 			kinds[scene->kind]++;
 
 			if((nav.screen == NAV_DTC_BUSY || nav.screen == NAV_DTC_CONFIRM) && conn_view(&conn, input.now_ms) == CONN_VIEW_SCAN) own_arcs++;
+			if(nav.screen == NAV_DTC_BUSY && UNSEEN[conn_view(&conn, input.now_ms)])
+			{
+				if(flow.phase == DTC_FLOW_READ_SENT || flow.phase == DTC_FLOW_READING) waiting[flow.phase == DTC_FLOW_READING]++;
+				if(flow.phase == DTC_FLOW_CLEAR_SENT || flow.phase == DTC_FLOW_CLEARING) unseen_clears++;
+			}
 			if(nav.screen == NAV_DTC)
 			{
 				stands[(unsigned)flow.phase < 9 ? (unsigned)flow.phase : 0]++;
@@ -4778,12 +4895,13 @@ static void test_made_up(void)
 		for(int i = 0; i < COUNT(kinds); i++) printf("  kind %d: %d scenes\n", i, kinds[i]);
 	}
 	check(scenes == 32000 && reached, "32000 made-up inputs reach every screen and what is none, every view of the connection, every overlay and every kind of scene, each at least 500 times");
-	reached = own_arcs >= 50 && summed >= 20 && unsummed >= 20 && hotspots >= 50 && no_networks >= 50;
+	reached = own_arcs >= 50 && summed >= 20 && unsummed >= 20 && hotspots >= 50 && no_networks >= 50 && waiting[0] >= 15 && waiting[1] >= 15 && unseen_clears >= 30;
 	for(int i = 0; i < COUNT(stands); i++) reached = reached && stands[i] >= 50;
 	for(int i = 0; i < 8; i++) reached = reached && switches[i >> 2][i >> 1 & 1][i & 1] >= 20;
 	if(!reached)
 	{
 		printf("  progress screen or clear dialog during a scan: %d\n", own_arcs);
+		printf("  progress screen of a read that waits for an adapter out of sight: %d sent, %d accepted; of a clear in such a view: %d\n", waiting[0], waiting[1], unseen_clears);
 		for(int i = 0; i < COUNT(stands); i++) printf("  fault memory in phase %d: %d scenes\n", i, stands[i]);
 		printf("  fault memory with a list and a summary: %d, without: %d\n", summed, unsummed);
 		printf("  web access without an address, with the own access point: %d, without: %d\n", hotspots, no_networks);
@@ -4792,7 +4910,8 @@ static void test_made_up(void)
 	       switches[0][0][0], switches[0][0][1], switches[0][1][0], switches[0][1][1], switches[1][0][0], switches[1][0][1], switches[1][1][0], switches[1][1][1]);
 	check(reached, "the made-up inputs reach the two screens with an arc of their own during a scan, the web access without an address with and without the own access point "
 	      "and the fault memory in every phase, each at least 50 times, a list with and without a summary at least 20 times, and the row Hotspot with its access point kept "
-	      "on and not, whatever the scene is told of the safe mode and of the access point, each of the eight at least 20 times");
+	      "on and not, whatever the scene is told of the safe mode and of the access point, each of the eight at least 20 times; the progress of a read that waits for an "
+	      "adapter out of sight, sent and accepted, each at least 15 times, and that of a clear in such a view at least 30 times");
 	check(differences == 0, "the scenes of the made-up inputs have the kind, the title, the note, the lines, the overlay, the dots, the ring, the window, the focus, the choices, the answers and the level the rules give "
 	      "when they are followed a second way");
 	check(dumps == 0, "each of those scenes can be written as a text of 34 to 2734 bytes, the smallest and the largest dump there is");

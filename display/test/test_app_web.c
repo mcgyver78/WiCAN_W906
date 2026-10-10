@@ -1864,6 +1864,56 @@ static void test_under_way(void)
 		if(!forget || !store || !reboot || !knob) printf("  phase %d: forget %d, store %d, reboot %d, knob %d\n", (int)phases[i].phase, forget, store, reboot, knob);
 		check(forget && store && reboot && knob, phases[i].rule);
 	}
+
+	// A read that waits for an adapter that is out of reach is under way like every other (dtc_flow.h): the adapter
+	// scans on, and what restarts the display or takes it from its network would lose the list
+	{
+		bool forget, store, reboot, reset, upload;
+
+		released();
+		run_to(20000);
+		app_do(app, NAV_DO_READ, now);
+		run(100);
+		wican.dead = true;
+		run_to(36100);
+		check(view() == CONN_VIEW_NO_ANSWER && app->poll.lost && phase() == DTC_FLOW_READING && app->poll.flow.seq == 42 && app_busy(app),
+		      "the scene: the adapter fell silent, and the read of the display that it accepted waits for it");
+		post("/api/reboot", "");
+		reboot = answered(409, "busy") && done.reboot == 0;
+		post("/api/reset", "");
+		reset = answered(409, "busy") && access_asking(&app->access, now) == ACCESS_ASK_NONE;
+		post("/api/wifi", NEU);
+		store = !by_route && answered(409, "busy") && nothing_asked() && access_asking(&app->access, now) == ACCESS_ASK_NONE;
+		post("/api/wifi/forget", "{\"ssid\":\"Werkstatt\"}");
+		forget = !by_route && answered(409, "busy") && app->profile_count == 1 && link_up(&app->link);
+		upload = upload_begin("0.2.0") == 409 && answered(409, "busy") && !app->uploading;
+		if(!forget || !store || !reboot || !reset || !upload) printf("  a read that waits: forget %d, store %d, reboot %d, reset %d, upload %d\n", forget, store, reboot, reset, upload);
+		check(forget && store && reboot && reset && upload && phase() == DTC_FLOW_READING && carried() == 0,
+		      "while a read waits for a silent adapter the restart, the factory reset, forgetting and storing a network and a firmware upload are answered busy, as during every read");
+		wican.dead = false;
+		run_to(41300);
+		check(phase() == DTC_FLOW_LIST && app->list_lines == 7 && !app_busy(app), "the scene: the adapter answers again at 41000, and the list of the read that waited is there");
+		post("/api/reboot", "");
+		check(answered(200, "ok") && done.reboot == 1, "when the read that waited has ended with its list the restart is carried out");
+
+		// ... and while the display is in no network at all
+		released();
+		run_to(20000);
+		app_do(app, NAV_DO_READ, now);
+		run(100);
+		wifi.in_range_count = 0;
+		lose_wifi();
+		run(1000);
+		check(view() == CONN_VIEW_NO_WIFI && !link_up(&app->link) && phase() == DTC_FLOW_READING && app_busy(app), "the scene: the network of the adapter is gone, and the read of the display waits");
+		post("/api/reboot", "");
+		reboot = answered(409, "busy") && done.reboot == 0;
+		post("/api/wifi", NEU);
+		store = !by_route && answered(409, "busy") && nothing_asked();
+		post("/api/wifi/forget", "{\"ssid\":\"Werkstatt\"}");
+		forget = !by_route && answered(409, "busy") && app->profile_count == 1;
+		check(forget && store && reboot && phase() == DTC_FLOW_READING && carried() == 0,
+		      "out of its network with a read that waits the display is busy as well: no restart, no network forgotten or asked for");
+	}
 }
 
 /* The settings ----------------------------------------------------------------------------------------- */

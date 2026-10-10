@@ -197,6 +197,8 @@ dtc_flow_send_t dtc_flow_take(dtc_flow_t *flow, uint32_t *seq, uint64_t now_ms)
 		send = DTC_FLOW_SEND_NOTHING;
 	}
 	if(seq != NULL) *seq = send == DTC_FLOW_SEND_CLEAR ? flow->read_seq : 0;
+	// From here on the request is on its way: a read that hears nothing of the adapter is waited for from now
+	if(send != DTC_FLOW_SEND_NOTHING) flow->sent_ms = now_ms;
 	return send;
 }
 
@@ -307,7 +309,28 @@ void dtc_flow_lost(dtc_flow_t *flow)
 {
 	// Never sent: nothing happened in the vehicle, and the list of a clear is as good as before
 	if(flow->to_send != DTC_FLOW_SEND_NOTHING) withdraw(flow, true);
-	else if(under_way(flow)) give_up(flow, "no_answer");
+	// Nobody can say what a clear did, and nobody may clear again on a guess: the user reads first
+	else if(clearing(flow)) flow->phase = DTC_FLOW_UNKNOWN;
+	// A read waits for the adapter to answer again; its scan goes on without the display. The end of a POST
+	// that was under way will not be reported: from now on the states have to tell what became of it.
+	else if(flow->phase == DTC_FLOW_READ_SENT) flow->posted = true;
+}
+
+void dtc_flow_gone(dtc_flow_t *flow)
+{
+	dtc_flow_lost(flow);
+	// What is left under way is a read that was taken. No state of another adapter says anything about it.
+	if(under_way(flow)) fail(flow, "no_answer");
+}
+
+void dtc_flow_silent(dtc_flow_t *flow, uint64_t now_ms)
+{
+	// A read the adapter accepted has the time of every accepted request; one whose POST got no answer has as
+	// long from the moment it was handed out
+	bool accepted_late = flow->phase == DTC_FLOW_READING && passed(now_ms, flow->accepted_ms) > DTC_FLOW_WAIT_MS;
+	bool sent_late = flow->phase == DTC_FLOW_READ_SENT && flow->to_send == DTC_FLOW_SEND_NOTHING && passed(now_ms, flow->sent_ms) > DTC_FLOW_WAIT_MS;
+
+	if(accepted_late || sent_late) fail(flow, "no_answer");
 }
 
 void dtc_flow_dismiss(dtc_flow_t *flow)

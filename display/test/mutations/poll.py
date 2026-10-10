@@ -19,6 +19,19 @@ OLD_WHEN_SENT = ("\tif(kind == POLL_DTC_CLEAR)\n\t{\n\t\tpoll->old = poll->list;
 WATCH_OUT = "\tbool out = view == CONN_VIEW_NO_WIFI || view == CONN_VIEW_NO_ANSWER;"
 WATCH_LOSE = "\tif(out && !poll->lost) dtc_flow_lost(&poll->flow);\n"
 WATCH_NOTE = "\tpoll->lost = out;\n"
+UNSEEN = "\treturn seen == CONN_VIEW_NO_WIFI || seen == CONN_VIEW_CONNECTING || seen == CONN_VIEW_NO_ANSWER;"
+SILENT = "\tif(out_of_sight(poll, now_ms)) dtc_flow_silent(&poll->flow, now_ms);\n"
+STRANGER = "\tif(read && poll->conn.foreign) dtc_flow_gone(&poll->flow);\n"
+# dtc_flow.c
+F_UNSENT = "\tif(flow->to_send != DTC_FLOW_SEND_NOTHING) withdraw(flow, true);\n"
+F_CLEAR_NOTE = "\t// Nobody can say what a clear did, and nobody may clear again on a guess: the user reads first\n"
+F_CLEAR = "\telse if(clearing(flow)) flow->phase = DTC_FLOW_UNKNOWN;\n"
+F_READ_NOTE = ("\t// A read waits for the adapter to answer again; its scan goes on without the display. The end of a POST\n"
+               "\t// that was under way will not be reported: from now on the states have to tell what became of it.\n")
+F_READ = "\telse if(flow->phase == DTC_FLOW_READ_SENT) flow->posted = true;\n"
+F_GONE = "\tif(under_way(flow)) fail(flow, \"no_answer\");\n"
+F_SENT = "\tif(send != DTC_FLOW_SEND_NOTHING) flow->sent_ms = now_ms;\n"
+F_QUIET = "\tif(accepted_late || sent_late) fail(flow, \"no_answer\");\n"
 
 STORED_CATALOG = "\tif(catalog_json != NULL && catalog_from_json(&poll->catalog, catalog_json, catalog_length, work, work_count))"
 STORED_GUARD = "\t\tguard_catalog_init(&poll->catalog_guard, true, catalog_checksum(&poll->catalog));\n"
@@ -51,7 +64,7 @@ FORGET_VALUES = "{\n\tvalues_clear(&poll->values);\n"
 FORGET_CATALOG = "would stay for ever\n\tcatalog_init(&poll->catalog);\n"
 FORGET_COMPLETE = "\tpoll->catalog_complete = false;\n\tguard_catalog_connected(&poll->catalog_guard);\n\tpoll->events"
 FORGET_EVENT = "\tpoll->events |= POLL_EVENT_FORGET | POLL_EVENT_LISTS;\n"
-FORGET_LOST = "\tdtc_flow_lost(&poll->flow);\n\tif(poll->flow.phase == DTC_FLOW_LIST"
+FORGET_LOST = "\tdtc_flow_gone(&poll->flow);\n\tif(poll->flow.phase == DTC_FLOW_LIST"
 FORGET_DISMISS = "\tif(poll->flow.phase == DTC_FLOW_LIST || poll->flow.phase == DTC_FLOW_CLEARED) dtc_flow_dismiss(&poll->flow);\n"
 
 BATTERY = "\tsnprintf(json, sizeof(json), \"{\\\"\" CATALOG_BATTERY \"\\\":%\" PRId32 \".%03\" PRId32 \"}\", millivolts / 1000, millivolts % 1000);"
@@ -208,6 +221,32 @@ MUTATIONS = [
     ("poll_outage_not_noted", T, F, WATCH_NOTE, ""),
     ("poll_outage_never_ends", T, F, WATCH_NOTE, "\tif(out) poll->lost = true;\n"),
     ("poll_outage_noted_inverted", T, F, WATCH_NOTE, "\tpoll->lost = !out;\n"),
+    ("poll_outage_ends_read", T, F, WATCH_LOSE, WATCH_LOSE.replace("dtc_flow_lost", "dtc_flow_gone")),
+    ("poll_outage_ends_read_in_the_flow", T, FLOW, F_READ_NOTE + F_READ, "\telse if(under_way(flow)) fail(flow, \"no_answer\");\n"),
+    ("poll_outage_ends_accepted_read", T, FLOW, F_READ, F_READ + "\telse if(flow->phase == DTC_FLOW_READING) fail(flow, \"no_answer\");\n"),
+    ("poll_outage_ends_read_without_answer", T, FLOW, F_READ, "\telse if(flow->phase == DTC_FLOW_READ_SENT) fail(flow, \"no_answer\");\n"),
+    ("poll_outage_post_under_way_still_expected", T, FLOW, F_READ_NOTE + F_READ, ""),
+    ("poll_outage_clear_waits_like_a_read", T, FLOW, F_CLEAR_NOTE + F_CLEAR, ""),
+    ("poll_outage_clear_back_to_list", T, FLOW, F_CLEAR, F_CLEAR.replace("DTC_FLOW_UNKNOWN", "DTC_FLOW_LIST")),
+
+    # the time of a read whose adapter is out of sight
+    ("poll_silence_never_watched", T, F, SILENT, "\t(void)out_of_sight(poll, now_ms);\n"),
+    ("poll_silence_not_without_wifi", T, F, UNSEEN, UNSEEN.replace("seen == CONN_VIEW_NO_WIFI || ", "")),
+    ("poll_silence_not_while_connecting", T, F, UNSEEN, UNSEEN.replace("seen == CONN_VIEW_CONNECTING || ", "")),
+    ("poll_silence_not_without_answer", T, F, UNSEEN, UNSEEN.replace(" || seen == CONN_VIEW_NO_ANSWER", "")),
+    ("poll_silence_in_every_view", T, F, UNSEEN, "\treturn seen <= CONN_VIEW_LIVE;"),
+    ("poll_silence_also_during_a_scan", T, F, UNSEEN, UNSEEN.replace(";", " || seen == CONN_VIEW_SCAN;")),
+    ("poll_silence_seen_at_time_0", T, F, "\tconn_view_t seen = conn_view(&poll->conn, now_ms);", "\tconn_view_t seen = conn_view(&poll->conn, now_ms * 0);"),
+    ("poll_silence_watched_at_time_0", T, F, SILENT, SILENT.replace("&poll->flow, now_ms", "&poll->flow, 0")),
+    ("poll_silence_watched_one_ms_late", T, F, SILENT, SILENT.replace("&poll->flow, now_ms", "&poll->flow, now_ms > 0 ? now_ms - 1 : 0")),
+    ("poll_silence_watched_one_ms_early", T, F, SILENT, SILENT.replace("&poll->flow, now_ms", "&poll->flow, now_ms + 1")),
+    ("poll_silence_only_without_a_network", T, F, SILENT, SILENT.replace("if(out_of_sight", "if(!poll->wifi && out_of_sight")),
+    ("poll_silence_only_in_a_network", T, F, SILENT, SILENT.replace("if(out_of_sight", "if(poll->wifi && out_of_sight")),
+    ("poll_silence_not_while_request_under_way", T, F, SILENT, SILENT.replace("if(out_of_sight", "if(!poll->asking && out_of_sight")),
+    ("poll_silence_only_when_nothing_is_handed_out", T, F,
+     SILENT + "\n" + P_FREE, P_FREE.replace("\tif(", "\tif(!(") + ")\n\t{\n\t" + SILENT + "\t}\n" + P_FREE),
+    ("poll_silence_ends_nothing_in_the_flow", T, FLOW, F_QUIET, "\t(void)accepted_late;\n\t(void)sent_late;\n"),
+    ("poll_silence_time_handed_out_not_kept", T, FLOW, F_SENT, ""),
 
     # init
     ("poll_init_keeps_memory", T, F, "\tmemset(poll, 0, sizeof(*poll));\n", ""),
@@ -263,7 +302,7 @@ MUTATIONS = [
     ("poll_wifi_old_not_kept_when_lost", T, F, WIFI_AFTER, "\twatch(poll, now_ms);\n\tif(up) keep_old(poll, before);\n\tfollow(poll);\n}\n"),
     ("poll_wifi_old_kept_before_lost", T, F, WIFI_AFTER, "\tkeep_old(poll, before);\n\twatch(poll, now_ms);\n\tfollow(poll);\n}\n"),
     ("poll_wifi_catalog_started_anew", T, F, WIFI_JOINED, WIFI_JOINED.replace("\t\tpoll->catalog_complete = false;\n", "\t\tcatalog_init(&poll->catalog);\n\t\tpoll->catalog_complete = false;\n")),
-    ("poll_wifi_unsent_request_given_up", T, FLOW, "\tif(flow->to_send != DTC_FLOW_SEND_NOTHING) withdraw(flow, true);\n\telse if(under_way(flow))", "\tif(under_way(flow))"),
+    ("poll_wifi_unsent_request_given_up", T, FLOW, F_UNSENT + F_CLEAR_NOTE + "\telse if", F_CLEAR_NOTE + "\tif"),
     ("poll_wifi_unsent_clear_drops_list", T, FLOW, "\tif(flow->to_send != DTC_FLOW_SEND_NOTHING) withdraw(flow, true);\n", "\tif(flow->to_send != DTC_FLOW_SEND_NOTHING) withdraw(flow, false);\n"),
 
     # the next request
@@ -325,6 +364,14 @@ MUTATIONS = [
     ("poll_forget_event_without_lists", T, F, FORGET_EVENT, "\tpoll->events |= POLL_EVENT_FORGET;\n"),
     ("poll_forget_event_only_lists", T, F, FORGET_EVENT, "\tpoll->events |= POLL_EVENT_LISTS;\n"),
     ("poll_forget_flow_goes_on", T, F, FORGET_LOST, "\tif(poll->flow.phase == DTC_FLOW_LIST"),
+    ("poll_forget_read_waits", T, F, FORGET_LOST, FORGET_LOST.replace("dtc_flow_gone", "dtc_flow_lost")),
+    ("poll_forget_read_waits_in_the_flow", T, FLOW, F_GONE, ""),
+    ("poll_stranger_read_goes_on", T, F, STRANGER, ""),
+    ("poll_stranger_read_waits", T, F, STRANGER, STRANGER.replace("dtc_flow_gone", "dtc_flow_lost")),
+    ("poll_stranger_is_every_adapter", T, F, STRANGER, "\tif(read) dtc_flow_gone(&poll->flow);\n"),
+    ("poll_stranger_is_the_own_adapter", T, F, STRANGER, STRANGER.replace("poll->conn.foreign", "!poll->conn.foreign")),
+    ("poll_stranger_dismisses_list", T, F, STRANGER,
+     "\tif(read && poll->conn.foreign)\n\t{\n\t\tdtc_flow_gone(&poll->flow);\n\t\tdtc_flow_dismiss(&poll->flow);\n\t}\n"),
     ("poll_forget_list_and_outcome_stay", T, F, FORGET_DISMISS, ""),
     ("poll_forget_outcome_stays", T, F, FORGET_DISMISS, "\tif(poll->flow.phase == DTC_FLOW_LIST) dtc_flow_dismiss(&poll->flow);\n"),
     ("poll_forget_list_stays", T, F, FORGET_DISMISS, "\tif(poll->flow.phase == DTC_FLOW_CLEARED) dtc_flow_dismiss(&poll->flow);\n"),

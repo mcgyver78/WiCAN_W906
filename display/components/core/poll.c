@@ -67,7 +67,16 @@ static void keep_old(poll_t *poll, dtc_flow_phase_t before)
 	poll->events |= POLL_EVENT_OLD | POLL_EVENT_LISTS;
 }
 
-// An adapter that cannot be reached ends the fault memory request of the display, once per outage
+// Nothing of the adapter is in sight: no network, no answer in it yet, or none any more. No state comes then.
+static bool out_of_sight(const poll_t *poll, uint64_t now_ms)
+{
+	conn_view_t seen = conn_view(&poll->conn, now_ms);
+
+	return seen == CONN_VIEW_NO_WIFI || seen == CONN_VIEW_CONNECTING || seen == CONN_VIEW_NO_ANSWER;
+}
+
+// An adapter that cannot be reached is told to the flow, once per outage: a clear of the display ends there,
+// a read waits for the adapter to answer again (dtc_flow.h)
 static void watch(poll_t *poll, uint64_t now_ms)
 {
 	conn_view_t view = conn_view(&poll->conn, now_ms);
@@ -133,6 +142,10 @@ bool poll_prepare(poll_t *poll, uint64_t now_ms, poll_request_t *request)
 	poll_kind_t kind = POLL_NONE;
 	uint32_t seq = 0;
 
+	// Only a state ends the wait of a read, and an adapter that is out of sight sends none: the time of a read
+	// that waits for it is watched here, whether or not a request can go out
+	if(out_of_sight(poll, now_ms)) dtc_flow_silent(&poll->flow, now_ms);
+
 	if(poll->wifi && !poll->asking)
 	{
 		dtc_flow_send_t send = dtc_flow_take(&poll->flow, &seq, now_ms);
@@ -169,8 +182,9 @@ static void forget(poll_t *poll)
 	guard_catalog_connected(&poll->catalog_guard);
 	poll->events |= POLL_EVENT_FORGET | POLL_EVENT_LISTS;
 	// A restart that shows in the boot number has ended the flow already; this is for the other adapter and
-	// the other firmware. What stays is a failure, which the user has to see. follow() drops the lists.
-	dtc_flow_lost(&poll->flow);
+	// the other firmware, for which a read does not wait as it does for its own adapter out of reach. What
+	// stays is a failure, which the user has to see. follow() drops the lists.
+	dtc_flow_gone(&poll->flow);
 	if(poll->flow.phase == DTC_FLOW_LIST || poll->flow.phase == DTC_FLOW_CLEARED) dtc_flow_dismiss(&poll->flow);
 }
 
@@ -220,6 +234,9 @@ static void got_state(poll_t *poll, int status, const char *body, size_t length,
 		if(poll->start == POLL_START_API) restarted = true;
 		poll->start = POLL_START_NO_API;
 	}
+	// A foreign adapter is no start, and behind a pause of the network conn does not know that another one
+	// answered before it: a read that waited through the pause must not go on with the numbers of a stranger
+	if(read && poll->conn.foreign) dtc_flow_gone(&poll->flow);
 	if(restarted) forget(poll);
 	// Behind the forgetting: this voltage is one of the adapter that answers now. That of a foreign adapter
 	// is no value of the vehicle the display belongs to.

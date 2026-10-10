@@ -114,6 +114,12 @@ Neustart, Vorherige Version and Werkseinstellungen of the settings do nothing, a
 firmware upload, storing a network, forgetting one. A read would be left without its list, a clear without
 its outcome.
 
+A read does not end because the adapter is out of reach for a while: the display waits for the adapter to
+answer again and then goes on by what its state shows - the adapter scans on without the display. For that
+time the display stays busy. An adapter that stays away ends the read as failed 180 s after it accepted the
+read; a read whose acceptance never reached the display, 180 s after it was sent. A clear does end when the
+adapter is out of reach: its outcome is unknown from then on.
+
 ## Bodies
 
 Numbers, texts and their order are fixed; texts are UTF-8.

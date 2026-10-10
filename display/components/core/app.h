@@ -43,7 +43,9 @@
  *   network                         poll_apply() on app->poll, and app_net() after every report to the link,
  *                                   after every poll_prepare() that handed out a request and after every
  *                                   poll_apply() - before the lock is given back. A request is only sent
- *                                   while app_host() is not empty.
+ *                                   while app_host() is not empty. poll_prepare() is called with every turn
+ *                                   of the task, also without a network: it is what lets the time pass for a
+ *                                   read of the fault memory that waits for the adapter (poll.h).
  *   both                            app_take_events()
  *   the web server                  app_web.h
  *
@@ -203,8 +205,8 @@ typedef struct
 } app_t;
 
 /*
- * The start. app_t is large (227128 bytes on a 64 bit host: the two layouts and the room for a third
- * 105360, the lines of the three fault memory lists 62376, the poll 39512, the layout text 16385; 227032
+ * The start. app_t is large (227136 bytes on a 64 bit host: the two layouts and the room for a third
+ * 105360, the lines of the three fault memory lists 62376, the poll 39520, the layout text 16385; 227040
  * bytes calculated for a 32 bit target that aligns 64 bit numbers to 8 bytes, not measured on the device):
  * static storage or the external RAM, never a stack.
  * - settings: settings_defaults(), then the stored text if settings_from_json() takes it
@@ -401,7 +403,8 @@ int app_backlight(const app_t *app, uint64_t now_ms);
 
 // true while the web interface must not restart the display or replace its firmware: a fault memory request
 // of the display is under way (the flow is READ_SENT, READING, CLEAR_SENT or CLEARING), the clear dialog
-// shows, or a firmware upload runs
+// shows, or a firmware upload runs. A read that waits for an adapter that is out of reach (dtc_flow.h) is
+// under way like every other: the adapter scans on, and a restart would lose its list.
 bool app_busy(const app_t *app);
 
 // The events raised since the last call; they are cleared by it

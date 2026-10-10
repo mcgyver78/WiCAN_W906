@@ -86,6 +86,13 @@ ENGINE = "\t\tif(dtc->step == 0) add_text(scene, \"Prüfe Motor …\");\n"
 SHORT_NAME = "\t\telse dtc_short_name(dtc->name, add_line(scene), SCENE_TEXT_SIZE);"
 STEP_PERMILLE = "\t\tif(dtc->total != 0) scene->permille = dtc->step >= dtc->total ? 1000 : (int)((uint64_t)dtc->step * 1000u / dtc->total);"
 HINT = "\tadd_text(scene, \"ca. 35 s – Live-Werte pausieren\");\n"
+# A read that waits for an adapter that is out of sight
+PAUSED = "\tbool paused = reading && (view == CONN_VIEW_NO_WIFI || view == CONN_VIEW_CONNECTING || view == CONN_VIEW_NO_ANSWER);"
+IF_PAUSED = "\tif(paused)\n\t{\n\t\t// The state the display still holds"
+PAUSE_BIG = "\t\tappend(scene->big, sizeof(scene->big), \"…\");\n"
+PAUSE_SAYS = "\t\tadd_text(scene, \"Verbindung unterbrochen\");\n"
+PAUSE_WHAT = "\t\tadd_text(scene, accepted ? \"WiCAN liest weiter\" : \"Warte auf Antwort\");\n"
+PAUSE_END = PAUSE_WHAT + "\t\treturn;\n"
 
 # The list
 LIST_READ = "\t\t{\"Erneut lesen\", \"\"},\n"
@@ -852,6 +859,39 @@ MUTATIONS = [
      "\t\tadd_text(scene, \"Auftrag gesendet\");\n\t}\n" + HINT, "\t\tadd_text(scene, \"Auftrag gesendet\");\n\t\tadd_text(scene, \"ca. 35 s – Live-Werte pausieren\");\n\t}\n"),
     text("scene_text_busy_hint", "\"ca. 35 s – Live-Werte pausieren\"", "\"ca. 35 s - Live-Werte pausieren\""),
 
+    # the progress of a read that waits for an adapter that is out of sight
+    ("scene_busy_pause_never_told", T, F, IF_PAUSED, IF_PAUSED.replace("if(paused)", "if(paused && false)")),
+    ("scene_busy_pause_not_without_wifi", T, F, PAUSED, PAUSED.replace("view == CONN_VIEW_NO_WIFI || ", "")),
+    ("scene_busy_pause_not_while_connecting", T, F, PAUSED, PAUSED.replace("view == CONN_VIEW_CONNECTING || ", "")),
+    ("scene_busy_pause_not_without_answer", T, F, PAUSED, PAUSED.replace(" || view == CONN_VIEW_NO_ANSWER", "")),
+    ("scene_busy_pause_also_with_a_foreign_adapter", T, F, PAUSED, PAUSED.replace("CONN_VIEW_NO_ANSWER)", "CONN_VIEW_NO_ANSWER || view == CONN_VIEW_FOREIGN)")),
+    ("scene_busy_pause_also_without_api", T, F, PAUSED, PAUSED.replace("CONN_VIEW_NO_ANSWER)", "CONN_VIEW_NO_ANSWER || view == CONN_VIEW_NO_API)")),
+    ("scene_busy_pause_also_while_starting", T, F, PAUSED, PAUSED.replace("CONN_VIEW_NO_ANSWER)", "CONN_VIEW_NO_ANSWER || view == CONN_VIEW_STARTING)")),
+    ("scene_busy_pause_also_with_ignition_off", T, F, PAUSED, PAUSED.replace("CONN_VIEW_NO_ANSWER)", "CONN_VIEW_NO_ANSWER || view == CONN_VIEW_ECU_OFFLINE)")),
+    ("scene_busy_pause_also_during_a_scan", T, F, PAUSED, PAUSED.replace("CONN_VIEW_NO_ANSWER)", "CONN_VIEW_NO_ANSWER || view == CONN_VIEW_SCAN)")),
+    ("scene_busy_pause_in_every_view", T, F, PAUSED, "\tbool paused = reading && view <= CONN_VIEW_LIVE;"),
+    ("scene_busy_pause_of_a_clear", T, F, PAUSED, PAUSED.replace("reading && ", "")),
+    ("scene_busy_pause_only_of_an_accepted_read", T, F, PAUSED, PAUSED.replace("reading && ", "flow->phase == DTC_FLOW_READING && ")),
+    ("scene_busy_pause_only_of_a_read_without_answer", T, F, PAUSED, PAUSED.replace("reading && ", "flow->phase == DTC_FLOW_READ_SENT && ")),
+    ("scene_busy_pause_by_phase_of_world", T, F, PAUSED,
+     PAUSED.replace("reading && ", "(input->world->flow == DTC_FLOW_READ_SENT || input->world->flow == DTC_FLOW_READING) && ")),
+    ("scene_busy_pause_by_block_of_read", T, F, PAUSED, PAUSED.replace("reading && (", "reading && input->read_block == DTC_FLOW_NO_ADAPTER && (")),
+    ("scene_busy_pause_shows_step_of_last_state", T, F, IF_PAUSED,
+     IF_PAUSED.replace("if(paused)", "if(paused && !(accepted && state != NULL && state->dtc.seq == flow->seq))")),
+    ("scene_busy_pause_goes_on_to_the_step", T, F, PAUSE_END, PAUSE_WHAT),
+    ("scene_busy_pause_with_hint", T, F, PAUSE_END, PAUSE_WHAT + "\t\tadd_text(scene, \"ca. 35 s – Live-Werte pausieren \");\n\t\treturn;\n"),
+    ("scene_busy_pause_without_big", T, F, PAUSE_BIG + PAUSE_SAYS, PAUSE_SAYS),
+    ("scene_busy_pause_not_said", T, F, PAUSE_SAYS, ""),
+    ("scene_busy_pause_second_line_missing", T, F, PAUSE_END, "\t\treturn;\n"),
+    ("scene_busy_pause_lines_swapped", T, F, PAUSE_SAYS + PAUSE_WHAT, PAUSE_WHAT + PAUSE_SAYS),
+    ("scene_busy_pause_read_without_answer_reads_on", T, F, PAUSE_WHAT, "\t\tadd_text(scene, \"WiCAN liest weiter\");\n"),
+    ("scene_busy_pause_accepted_read_waits_for_answer", T, F, PAUSE_WHAT, "\t\tadd_text(scene, \"Warte auf Antwort\");\n"),
+    ("scene_busy_pause_second_lines_swapped", T, F, PAUSE_WHAT, PAUSE_WHAT.replace("accepted ? ", "!accepted ? ")),
+    text("scene_text_busy_pause", "\"Verbindung unterbrochen\"", "\"Verbindung unterbrochen …\""),
+    text("scene_text_busy_pause_reads_on", "\"WiCAN liest weiter\"", "\"WiCAN liest weiter …\""),
+    text("scene_text_busy_pause_waits", "\"Warte auf Antwort\"", "\"Warte auf Antwort …\""),
+    text("scene_text_busy_pause_big", PAUSE_BIG + PAUSE_SAYS, PAUSE_BIG.replace("…", "...") + PAUSE_SAYS),
+
     # the list of the own read
     text("scene_text_list_title", "\tset_title(scene, \"Fehlerspeicher\");\n\tif(input->world->can_clear)", "\tset_title(scene, \"Liste\");\n\tif(input->world->can_clear)"),
     text("scene_text_list_read", "{\"Erneut lesen\", \"\"}", "{\"Lesen\", \"\"}"),
@@ -1307,9 +1347,11 @@ MUTATIONS = [
     ("scene_build_screen_by_low_byte", T, F, "\tswitch(input->nav->screen)", "\tswitch((nav_screen_t)((unsigned)input->nav->screen & 0xFFu))"),
     ("scene_build_menu_is_pages", T, F, "\t\tcase NAV_MENU:\n\t\t\tbuild_menu(input, scene);", "\t\tcase NAV_MENU:\n\t\t\t(void)build_menu;\n\t\t\tbuild_pages(input, view, state, scene, &level, &old);"),
     ("scene_build_dtc_and_list_swapped", T, F,
-     "\t\tcase NAV_DTC:\n\t\t\tbuild_dtc(input, scene);\n\t\t\tbreak;\n\t\tcase NAV_DTC_BUSY:\n\t\t\tbuild_busy(input, state, scene);\n\t\t\tbreak;\n\t\tcase NAV_DTC_LIST:",
-     "\t\tcase NAV_DTC_LIST:\n\t\t\tbuild_dtc(input, scene);\n\t\t\tbreak;\n\t\tcase NAV_DTC_BUSY:\n\t\t\tbuild_busy(input, state, scene);\n\t\t\tbreak;\n\t\tcase NAV_DTC:"),
-    ("scene_build_busy_without_state", T, F, "\t\t\tbuild_busy(input, state, scene);", "\t\t\tbuild_busy(input, NULL, scene);"),
+     "\t\tcase NAV_DTC:\n\t\t\tbuild_dtc(input, scene);\n\t\t\tbreak;\n\t\tcase NAV_DTC_BUSY:\n\t\t\tbuild_busy(input, view, state, scene);\n\t\t\tbreak;\n\t\tcase NAV_DTC_LIST:",
+     "\t\tcase NAV_DTC_LIST:\n\t\t\tbuild_dtc(input, scene);\n\t\t\tbreak;\n\t\tcase NAV_DTC_BUSY:\n\t\t\tbuild_busy(input, view, state, scene);\n\t\t\tbreak;\n\t\tcase NAV_DTC:"),
+    ("scene_build_busy_without_state", T, F, "\t\t\tbuild_busy(input, view, state, scene);", "\t\t\tbuild_busy(input, view, NULL, scene);"),
+    ("scene_build_busy_without_view", T, F, "\t\t\tbuild_busy(input, view, state, scene);", "\t\t\tbuild_busy(input, CONN_VIEW_LIVE, state, scene);"),
+    ("scene_build_busy_view_without_network", T, F, "\t\t\tbuild_busy(input, view, state, scene);", "\t\t\tbuild_busy(input, CONN_VIEW_NO_WIFI, state, scene);"),
     ("scene_build_failed_without_state", T, F, "\t\t\tbuild_failed(input, state, scene);", "\t\t\tbuild_failed(input, NULL, scene);"),
     text("scene_text_cleared_title", "\t\t\tset_title(scene, \"Gelöscht\");", "\t\t\tset_title(scene, \"Geloescht\");"),
     text("scene_text_cleared_done", "{{\"Fertig\", \"\"}}", "{{\"OK\", \"\"}}"),

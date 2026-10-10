@@ -126,6 +126,13 @@ typedef enum
 esp_err_t esp_wifi_init(const wifi_init_config_t *config);
 esp_err_t esp_wifi_set_storage(wifi_storage_t storage);
 esp_err_t esp_wifi_set_ps(wifi_ps_type_t type);
+
+// esp_wifi_types_generic.h: what an interface speaks, as bits
+#define WIFI_PROTOCOL_11B   0x1
+#define WIFI_PROTOCOL_11G   0x2
+#define WIFI_PROTOCOL_11N   0x4
+
+esp_err_t esp_wifi_set_protocol(wifi_interface_t interface, uint8_t protocol_bitmap);
 esp_err_t esp_wifi_set_mode(wifi_mode_t mode);
 esp_err_t esp_wifi_set_config(wifi_interface_t interface, wifi_config_t *conf);
 esp_err_t esp_wifi_start(void);

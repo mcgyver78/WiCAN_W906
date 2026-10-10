@@ -133,10 +133,13 @@ void poll_stored(poll_t *poll, const char *catalog_json, size_t catalog_length, 
                  size_t old_length, json_token_t *work, int work_count);
 
 // The display joined a network and knows where the adapter is, or lost that (conn_wifi()).
-// Losing it ends a request under way - its answer will be ignored - and with it a fault memory request of
-// the display: dtc_flow_lost(). One that still waits to be sent was never sent and ends without a failure,
-// a clear with its list shown again (dtc_flow.h). old, list and cleared follow the flow as after an answer:
-// a clear whose POST was under way may have arrived, and its list becomes `old`.
+// Losing it ends a request under way - its answer will be ignored - and the flow is told that the adapter is
+// out of reach: dtc_flow_lost(). A fault memory request that still waits to be sent was never sent and ends
+// without a failure, a clear with its list shown again. A clear that went out has an unknown outcome from
+// then on. A read that went out waits for the adapter, also one whose POST was the request under way: when
+// the adapter answers again its states decide what became of it, and the read is not sent a second time
+// (dtc_flow.h). old, list and cleared follow the flow as after an answer: a clear whose POST was under way
+// may have arrived, and its list becomes `old`.
 // Joining forgets the values (values_clear()): the adapter may have restarted in between, and its pass
 // counter means nothing then. conn asks for the profile again, so the catalogue counts as not complete
 // until it is loaded, and guard.h is told (guard_catalog_connected()). The catalogue itself stays: the one
@@ -150,6 +153,11 @@ void poll_wifi(poll_t *poll, bool up, uint64_t now_ms);
 // (dtc_flow_take() with now_ms) goes before everything else; then what conn_next() asks for. Handing out a
 // clear changes nothing that is shown or stored and raises no event: the list stays `list` until the
 // answers tell what became of the clear (`old` below).
+// Before that, with every call and whether or not a request is handed out: while nothing of the adapter is
+// in sight - conn_view() is NO_WIFI, CONNECTING or NO_ANSWER - dtc_flow_silent() with now_ms. No state comes
+// then, and a read of the display that waits for the adapter is given up here when its time is over. While
+// the adapter answers, its states alone watch that time (dtc_flow_state()): what a state shows goes first.
+// The caller calls this often, also without a network: it is what lets time pass for such a read.
 bool poll_prepare(poll_t *poll, uint64_t now_ms, poll_request_t *request);
 
 /*
@@ -174,10 +182,14 @@ bool poll_prepare(poll_t *poll, uint64_t now_ms, poll_request_t *request);
  *               is started anew (catalog_init(): a profile of another vehicle must not leave entries
  *               behind, and what was delivered once would stay for ever) and counts as not complete,
  *               guard_catalog_connected(), POLL_EVENT_FORGET and POLL_EVENT_LISTS, once per answer; and
- *               the flow must not go on with numbers of another adapter or boot: dtc_flow_lost(), then
- *               dtc_flow_dismiss() if it still shows a list or an outcome (LIST, CLEARED). The battery
- *               voltage of the very state that showed the restart stays: it is one of the adapter that
- *               answers now.
+ *               the flow must not go on with numbers of another adapter or boot: dtc_flow_gone() - a read
+ *               that waited for its own adapter does not wait for this one -, then dtc_flow_dismiss() if it
+ *               still shows a list or an outcome (LIST, CLEARED). The battery voltage of the very state
+ *               that showed the restart stays: it is one of the adapter that answers now.
+ *               A state of a foreign adapter (conn.h) is no restart to conn where it is the first answer of
+ *               a connection, and no start (below): for it dtc_flow_gone() alone is called, with every state
+ *               of it that is taken. Nothing is forgotten for it; a read that waited through the pause of
+ *               the network ends there, whatever numbers the stranger shows.
  *               The start the catalogue came from. conn.h knows the adapter only since the network was
  *               joined: an adapter that restarted while the display was out of the network is to conn the
  *               first answer of a connection, no restart. So the start is remembered here, over every
@@ -226,7 +238,10 @@ bool poll_prepare(poll_t *poll, uint64_t now_ms, poll_request_t *request);
  *               as 0 and as no reason. Status 0 is passed on as it is: no answer.
  *
  * After every answer, in this order:
- * - if conn_view() is NO_WIFI or NO_ANSWER: dtc_flow_lost(), once per outage
+ * - if conn_view() is NO_WIFI or NO_ANSWER: dtc_flow_lost(), once per outage. A clear of the display ends
+ *   there (UNKNOWN, or back to its list if it was never sent); a read that went out waits for the adapter.
+ *   What conn asks for when the adapter answers again - the state, and the result it names - is applied as
+ *   always, so the read goes on, makes its list or fails by what the adapter shows.
  * - the list before the last clear is only replaced by a list that was cleared or may have been: if the
  *   flow was CLEAR_SENT before the answer and has left it with the clear accepted or its outcome unknown -
  *   it is CLEARING (accepted with 202, or taken over from the state after a POST without an answer),

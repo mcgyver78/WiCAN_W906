@@ -38,6 +38,14 @@
  *     withdrawn, it leaves no failure and no unknown outcome behind.
  *   - nothing waits for ever: an accepted request that has not ended DTC_FLOW_WAIT_MS after its acceptance
  *     is given up.
+ *   - a read outlasts a pause of the connection, a clear does not. A scan takes 35 s, and the link of the
+ *     display to the adapter drops out in phases (measured 2026-10-10 on the vehicle: the adapter had
+ *     scanned all 18 control units and held the result, the display had given the read up after three
+ *     rounds without an answer). So a read that was handed out waits for the adapter to answer again
+ *     (dtc_flow_lost()), and what the adapter then shows decides as if there had been no pause
+ *     (dtc_flow_state()); an adapter that stays away is waited for DTC_FLOW_WAIT_MS (dtc_flow_silent()). The
+ *     read is not sent a second time for that. Of a clear the outcome is unknown as soon as the adapter is
+ *     out of reach: nothing may be cleared a second time on a guess, the user reads again.
  *
  * Times are milliseconds of the display. A time before a stored one counts as no time passed.
  */
@@ -103,6 +111,7 @@ typedef struct
 	uint32_t seq;                   // number of the own accepted request (read or clear)
 	uint64_t accepted_ms;           // when it was accepted: the time of the 202, or of the state that showed
 	                                // the request after a POST without an answer
+	uint64_t sent_ms;               // when the own request was handed out (dtc_flow_take())
 	uint32_t read_seq;              // number of the own read whose list is shown, 0 = there is no list
 	uint32_t list_count;            // trouble codes of that list
 	uint64_t list_end_ms;           // when that read ended, in the time of the display: the time the result
@@ -136,6 +145,7 @@ dtc_flow_block_t dtc_flow_clear(dtc_flow_t *flow, const conn_t *conn, const valu
 // clear (the number of the read whose list is shown), 0 for a read or if there is nothing to send.
 // The caller takes a request as soon as it can send one. A clear that waited until its read ended more
 // than DTC_FLOW_LIST_MS ago is not handed out any more: back to LIST, nothing was sent.
+// now_ms is kept as the time the request was handed out (sent_ms); a call that hands out nothing leaves it.
 dtc_flow_send_t dtc_flow_take(dtc_flow_t *flow, uint32_t *seq, uint64_t now_ms);
 
 // The answer to the POST. status 202: accepted, `seq` is the number of the request and now_ms the time of
@@ -169,7 +179,8 @@ void dtc_flow_posted(dtc_flow_t *flow, int status, uint32_t seq, const char *rea
 // - own request accepted and, after all of the above, still READING / CLEARING more than DTC_FLOW_WAIT_MS
 //   after its acceptance (a state exactly DTC_FLOW_WAIT_MS after it still waits): READING -> FAILED
 //   "no_answer", CLEARING -> UNKNOWN. What the state shows goes first: an error that is seen late keeps its
-//   reason. Only a state ends the wait; a result that arrives late is taken.
+//   reason. Here only a state ends the wait, and a result that arrives late is taken; the wait of a read
+//   whose adapter sends no state any more is ended by dtc_flow_silent().
 // - LIST: a state whose number is no longer the one of the own read (somebody else started a scan) drops
 //   the list -> IDLE; the adapter would refuse the clear anyway.
 void dtc_flow_state(dtc_flow_t *flow, const wican_state_t *state, uint64_t now_ms);
@@ -185,14 +196,38 @@ void dtc_flow_result(dtc_flow_t *flow, uint32_t result_seq, bool clear, uint32_t
 // other phase stays as it is.
 void dtc_flow_no_result(dtc_flow_t *flow);
 
-// The adapter is gone: the display left the network, no answer comes any more, or conn reports another
-// adapter or firmware (conn_take_restarted()) - a restart that shows in the boot number is seen by
-// dtc_flow_state() as well. A request that still waits to be taken was never sent and has done nothing: it
-// is not handed out any more, a clear goes back to LIST (the user may confirm again while the list is still
-// good), a read to IDLE. One that was taken: READ_SENT / READING -> FAILED "no_answer"; CLEAR_SENT /
-// CLEARING -> UNKNOWN. LIST and CLEARED stay. The end of a POST that was under way need not be reported
-// any more, it would be ignored.
+// The adapter is out of reach for now: the display left the network, or no answer comes any more. It may
+// answer again in a moment, with the same boot number and the scan of the display still running or done.
+// - A request that still waits to be taken was never sent and has done nothing: it is not handed out any
+//   more, a clear goes back to LIST (the user may confirm again while the list is still good), a read to
+//   IDLE.
+// - A clear that was taken: CLEAR_SENT / CLEARING -> UNKNOWN.
+// - A read that was taken stays what it is, READ_SENT or READING, and waits. The end of a POST that was
+//   under way need not be reported any more, it would be ignored: that POST counts as ended without an
+//   answer from now on. When the adapter answers again its states decide by the rules of dtc_flow_state() -
+//   READING: the own number still queued or running -> the read goes on; done -> its result makes the list;
+//   an error -> FAILED with the reason of the state; another number without the own result -> FAILED
+//   "superseded"; another boot number -> FAILED "restarted". READ_SENT: a new number from HTTP that is a
+//   read -> it did arrive, on as READING; DTC_FLOW_NO_ANSWER_ROUNDS states with the number of before ->
+//   FAILED "no_answer". Nothing is sent a second time. If the adapter stays away: dtc_flow_silent().
+// - LIST and CLEARED stay.
+// Calling it again while the adapter is still out of reach changes nothing.
 void dtc_flow_lost(dtc_flow_t *flow);
+
+// The adapter the request went to is not there any more: another adapter answers in its place, or a
+// firmware without the API (conn_take_restarted(), poll.h) - a restart that shows in the boot number is seen
+// by dtc_flow_state() as well. What dtc_flow_lost() does, and a read that was taken does not wait: no state
+// of this adapter says anything about it. READ_SENT / READING -> FAILED "no_answer".
+void dtc_flow_gone(dtc_flow_t *flow);
+
+// Time passed while the adapter was out of sight (no network, no answer in it yet, or none any more): no
+// state comes that could end the wait of a read. A read that was taken is given up when its time is over:
+// READING more than DTC_FLOW_WAIT_MS after its acceptance, READ_SENT more than DTC_FLOW_WAIT_MS after it was
+// handed out (at exactly DTC_FLOW_WAIT_MS both still wait) -> FAILED "no_answer". A result or a state that
+// comes later finds a failure and changes nothing. Everything else stays as it is, whatever the time: a read
+// that still waits to be taken, and a clear in every phase - dtc_flow_lost() has made its outcome unknown,
+// it never waits for an adapter that is out of sight.
+void dtc_flow_silent(dtc_flow_t *flow, uint64_t now_ms);
 
 // The user left the result or the failure: back to IDLE. While a request is under way (READ_SENT, READING,
 // CLEAR_SENT, CLEARING) nothing changes, it goes on and its outcome is kept.

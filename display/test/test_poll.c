@@ -99,6 +99,7 @@ static adapter_t wican;
 static uint64_t now;
 static poll_request_t request;      // the last one the display handed out
 static char trace[512];
+static int reads_sent, clears_sent; // POST requests handed out since the display was started (join())
 
 static char body_room[POLL_BODY_SIZE + 8192];
 static char header_room[24];
@@ -434,6 +435,8 @@ static bool send(void)
 	bool sent = poll_prepare(&poll, now, &request);
 	size_t length = strlen(trace);
 
+	if(sent && request.kind == POLL_DTC_READ) reads_sent++;
+	if(sent && request.kind == POLL_DTC_CLEAR) clears_sent++;
 	if(sent && length + 1 < sizeof(trace))
 	{
 		trace[length] = request.kind <= POLL_DTC_CLEAR ? LETTERS[request.kind] : '?';
@@ -512,6 +515,8 @@ static void join(const char *bound_id, uint64_t at_ms)
 	poll_init(&poll, bound_id);
 	poll_wifi(&poll, true, now);
 	trace[0] = '\0';
+	reads_sent = 0;
+	clears_sent = 0;
 }
 
 static void setup(void)
@@ -940,15 +945,16 @@ static void test_wifi(void)
 	poll_read(&poll, now);
 	send();
 	poll_wifi(&poll, false, now);
-	check(reason_is("no_answer") && !poll.asking, "the network is lost while the POST of a read is under way: failed, no answer");
+	check(poll.flow.phase == DTC_FLOW_READ_SENT && poll.flow.posted && poll.flow.to_send == DTC_FLOW_SEND_NOTHING && !poll.asking && poll.lost && poll_take_events(&poll) == 0,
+	      "the network is lost while the POST of a read is under way: the read waits for the adapter, its POST is one without an answer");
 	reply(202, "{\"accepted\":true,\"seq\":42}", NULL);
-	check(reason_is("no_answer") && poll.http_ok == 7, "the answer to that POST is ignored when it comes late");
+	check(poll.flow.phase == DTC_FLOW_READ_SENT && poll.flow.seq == 0 && poll.http_ok == 7, "the answer to that POST is ignored when it comes late: the states will tell what became of the read");
 
 	scene();
 	poll_read(&poll, now);
 	exchange();
 	poll_wifi(&poll, false, now);
-	check(reason_is("no_answer"), "the network is lost while the own read runs: failed, no answer");
+	check(poll.flow.phase == DTC_FLOW_READING && poll.flow.seq == 42 && poll.lost && poll_take_events(&poll) == 0, "the network is lost while the own read runs: the read waits for the adapter");
 
 	scene_list();
 	poll_wifi(&poll, false, now);
@@ -2937,15 +2943,16 @@ static void test_outage(void)
 	at(120999);
 	check(sent("") && poll.flow.phase == DTC_FLOW_READING, "between the answers nothing is decided");
 	at(121000);
-	check(sent("S") && view() == CONN_VIEW_NO_ANSWER && reason_is("no_answer") && poll.lost && poll.http_failed == 5,
-	      "the fifth round fails after the grace time: no answer - the own read failed with the answer that showed it");
+	check(sent("S") && view() == CONN_VIEW_NO_ANSWER && poll.flow.phase == DTC_FLOW_READING && poll.flow.seq == 42 && poll.lost && poll.http_failed == 5,
+	      "the fifth round fails after the grace time: no answer - the outage is noted with the answer that showed it, and the own read waits for the adapter");
 	wican.dead = false;
 	now = 131000;
 	send();
 	answer();
-	check(view() == CONN_VIEW_NO_ANSWER && poll.lost, "the first state that is answered again does not end the outage: its round is not over");
+	check(view() == CONN_VIEW_NO_ANSWER && poll.lost && poll.flow.phase == DTC_FLOW_READING, "the first state that is answered again does not end the outage: its round is not over");
 	exchange();
-	check(view() == CONN_VIEW_LIVE && !poll.lost, "the round that ends without a failure ends the outage");
+	check(view() == CONN_VIEW_LIVE && !poll.lost && poll.flow.phase == DTC_FLOW_LIST && shows_list(read_text, 2),
+	      "the round that ends without a failure ends the outage; in it the result of the read that waited is fetched and is the list");
 
 	// A second outage is one of its own
 	second();
@@ -2957,7 +2964,8 @@ static void test_outage(void)
 	at(134000);
 	check(poll.flow.phase == DTC_FLOW_READING && !poll.lost && poll.conn.failed_rounds == 2, "two failed rounds are no outage");
 	at(136000);
-	check(view() == CONN_VIEW_NO_ANSWER && reason_is("no_answer") && poll.lost, "the third failed round, long after the grace time: the second outage ends the second read");
+	check(view() == CONN_VIEW_NO_ANSWER && poll.flow.phase == DTC_FLOW_READING && poll.flow.seq == 43 && poll.lost,
+	      "the third failed round, long after the grace time: a second outage, noted like the first - the second read waits");
 
 	// The edge of the grace time: the network is there since 100000
 	scene();
@@ -2981,7 +2989,8 @@ static void test_outage(void)
 	send();
 	now = 115000;
 	reply(0, NULL, NULL);
-	check(poll.conn.failed_rounds == 3 && reason_is("no_answer") && poll.lost, "the third round fails 15000 ms after the network came: no answer, the own read failed");
+	check(poll.conn.failed_rounds == 3 && view() == CONN_VIEW_NO_ANSWER && poll.lost && poll.flow.phase == DTC_FLOW_READING,
+	      "the third round fails 15000 ms after the network came: no answer - the outage is noted, the own read waits");
 
 	// The same while the own clear runs: the list goes with the answer that shows the outage
 	scene_clearing();
@@ -3020,6 +3029,366 @@ static void test_outage(void)
 	at(115000);
 	check(view() == CONN_VIEW_NO_ANSWER && poll.lost && poll.flow.phase == DTC_FLOW_LIST && shows_list(read_text, 2) && poll_take_events(&poll) == 0,
 	      "an outage while the list is shown: the list stays");
+}
+
+// The adapter stops answering. The display goes on asking as its connection asks, a second at a time, until an
+// answer that does not come shows the outage: it is the one of `now`.
+static void falls_silent(void)
+{
+	int waited;
+
+	wican.dead = true;
+	for(waited = 0; waited < 60 && !poll.lost; waited++) second();
+}
+
+// The adapter answers again, and the display goes on asking until a round of its connection is answered
+static void answers_again(void)
+{
+	int waited;
+
+	wican.dead = false;
+	for(waited = 0; waited < 60 && poll.conn.failed_rounds > 0; waited++) second();
+}
+
+// What a call raised about the lists and about a new start of the adapter: the catalogue is stored whenever
+// it has come to rest, whatever the fault memory does
+static uint32_t list_events(void)
+{
+	return poll_take_events(&poll) & (POLL_EVENT_OLD | POLL_EVENT_LISTS | POLL_EVENT_FORGET);
+}
+
+// A read of the display outlasts a pause of the connection: it waits for the adapter, and what the adapter
+// shows when it answers again decides (dtc_flow.h). A clear does not wait.
+static void test_pause(void)
+{
+	answer_t lost;
+	const char *reason;
+	uint32_t number;
+	int clears;
+
+	// The adapter falls silent before it has started the scan, and scans while nobody hears it
+	scene();
+	wican.pickup_ms = 15000;
+	poll_read(&poll, now);
+	exchange();
+	check(poll.flow.phase == DTC_FLOW_READING && poll.flow.seq == 42 && poll.flow.accepted_ms == 102000 && wican.phase == WICAN_DTC_QUEUED,
+	      "the scene: the own read 42 was accepted at 102000 and waits in the adapter until 117000");
+	falls_silent();
+	check(now == 121000 && view() == CONN_VIEW_NO_ANSWER && poll.flow.phase == DTC_FLOW_READING && poll.flow.seq == 42 && !poll.has_list && list_events() == 0,
+	      "the adapter falls silent while the own read is queued: at 121000 the connection shows no answer, and the read waits for the adapter");
+	check(poll_read(&poll, now) == DTC_FLOW_NO_ADAPTER && poll_clear(&poll, false, now) == DTC_FLOW_NO_ADAPTER && poll.flow.phase == DTC_FLOW_READING && reads_sent == 1,
+	      "while the read waits nothing else is offered: no second read, no clear");
+	poll_dismiss(&poll);
+	check(poll.flow.phase == DTC_FLOW_READING && poll.flow.seq == 42, "leaving while the read waits for the adapter changes nothing: it goes on waiting");
+	answers_again();
+	check(now == 131000 && view() == CONN_VIEW_LIVE && poll.flow.phase == DTC_FLOW_LIST && poll.flow.read_seq == 42 && shows_list(read_text, 2) && poll.flow.list_end_ms == 120000,
+	      "the adapter answers again at 131000 with the scan done since 120000: the result is fetched and is the list, ended when the scan ended");
+	check(reads_sent == 1 && wican.next_seq == 43 && list_events() == POLL_EVENT_LISTS, "the read that outlasted the pause was sent once, and the adapter ran one scan for it");
+
+	// ... in the middle of the scan
+	scene();
+	poll_read(&poll, now);
+	exchange();
+	second();
+	check(now == 103000 && conn_state(&poll.conn)->dtc.phase == WICAN_DTC_RUNNING && conn_state(&poll.conn)->dtc.seq == 42, "the scene: at 103000 the display sees its read running");
+	falls_silent();
+	check(now == 122000 && poll.flow.phase == DTC_FLOW_READING && !poll.has_list, "the adapter falls silent in the middle of the scan: the read waits");
+	answers_again();
+	check(now == 132000 && poll.flow.phase == DTC_FLOW_LIST && shows_list(read_text, 2) && poll.flow.list_end_ms == 106000 && reads_sent == 1,
+	      "the adapter answers again 26 s after the scan ended: the list, with its time to be cleared counted from the end of the scan");
+
+	// ... after the scan has finished: the display has seen it done, and the result does not come
+	scene();
+	poll_read(&poll, now);
+	exchange();
+	seconds(3);
+	now += 1000;
+	check(until(POLL_RESULT) && now == 106000 && poll.flow.phase == DTC_FLOW_READING && conn_state(&poll.conn)->dtc.phase == WICAN_DTC_DONE,
+	      "the scene: at 106000 the display sees its read done and asks for the result");
+	reply(0, NULL, NULL);
+	falls_silent();
+	check(now == 124000 && poll.flow.phase == DTC_FLOW_READING && !poll.has_list, "the result gets no answer, and then nothing does: the read waits for it");
+	answers_again();
+	check(now == 134000 && poll.flow.phase == DTC_FLOW_LIST && shows_list(read_text, 2) && poll.flow.list_end_ms == 106000 && reads_sent == 1,
+	      "the adapter answers again: the result is asked for again and is the list");
+
+	// What the adapter shows when it answers again decides
+	scene();
+	poll_read(&poll, now);
+	exchange();
+	second();
+	wican.ignition = false;
+	falls_silent();
+	answers_again();
+	check(reason_is("ecu_offline") && !poll.has_list && view() == CONN_VIEW_ECU_OFFLINE, "the scan ended with an error during the pause: failed with the reason of the adapter");
+	scene();
+	poll_read(&poll, now);
+	exchange();
+	second();
+	falls_silent();
+	adapter_restart(&wican, BOOT + 1, 42, now);
+	answers_again();
+	check(reason_is("restarted") && !poll.has_list && list_events() == (POLL_EVENT_FORGET | POLL_EVENT_LISTS), "the adapter restarted during the pause: failed, restarted, and what came from the start before is forgotten");
+	scene();
+	poll_read(&poll, now);
+	exchange();
+	second();
+	falls_silent();
+	adapter_request(&wican, false, false, 0, now, &number, &reason);
+	answers_again();
+	check(wican.seq == 43 && wican.result_seq == 43 && reason_is("superseded") && !poll.has_list,
+	      "somebody else read over MQTT during the pause, and the adapter holds that result: the own read is superseded, the result of the other is no list");
+	scene();
+	poll_read(&poll, now);
+	exchange();
+	second();
+	falls_silent();
+	wican.pickup_ms = 15000;
+	adapter_request(&wican, false, false, 0, now, &number, &reason);
+	answers_again();
+	check(wican.seq == 43 && wican.result_seq == 42 && poll.flow.phase == DTC_FLOW_LIST && shows_list(read_text, 2),
+	      "somebody else's scan is queued when the adapter answers again, the result of the own read still stored: it is fetched and is the list");
+	second();
+	check(poll.flow.phase == DTC_FLOW_IDLE && !poll.has_list, "with the next state, which shows the other request as the last one, that list is dropped like any other");
+
+	// The adapter does not come back
+	scene();
+	poll_read(&poll, now);
+	exchange();
+	falls_silent();
+	at(282000);
+	check(view() == CONN_VIEW_NO_ANSWER && poll.flow.phase == DTC_FLOW_READING, "the adapter is still silent 180000 ms after the read was accepted: the read waits");
+	now = 282001;
+	check(!send() && reason_is("no_answer") && !poll.has_list && reads_sent == 1,
+	      "the adapter is still silent 180001 ms after the read was accepted: given up as soon as the display looks for something to send - failed, no answer");
+	wican.dead = false;
+	at(292000);
+	second();
+	check(view() == CONN_VIEW_LIVE && reason_is("no_answer") && !poll.has_list && poll.conn.fetched_result_seq == 42,
+	      "the adapter answers again after the read was given up: its result is fetched like any result and is no list");
+	scene();
+	poll_read(&poll, now);
+	exchange();
+	falls_silent();
+	now = 281000;
+	check(send() && request.kind == POLL_STATE && poll.asking, "the scene: the adapter is silent, and a state the display asked for at 281000 has no answer yet");
+	now = 282001;
+	check(!send() && poll.asking && reason_is("no_answer"), "the time of the read is over while that request is still under way: given up all the same, no answer");
+	scene();
+	poll_read(&poll, now);
+	exchange();
+	falls_silent();
+	now = 131000;
+	check(send() && poll.flow.phase == DTC_FLOW_READING, "the scene: the next round of the silent adapter is due at 131000, 29 s after the read was accepted");
+	reply(0, NULL, NULL);
+	now = 282001;
+	check(send() && request.kind == POLL_STATE && reason_is("no_answer"), "the time of the read is over when a request is due as well: given up, and the request goes out");
+	scene();
+	poll_read(&poll, now);
+	exchange();
+	poll_wifi(&poll, false, 103000);
+	now = 282000;
+	check(!send() && poll.flow.phase == DTC_FLOW_READING, "out of the network 180000 ms after the read was accepted: the read still waits");
+	now = 282001;
+	check(!send() && reason_is("no_answer"), "out of the network 180001 ms after the read was accepted: given up, no answer");
+	scene();
+	poll_read(&poll, now);
+	exchange();
+	poll_wifi(&poll, false, 103000);
+	wican.dead = true;
+	poll_wifi(&poll, true, 281000);
+	now = 282000;
+	check(view() == CONN_VIEW_CONNECTING && send() && poll.flow.phase == DTC_FLOW_READING, "back in a network in which nothing has answered yet, 180000 ms after the read was accepted: it still waits");
+	reply(0, NULL, NULL);
+	now = 282001;
+	check(view() == CONN_VIEW_CONNECTING && !send() && reason_is("no_answer"), "connecting, 180001 ms after the read was accepted: given up, no answer");
+	scene();
+	wican.pickup_ms = 400000;
+	poll_read(&poll, now);
+	exchange();
+	seconds(179);
+	wican.pickup_ms = 25000;
+	at(282001);
+	check(now == 282001 && reason_is("expired") && view() == CONN_VIEW_LIVE,
+	      "an adapter that answers shows the read ended with an error 180001 ms after its acceptance: failed with the reason of the adapter - the display watches the time itself "
+	      "only while the adapter is out of sight, and what a state shows goes first");
+
+	// Two pauses in one read. The time of grace of the connection is over at 115000.
+	scene();
+	seconds(20);
+	wican.pickup_ms = 20000;
+	poll_read(&poll, now);
+	exchange();
+	check(now == 122000 && poll.flow.phase == DTC_FLOW_READING && poll.flow.accepted_ms == 122000, "the scene: a read accepted at 122000 that the adapter leaves queued until 142000");
+	falls_silent();
+	check(now == 126000 && poll.flow.phase == DTC_FLOW_READING, "the first pause begins with the third round that fails, at 126000: the read waits");
+	answers_again();
+	check(now == 131000 && !poll.lost && view() == CONN_VIEW_SCAN && poll.flow.phase == DTC_FLOW_READING, "the adapter answers again and shows the read still queued: it goes on");
+	falls_silent();
+	check(now == 135000 && poll.lost && poll.flow.phase == DTC_FLOW_READING, "a second pause in the same read: it waits again");
+	answers_again();
+	seconds(6);
+	check(now == 146000 && poll.flow.phase == DTC_FLOW_LIST && shows_list(read_text, 2) && poll.flow.list_end_ms == 145000 && reads_sent == 1 && wican.next_seq == 43,
+	      "behind the second pause the read ends with its list; it was sent once");
+
+	// The display leaves the network and joins it again
+	scene();
+	poll_read(&poll, now);
+	exchange();
+	second();
+	poll_wifi(&poll, false, now);
+	check(view() == CONN_VIEW_NO_WIFI && poll.lost && poll.flow.phase == DTC_FLOW_READING && !send() && list_events() == 0, "the display leaves the network during its read: the read waits, nothing is sent");
+	now = 109000;
+	poll_wifi(&poll, true, now);
+	check(view() == CONN_VIEW_CONNECTING && !poll.lost && poll.flow.phase == DTC_FLOW_READING && poll.flow.seq == 42, "it joins the network again: the read waits for the first answer");
+	trace[0] = '\0';
+	exchange();
+	check(sent("SRCV") && poll.flow.phase == DTC_FLOW_LIST && shows_list(read_text, 2) && poll.flow.list_end_ms == 106000 && reads_sent == 1 && list_events() == POLL_EVENT_LISTS,
+	      "the first round of the new connection: the state shows the read done, its result is fetched and is the list; the read was not sent again");
+	scene();
+	poll_read(&poll, now);
+	exchange();
+	poll_wifi(&poll, false, now);
+	adapter_restart(&wican, BOOT + 1, 42, now + 500);
+	now = 109000;
+	poll_wifi(&poll, true, now);
+	send();
+	answer();
+	check(reason_is("restarted") && list_events() == (POLL_EVENT_FORGET | POLL_EVENT_LISTS), "the adapter restarted while the display was out of the network: the read that waited failed, restarted");
+	scene();
+	poll_read(&poll, now);
+	exchange();
+	poll_wifi(&poll, false, now);
+	wican.api = false;
+	now = 109000;
+	poll_wifi(&poll, true, now);
+	send();
+	answer();
+	check(view() == CONN_VIEW_NO_API && reason_is("no_answer") && list_events() == (POLL_EVENT_FORGET | POLL_EVENT_LISTS),
+	      "a firmware without the API answers behind the pause: another firmware, for which the read does not wait - failed, no answer");
+	scene();
+	poll_read(&poll, now);
+	exchange();
+	second();
+	poll_wifi(&poll, false, now);
+	strcpy(wican.id, OTHER);
+	now = 109000;
+	poll_wifi(&poll, true, now);
+	trace[0] = '\0';
+	exchange();
+	check(sent("S") && view() == CONN_VIEW_FOREIGN && conn_state(&poll.conn)->boot == BOOT && conn_state(&poll.conn)->dtc.seq == 42 && reason_is("no_answer") && !poll.has_list &&
+	      list_events() == 0,
+	      "a foreign adapter answers behind the pause, with the boot number and the request number of the own read: the read does not go on with the numbers of a stranger - "
+	      "failed, no answer; nothing is fetched from it");
+
+	scene_list();
+	poll_wifi(&poll, false, now);
+	strcpy(wican.id, OTHER);
+	now = 109000;
+	poll_wifi(&poll, true, now);
+	exchange();
+	check(view() == CONN_VIEW_FOREIGN && poll.flow.phase == DTC_FLOW_LIST && shows_list(read_text, 2) && poll_clear(&poll, false, now) == DTC_FLOW_FOREIGN && list_events() == 0,
+	      "the same stranger while the list of a read is shown: what ends a read that waits changes nothing about a list - as before it stays, and cannot be cleared");
+
+	// The POST of the read was handed out, and its answer never came
+	scene();
+	poll_read(&poll, now);
+	send();
+	adapter_answer(&wican, &request, now, &lost);
+	reply(0, NULL, NULL);
+	check(undecided(DTC_FLOW_READ_SENT) && wican.seq == 42 && poll.flow.sent_ms == 102000, "the scene: the adapter accepted the read that went out at 102000, the display got no answer");
+	falls_silent();
+	check(now == 121000 && undecided(DTC_FLOW_READ_SENT) && reads_sent == 1, "then the adapter falls silent: the read waits for it, and is not sent a second time");
+	answers_again();
+	check(now == 131000 && poll.flow.phase == DTC_FLOW_LIST && poll.flow.read_seq == 42 && shows_list(read_text, 2) && reads_sent == 1 && wican.next_seq == 43,
+	      "the adapter answers again and shows a read from HTTP done: it is the own one, its result is the list - one POST, one scan");
+	scene();
+	poll_read(&poll, now);
+	send();
+	reply(0, NULL, NULL);
+	falls_silent();
+	answers_again();
+	check(now == 131000 && undecided(DTC_FLOW_READ_SENT) && poll.flow.rounds_without_answer == 1, "the adapter answers again without a trace of the read: one state decides nothing");
+	second();
+	check(reason_is("no_answer") && wican.seq == 0 && wican.next_seq == 42 && reads_sent == 1,
+	      "the second state without a trace of the read: it did not arrive - failed, no answer; it was handed out once, and the adapter never saw a read");
+	scene();
+	poll_read(&poll, now);
+	send();
+	adapter_answer(&wican, &request, now, &lost);
+	poll_wifi(&poll, false, now);
+	check(poll.flow.phase == DTC_FLOW_READ_SENT && poll.flow.posted && wican.seq == 42, "the scene: the network is lost while the POST of the read is under way; the adapter has accepted it");
+	now = 109000;
+	poll_wifi(&poll, true, now);
+	trace[0] = '\0';
+	exchange();
+	check(sent("SRCV") && poll.flow.phase == DTC_FLOW_LIST && poll.flow.read_seq == 42 && shows_list(read_text, 2) && reads_sent == 1,
+	      "back in the network the state shows a read from HTTP done: it is the own one, and its result is the list");
+	scene();
+	poll_read(&poll, now);
+	send();
+	poll_wifi(&poll, false, now);
+	now = 109000;
+	poll_wifi(&poll, true, now);
+	exchange();
+	check(poll.flow.phase == DTC_FLOW_READ_SENT && poll.flow.rounds_without_answer == 1 && reads_sent == 1, "back in the network the state shows no request: one state decides nothing, and the read is not sent again");
+	second();
+	check(reason_is("no_answer") && wican.seq == 0 && reads_sent == 1, "the second state without a request: the read did not arrive - failed, no answer");
+	scene();
+	poll_read(&poll, now);
+	send();
+	adapter_answer(&wican, &request, now, &lost);
+	poll_wifi(&poll, false, now);
+	strcpy(wican.id, OTHER);
+	now = 109000;
+	poll_wifi(&poll, true, now);
+	exchange();
+	check(view() == CONN_VIEW_FOREIGN && reason_is("no_answer") && !poll.has_list, "a foreign adapter that shows a read from HTTP behind the pause: the read without an answer is not found in the state of a stranger");
+	scene();
+	poll_read(&poll, now);
+	send();
+	reply(0, NULL, NULL);
+	falls_silent();
+	at(282000);
+	check(undecided(DTC_FLOW_READ_SENT), "the adapter is still silent 180000 ms after the read went out: the read waits");
+	now = 282001;
+	check(!send() && reason_is("no_answer") && reads_sent == 1, "the adapter is still silent 180001 ms after the read went out: given up, no answer - and never sent again");
+
+	// A clear does not wait
+	scene_clearing();
+	clears = clears_sent;
+	falls_silent();
+	check(now == 116000 && poll.flow.phase == DTC_FLOW_UNKNOWN && !poll.has_list && old_is(read_text, 2), "the adapter falls silent during the own clear: its outcome is unknown with the answer that shows the outage");
+	answers_again();
+	seconds(4);
+	check(wican.phase == WICAN_DTC_DONE && wican.clear && poll.flow.phase == DTC_FLOW_UNKNOWN && !poll.has_cleared && clears_sent == clears &&
+	      poll_clear(&poll, false, now) == DTC_FLOW_NO_LIST && !send(),
+	      "the adapter answers again with the clear done: the outcome stays unknown, nothing is cleared a second time - the user reads first");
+	scene_list();
+	second();
+	poll_clear(&poll, false, now);
+	falls_silent();
+	check(poll.flow.phase == DTC_FLOW_UNKNOWN && clears_sent == 1 && wican.seq == 42 && !poll.has_list && old_is(read_text, 2),
+	      "a clear goes out to an adapter that has just fallen silent: with the outage its outcome is unknown, it may have arrived");
+	answers_again();
+	seconds(3);
+	check(poll.flow.phase == DTC_FLOW_UNKNOWN && clears_sent == 1 && wican.seq == 42 && wican.next_seq == 43 && poll_clear(&poll, false, now) == DTC_FLOW_NO_LIST && !send(),
+	      "the adapter answers again and has never seen that clear: the outcome stays unknown, and the clear is not sent again - the display does not repeat what may have arrived");
+
+	// The list before the last clear is not touched by a read that waits
+	scene_cleared();
+	wican.read_text = NULL;
+	poll_read(&poll, now);
+	exchange();
+	clears = clears_sent;
+	check(poll.flow.phase == DTC_FLOW_READING && poll.flow.seq == 44 && old_is(read_text, 2) && (list_events() & POLL_EVENT_OLD) == 0, "the scene: a read behind a clear; the list of that clear is the old list");
+	falls_silent();
+	answers_again();
+	check(poll.flow.phase == DTC_FLOW_LIST && poll.flow.read_seq == 44 && poll.list.dtc_count == 1 && old_is(read_text, 2) && list_events() == POLL_EVENT_LISTS && clears_sent == clears,
+	      "the read that outlasted a pause makes its list and nothing else: the list before the last clear stays what it was, nothing is to be stored, no clear went out");
+	second();
+	check(poll_clear(&poll, false, now) == DTC_FLOW_ALLOWED && send() && request.kind == POLL_DTC_CLEAR && strcmp(request.path, "/api/dtc?action=clear&seq=44") == 0 && clears_sent == clears + 1,
+	      "that list is cleared like any other: only when the user confirms, once, with the number of its read");
 }
 
 // What an answer that is not taken must leave alone
@@ -3599,7 +3968,8 @@ static void model_old(model_t *m, bool was_sent, bool told_by_state)
 	m->events |= POLL_EVENT_OLD | POLL_EVENT_LISTS;
 }
 
-// An adapter that cannot be reached ends the own request. Losing it twice changes nothing.
+// An adapter that cannot be reached is told to the flow: a clear ends there, a read waits. Losing it twice
+// changes nothing.
 static void model_reach(model_t *m, uint64_t now_ms)
 {
 	conn_view_t seen = conn_view(&m->conn, now_ms);
@@ -3635,6 +4005,9 @@ static bool model_prepare(model_t *m, uint64_t now_ms, poll_request_t *expected)
 
 	memset(expected, 0, sizeof(*expected));
 	expected->kind = POLL_NONE;
+	// No adapter in sight - the reason that stands first against every command then: the read that waits for
+	// it has only its time left
+	if(dtc_flow_read_block(&m->flow, &m->conn, &m->values, &m->catalog, now_ms) == DTC_FLOW_NO_ADAPTER) dtc_flow_silent(&m->flow, now_ms);
 	if(!m->joined || m->waits) return false;
 
 	switch(dtc_flow_take(&m->flow, &number, now_ms))
@@ -3707,6 +4080,8 @@ static void model_state(model_t *m, int status, const answer_t *a, uint64_t now_
 		if(m->origin[0] != '\0' && strcmp(origin, m->origin) != 0) restarted = true;
 		strcpy(m->origin, origin);
 	}
+	// Whoever answers is not the adapter the request went to: a stranger, or another start
+	if(restarted || (taken && m->conn.foreign)) dtc_flow_gone(&m->flow);
 	if(restarted)
 	{
 		values_clear(&m->values);
@@ -3714,7 +4089,6 @@ static void model_state(model_t *m, int status, const answer_t *a, uint64_t now_
 		m->complete = false;
 		guard_catalog_connected(&m->guard);
 		m->events |= POLL_EVENT_FORGET | POLL_EVENT_LISTS;
-		dtc_flow_lost(&m->flow);
 		if(m->flow.phase == DTC_FLOW_LIST || m->flow.phase == DTC_FLOW_CLEARED) dtc_flow_dismiss(&m->flow);
 	}
 	if(taken && !m->conn.foreign && a->state.batt_mv >= 0)
@@ -3874,7 +4248,7 @@ static bool same_flow(const dtc_flow_t *a, const dtc_flow_t *b)
 {
 	return a->phase == b->phase && a->to_send == b->to_send && a->boot == b->boot && a->seq_before == b->seq_before && a->seq == b->seq && a->read_seq == b->read_seq &&
 	       a->list_count == b->list_count && a->list_end_ms == b->list_end_ms && a->posted == b->posted && a->rounds_without_answer == b->rounds_without_answer &&
-	       a->accepted_ms == b->accepted_ms && strcmp(a->reason, b->reason) == 0;
+	       a->accepted_ms == b->accepted_ms && a->sent_ms == b->sent_ms && strcmp(a->reason, b->reason) == 0;
 }
 
 static bool same_values(const values_t *a, const values_t *b)
@@ -3969,6 +4343,11 @@ static const char *differs(const model_t *m)
  *   - the old list changes exactly when the flow leaves CLEAR_SENT with the clear accepted or its outcome
  *     unknown, and is then the text of the list that was shown; POLL_EVENT_OLD is raised then and only then
  *   - has_list and has_cleared follow the flow
+ *   - a read that went out is given up as unanswered only by an answered state (two of them without a trace of
+ *     it, one after its time, or one of another adapter or firmware) or, while the adapter is out of sight, by
+ *     poll_prepare() when more than 180 s have passed since it was accepted or - without an answer - handed
+ *     out; never by the call that tells of a lost network, and never by an answer that does not come
+ *   - while an outage is noted no clear of the display is under way
  *   - the events are raised when their cause happens and only then
  *   - after any conversation a healthy adapter and enough time lead back to renewed values and an allowed read
  */
@@ -3985,6 +4364,8 @@ enum
 	PROMISE_SHOWN,
 	PROMISE_EVENTS,
 	PROMISE_STUCK,
+	PROMISE_READ_WAITS,
+	PROMISE_CLEAR_ENDS,
 	PROMISES,
 };
 
@@ -4000,6 +4381,11 @@ typedef struct
 	long unseen_restarts;       // catalogues started anew for an adapter that restarted, or was replaced, behind a pause of the network
 	long unseen_same;           // pauses of the network behind which the start that answered before answered again
 	long ignored, stale, steps_back, starts, stored, faults, no_room, at_limit, heals, healed_under_way;
+	long waited_reads;          // outages that were noted while a read that went out was under way: it waited
+	long waited_lists;          // lists of reads that had waited through an outage
+	long waited_told;           // reads that had waited and ended by what an answered state showed, other than with their list
+	long silenced;              // reads given up in poll_prepare() because the adapter stayed out of sight for their time
+	long outage_clears;         // outages that were noted while a clear of the display was under way or waited
 } walk_result_t;
 
 static uint32_t walk_seed;
@@ -4323,6 +4709,7 @@ static bool walk(uint32_t seed, walk_result_t *result)
 	bool under_way = false;
 	bool confirmed = false;                     // poll_clear() allowed a clear that was not handed out yet
 	uint32_t list_number = 0;                   // the number in the header of the result that became the list
+	bool read_waited = false;                   // the read that is under way has waited through an outage
 	int known = 0;                              // what answered GET /api/state last on this connection: 0 nothing, 1 a state, 2 a 404
 	uint32_t known_boot = 0;
 	char known_id[33] = "";
@@ -4355,6 +4742,13 @@ static bool walk(uint32_t seed, walk_result_t *result)
 		char bound_before[33];
 		bool expect_forget = false, fresh_start = false, delivered = false;
 		poll_kind_t answered = POLL_NONE;           // the kind of the request whose answer this call delivered
+		// For the promise about a read that waits: the call asked for a request; it delivered the answer to a state
+		// request that was a state or a 404; and what the flow and the connection held before it
+		bool prepared = false, state_told = false;
+		bool lost_before;
+		dtc_flow_send_t waiting_before;
+		uint64_t accepted_before, sent_before;
+		conn_view_t view_before;
 
 		// The time goes on, now and then to a limit; the display reads it, now and then late
 		if(step < 700) world += walk_random(200);
@@ -4371,6 +4765,13 @@ static bool walk(uint32_t seed, walk_result_t *result)
 		else if(step < 1000 && poll.conn.next_round_ms > world) world = poll.conn.next_round_ms - 1 + walk_random(3);
 		// A confirmed clear that waits for its turn until the list is as old as it may be, or 1 or 2 ms older
 		if(poll.flow.to_send == DTC_FLOW_SEND_CLEAR && walk_random(12) == 0 && poll.flow.list_end_ms + 600000 > world) world = poll.flow.list_end_ms + 600000 + walk_random(3);
+		// A read that went out and waits until its time is over, or 1 or 2 ms short of that
+		if(((poll.flow.phase == DTC_FLOW_READ_SENT && poll.flow.to_send == DTC_FLOW_SEND_NOTHING) || poll.flow.phase == DTC_FLOW_READING) && walk_random(100) == 0)
+		{
+			uint64_t from = poll.flow.phase == DTC_FLOW_READING ? poll.flow.accepted_ms : poll.flow.sent_ms;
+
+			if(from + 180000 > world) world = from + 179999 + walk_random(3);
+		}
 		now_ms = world;
 		if(walk_random(25) == 0)
 		{
@@ -4393,6 +4794,11 @@ static bool walk(uint32_t seed, walk_result_t *result)
 		old_before = old_sum();
 		phase_before = poll.flow.phase;
 		strcpy(bound_before, poll.bound_id);
+		lost_before = poll.lost;
+		waiting_before = poll.flow.to_send;
+		accepted_before = poll.flow.accepted_ms;
+		sent_before = poll.flow.sent_ms;
+		view_before = conn_view(&poll.conn, now_ms);
 
 		if(healing)
 		{
@@ -4447,6 +4853,7 @@ static bool walk(uint32_t seed, walk_result_t *result)
 					came = 2;
 					known = 2;
 				}
+				state_told = asked.kind == POLL_STATE && (state_taken || pending.status == 404);
 				walk_deliver(&asked, &pending, now_ms, result);
 				answered = asked.kind;
 				if(expect_forget) result->catalogs_anew++;
@@ -4466,6 +4873,7 @@ static bool walk(uint32_t seed, walk_result_t *result)
 			bool got = poll_prepare(&poll, now_ms, &handed);
 			bool expected_got = model_prepare(&model, now_ms, &expected);
 
+			prepared = true;
 			if(got != expected_got || handed.kind != expected.kind || handed.post != expected.post || strcmp(handed.path, expected.path) != 0) result->different++;
 			if(got)
 			{
@@ -4645,6 +5053,40 @@ static bool walk(uint32_t seed, walk_result_t *result)
 			}
 			if(left_sent && !expect_old) result->clears_without_old++;
 			if(poll.has_list != in_list || poll.has_cleared != (poll.flow.phase == DTC_FLOW_CLEARED)) result->broken[PROMISE_SHOWN]++;
+			// A read that went out
+			{
+				bool was_out = (phase_before == DTC_FLOW_READ_SENT && waiting_before == DTC_FLOW_SEND_NOTHING) || phase_before == DTC_FLOW_READING;
+				bool is_out = (poll.flow.phase == DTC_FLOW_READ_SENT && poll.flow.to_send == DTC_FLOW_SEND_NOTHING) || poll.flow.phase == DTC_FLOW_READING;
+				bool given_up = poll.flow.phase == DTC_FLOW_FAILED && strcmp(poll.flow.reason, "no_answer") == 0;
+				uint64_t from = phase_before == DTC_FLOW_READING ? accepted_before : sent_before;
+				bool unseen = view_before == CONN_VIEW_NO_WIFI || view_before == CONN_VIEW_CONNECTING || view_before == CONN_VIEW_NO_ANSWER;
+
+				if(was_out && given_up && !fresh_start)
+				{
+					if(prepared)
+					{
+						if(!unseen || now_ms <= from || now_ms - from <= 180000) result->broken[PROMISE_READ_WAITS]++;
+						result->silenced++;
+					}
+					else if(!state_told) result->broken[PROMISE_READ_WAITS]++;
+				}
+				// The time of a read that is out of sight is over: the very call that asks for a request ends it
+				if(prepared && was_out && unseen && now_ms > from && now_ms - from > 180000 && !given_up) result->broken[PROMISE_READ_WAITS]++;
+				if(!lost_before && poll.lost && is_out)
+				{
+					read_waited = true;
+					result->waited_reads++;
+				}
+				if(was_out && !is_out && read_waited)
+				{
+					if(poll.flow.phase == DTC_FLOW_LIST) result->waited_lists++;
+					else if(state_told) result->waited_told++;
+				}
+				if(!is_out) read_waited = false;
+			}
+			// A clear never waits for an adapter that is out of reach
+			if(poll.lost && (poll.flow.phase == DTC_FLOW_CLEAR_SENT || poll.flow.phase == DTC_FLOW_CLEARING)) result->broken[PROMISE_CLEAR_ENDS]++;
+			if(!lost_before && poll.lost && (phase_before == DTC_FLOW_CLEAR_SENT || phase_before == DTC_FLOW_CLEARING) && !fresh_start) result->outage_clears++;
 			if(events_before == 0 && !fresh_start)
 			{
 				bool bound_now = bound_before[0] == '\0' && poll.bound_id[0] != '\0';
@@ -4730,9 +5172,12 @@ static void test_walk(void)
 	close(ends[0]);
 	alarm(0);
 
-	printf("  walk: %ld calls, %ld differences; promises broken: %ld one request, %ld clear, %ld old, %ld shown, %ld events, %ld stuck\n", result.calls, result.different,
-	       result.broken[PROMISE_ONE_REQUEST], result.broken[PROMISE_CLEAR], result.broken[PROMISE_OLD], result.broken[PROMISE_SHOWN], result.broken[PROMISE_EVENTS],
-	       result.broken[PROMISE_STUCK]);
+	printf("  walk: %ld calls, %ld differences; promises broken: %ld one request, %ld clear, %ld old, %ld shown, %ld events, %ld stuck, %ld read waits, %ld clear ends\n",
+	       result.calls, result.different, result.broken[PROMISE_ONE_REQUEST], result.broken[PROMISE_CLEAR], result.broken[PROMISE_OLD], result.broken[PROMISE_SHOWN],
+	       result.broken[PROMISE_EVENTS], result.broken[PROMISE_STUCK], result.broken[PROMISE_READ_WAITS], result.broken[PROMISE_CLEAR_ENDS]);
+	printf("  walk: %ld outages noted while a read that went out was under way, %ld lists of reads that had waited through one, %ld of them ended by what a state showed, "
+	       "%ld reads given up because the adapter stayed out of sight; %ld outages noted while a clear was under way or waited\n",
+	       result.waited_reads, result.waited_lists, result.waited_told, result.silenced, result.outage_clears);
 	printf("  walk: requests");
 	for(i = POLL_STATE; i <= POLL_DTC_CLEAR; i++)
 	{
@@ -4774,6 +5219,13 @@ static void test_walk(void)
 	check(complete && result.broken[PROMISE_OLD] == 0 && result.old_lists > 100 && result.clears_without_old > 100,
 	      "in every conversation: the old list changes exactly when the flow leaves CLEAR_SENT with the clear accepted or its outcome unknown, and is then the list that was shown");
 	check(complete && result.broken[PROMISE_SHOWN] == 0, "in every conversation: has_list and has_cleared follow the flow after every call");
+	check(complete && result.broken[PROMISE_READ_WAITS] == 0,
+	      "in every conversation: a read that went out is given up as unanswered only by an answered state or, with the adapter out of sight, when the display asks for a request "
+	      "more than 180000 ms after the read was accepted or handed out - then at once; never by the loss of the network or by an answer that does not come");
+	check(complete && result.broken[PROMISE_CLEAR_ENDS] == 0, "in every conversation: while an outage is noted no clear of the display is under way");
+	check(complete && result.waited_reads > 60 && result.waited_lists > 20 && result.waited_told > 10 && result.silenced > 25 && result.outage_clears > 12,
+	      "the conversations reach outages during a read that went out, lists of reads that waited through one, such reads ended by what a state showed, reads given up "
+	      "because the adapter stayed out of sight, and outages during a clear, in numbers");
 	check(complete && result.broken[PROMISE_EVENTS] == 0 && every_event, "in every conversation: each event is raised when its cause happens, and only then");
 	check(complete && result.unseen_restarts > 100 && result.unseen_same > 100,
 	      "the conversations reach adapters that restarted or were replaced behind a pause of the network, and pauses behind which the same start answered, in numbers");
@@ -4810,6 +5262,7 @@ int main(void)
 	test_no_api();
 	test_other_scan();
 	test_outage();
+	test_pause();
 	test_old();
 	test_no_room();
 	test_wait();

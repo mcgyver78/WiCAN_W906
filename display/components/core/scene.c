@@ -360,11 +360,13 @@ static void build_dtc(const scene_input_t *input, scene_t *scene)
 	build_rows(input, NULL, NULL, choices, COUNT(choices), scene);
 }
 
-static void build_busy(const scene_input_t *input, const wican_state_t *state, scene_t *scene)
+static void build_busy(const scene_input_t *input, conn_view_t view, const wican_state_t *state, scene_t *scene)
 {
 	const dtc_flow_t *flow = input->flow;
 	bool accepted = flow->phase == DTC_FLOW_READING || flow->phase == DTC_FLOW_CLEARING;
 	bool reading = flow->phase == DTC_FLOW_READ_SENT || flow->phase == DTC_FLOW_READING;
+	// A read waits for an adapter that is out of sight (dtc_flow.h); a clear never does
+	bool paused = reading && (view == CONN_VIEW_NO_WIFI || view == CONN_VIEW_CONNECTING || view == CONN_VIEW_NO_ANSWER);
 
 	scene->kind = SCENE_PROGRESS;
 	scene->permille = 0;
@@ -377,6 +379,17 @@ static void build_busy(const scene_input_t *input, const wican_state_t *state, s
 	}
 
 	set_title(scene, reading ? "Fehlerspeicher lesen" : "Fehlerspeicher löschen");
+	if(paused)
+	{
+		// The state the display still holds is from before the pause: its step would stand there as if the scan
+		// stood still, and "ca. 35 s" would promise an end nobody knows. What is known: the connection is
+		// interrupted; a scan the adapter accepted goes on without the display; of a read whose POST got no
+		// answer only the answer is missing.
+		append(scene->big, sizeof(scene->big), "…");
+		add_text(scene, "Verbindung unterbrochen");
+		add_text(scene, accepted ? "WiCAN liest weiter" : "Warte auf Antwort");
+		return;
+	}
 	// Done counts as well: until the result is fetched the scan shows as complete, not as never begun
 	if(accepted && state != NULL && state->dtc.seq == flow->seq && (state->dtc.phase == WICAN_DTC_RUNNING || state->dtc.phase == WICAN_DTC_DONE))
 	{
@@ -628,7 +641,7 @@ void scene_build(const scene_input_t *input, scene_t *scene)
 			build_dtc(input, scene);
 			break;
 		case NAV_DTC_BUSY:
-			build_busy(input, state, scene);
+			build_busy(input, view, state, scene);
 			break;
 		case NAV_DTC_LIST:
 			build_dtc_list(input, scene);

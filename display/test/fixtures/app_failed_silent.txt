@@ -1,0 +1,5 @@
+kind: notice
+ring: red
+title: Fehlgeschlagen
+note: Knopf drücken
+line: Keine Antwort vom WiCAN

@@ -959,18 +959,31 @@ esp_err_t net_start(const char *ap_ssid, const char *ap_password)
 		ESP_LOGE(TAG, "mDNS: %s", esp_err_to_name(err));
 	}
 
+	/*
+	 * The radio link of this board is weak, and what is set here is what can be done about it from this
+	 * side. Measured on the board, 2026-10-09 and 2026-10-10: two metres from the router the display hears
+	 * it at -56 to -69 dBm, some 25 dB below what that place gives another device - the adapter at the same
+	 * distance loses nothing. In good phases 2 % of the pings to the display are lost, in bad ones 50 to
+	 * 100 %, and then it does not even get through the handshake of joining. Also in a good phase the link
+	 * is slow in both directions: 60 KB from the display took 1.9 s at the median (up to 10 s), 16 KB to it
+	 * 0.8 s. The housing is plastic, the place is better than the adapter's: it is the board itself.
+	 *
+	 * 802.11b and g, not n: with so little to spare the fast rates of n and its bundling of frames (A-MPDU)
+	 * gain nothing - the display moves a few kilobytes a second - and the slow rates are the ones that still
+	 * get through.
+	 * CHECK: this is an attempt, not a measured cure. Compare hours of the watch from a PC (pings, the
+	 * counts of answers and failures on the info page) before and after it.
+	 */
+	ESP_RETURN_ON_ERROR(esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G), TAG, "WiFi protocol");
 	ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "WiFi start");
 	// The station does not sleep between the beacons of its network (the default of the driver is
-	// WIFI_PS_MIN_MODEM). Measured on the board on 2026-10-09 with the default: of 150 pings to the display,
-	// five a second, 51 % were lost and the others took 154 ms on average, while the adapter in the same
-	// network lost none of 100 (5 ms); requests to the adapter ran into their 4 s in phases although it
-	// answered the PC every time, and the web interface of the display did not answer for seconds. With
-	// the own access point switched on, which keeps the station awake, the same pings lost none of 150 and
-	// the adapter was answered twice a second without a failure. The display hangs on the supply of the
-	// vehicle: there is nothing to save.
-	// CHECK: with this line the same pings lose (nearly) none, the count of answers on the info page grows
-	// by about two a second with the ignition on, and the chip temperature there stays below the 75 degrees
-	// where the heat rule begins - the radio now listens all the time.
+	// WIFI_PS_MIN_MODEM): a ping to the display takes 14 ms on average instead of 154 ms, and an answer of
+	// the adapter does not wait for a beacon. It did NOT cure the losses, as was first thought: with this
+	// line 8 of 150 pings arrived in a bad phase (2026-10-09). The display hangs on the supply of the
+	// vehicle, there is nothing to save.
+	// CHECK: the chip temperature on the info page stays below the 75 degrees where the heat rule begins -
+	// the radio listens all the time, and a slow link keeps the transmitter on for long (65 degrees were
+	// seen while 60 KB were fetched twelve times in a row).
 	ESP_RETURN_ON_ERROR(esp_wifi_set_ps(WIFI_PS_NONE), TAG, "WiFi power save");
 
 	platform_lock();

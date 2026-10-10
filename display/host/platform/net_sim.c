@@ -167,6 +167,8 @@ static struct
 	int nvs_enable;             // as esp_wifi_init() was told
 	wifi_ps_type_t ps;          // whether the station sleeps between beacons: as the driver starts out, or as told
 	int ps_calls;
+	uint8_t sta_protocol;       // what the station speaks: as the driver starts out, or as told
+	int protocol_calls;
 	int ap_stations;
 	// A driver that does what is not written down, one switch at a time
 	bool join_silent;           // an attempt never ends by itself
@@ -384,8 +386,9 @@ char *esp_ip4addr_ntoa(const esp_ip4_addr_t *addr, char *buf, int buflen)
 esp_err_t esp_wifi_init(const wifi_init_config_t *config)
 {
 	drv.nvs_enable = config->nvs_enable;
-	// The default of the driver (esp_wifi.h, esp_wifi_set_ps())
+	// The defaults of the driver (esp_wifi.h, esp_wifi_set_ps() and esp_wifi_set_protocol())
 	drv.ps = WIFI_PS_MIN_MODEM;
+	drv.sta_protocol = WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N;
 	return ESP_OK;
 }
 
@@ -399,6 +402,16 @@ esp_err_t esp_wifi_set_storage(wifi_storage_t storage)
 esp_err_t esp_wifi_start(void)
 {
 	drv.started = true;
+	return ESP_OK;
+}
+
+esp_err_t esp_wifi_set_protocol(wifi_interface_t interface, uint8_t protocol_bitmap)
+{
+	// Of the station, and before it can have joined anything: what is set later counts from the next
+	// connection on
+	CHECK(interface == WIFI_IF_STA && !drv.started);
+	drv.sta_protocol = protocol_bitmap;
+	drv.protocol_calls++;
 	return ESP_OK;
 }
 
@@ -1079,6 +1092,8 @@ static void test_access_point(void)
 	// The station never sleeps between beacons: half of what was sent to it was lost on the board with the
 	// default (net.c has the numbers)
 	CHECK(drv.ps == WIFI_PS_NONE && drv.ps_calls == 1);
+	// The station speaks b and g only: the link of the board is too weak for more (net.c has the numbers)
+	CHECK(drv.sta_protocol == (WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G) && drv.protocol_calls == 1);
 	CHECK(strcmp(platform_info.ap_ssid, "WiCAN-Display-1234") == 0 && strcmp(platform_info.ap_password, "geheimes-passwort") == 0);
 	run(1000);
 	CHECK(drv.mode == WIFI_MODE_APSTA && !drv.ap_open_window && drv.scans == 0 && link_ap_on(&platform_app->link));

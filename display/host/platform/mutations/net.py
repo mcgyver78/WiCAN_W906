@@ -60,6 +60,7 @@ ROOM = "\troom = heap_caps_malloc(sizeof(*room), MALLOC_CAP_SPIRAM);\n"
 NO_NVS = "\tinit_config.nvs_enable = 0;\n"
 PS_NONE = "\tESP_RETURN_ON_ERROR(esp_wifi_set_ps(WIFI_PS_NONE), TAG, \"WiFi power save\");\n"
 WIFI_START = "\tESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, \"WiFi start\");\n"
+PROTOCOL = "\tESP_RETURN_ON_ERROR(esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G), TAG, \"WiFi protocol\");\n"
 AP_PASSWORD = "\tmemcpy(ap_config.ap.password, ap_password, password_length);\n"
 AP_WPA2 = "\tap_config.ap.authmode = WIFI_AUTH_WPA2_PSK;\n"
 AP_GIVEN = "\tESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_AP, &ap_config), TAG, \"access point\");\n"
@@ -134,6 +135,12 @@ MUTATIONS = [
     ("net_station_told_to_sleep_as_the_driver_starts_out", S, F, PS_NONE, PS_NONE.replace("WIFI_PS_NONE", "WIFI_PS_MIN_MODEM")),
     ("net_station_told_to_sleep_deeply", S, F, PS_NONE, PS_NONE.replace("WIFI_PS_NONE", "WIFI_PS_MAX_MODEM")),
     ("net_power_save_also_set_before_the_driver_runs", S, F, WIFI_START, PS_NONE + WIFI_START),
+    ("net_station_speaks_what_the_driver_starts_out_with", S, F, PROTOCOL, ""),
+    ("net_station_speaks_n_as_well", S, F, PROTOCOL, PROTOCOL.replace("WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G", "WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N")),
+    ("net_station_speaks_b_only", S, F, PROTOCOL, PROTOCOL.replace("WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G", "WIFI_PROTOCOL_11B")),
+    ("net_station_speaks_g_only", S, F, PROTOCOL, PROTOCOL.replace("WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G", "WIFI_PROTOCOL_11G")),
+    ("net_protocol_of_the_access_point_set_instead", S, F, PROTOCOL, PROTOCOL.replace("WIFI_IF_STA", "WIFI_IF_AP")),
+    ("net_protocol_set_when_the_driver_runs_already", S, F, PROTOCOL + WIFI_START, WIFI_START + PROTOCOL),
     ("net_access_point_without_its_password", S, F, AP_PASSWORD, ""),
     ("net_access_point_open", S, F, AP_WPA2, ""),
     ("net_access_point_not_configured_before_the_start", S, F, AP_GIVEN, ""),

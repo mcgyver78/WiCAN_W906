@@ -113,6 +113,23 @@ static void silence(void)
 	silent_tick();
 }
 
+// The adapter stops answering until the connection says so: three rounds fail, the time of grace of the
+// connection (15 s from 5000 on) is over, and the flow is told as poll.c tells it. It is 20000 or later.
+static void pause_begins(void)
+{
+	silence();
+	if(now < epoch + 20000) now = epoch + 20000;
+	dtc_flow_lost(&flow);
+}
+
+// The adapter answers again: seconds pass until a round of the connection is answered
+static void back(void)
+{
+	int seconds;
+
+	for(seconds = 0; seconds < 12 && conn.failed_rounds > 0; seconds++) tick();
+}
+
 // The last request the adapter accepted, as its state shows it
 static void shows(wican_dtc_phase_t phase, bool clear, bool http, uint32_t seq)
 {
@@ -343,9 +360,11 @@ static void test_start(void)
 	dtc_flow_result(&flow, 0, CLEAR, 3, 0, now);
 	dtc_flow_no_result(&flow);
 	dtc_flow_lost(&flow);
+	dtc_flow_silent(&flow, now + 900000);
+	dtc_flow_gone(&flow);
 	dtc_flow_dismiss(&flow);
 	check(flow.phase == DTC_FLOW_IDLE && dtc_flow_take(&flow, &seq, now) == DTC_FLOW_SEND_NOTHING,
-	      "states, answers, results, a result that cannot be had, a lost adapter and a dismissal change nothing while nothing was asked");
+	      "states, answers, results, a result that cannot be had, a lost adapter, its silence, another adapter and a dismissal change nothing while nothing was asked");
 }
 
 static void test_good_path(void)
@@ -1298,9 +1317,15 @@ static void test_result(void)
 	dtc_flow_result(&flow, 41, READ, 3, 0, now);
 	check(failed_with("busy") && flow.read_seq == 0, "a result after a failure is ignored");
 	at_reading();
-	dtc_flow_lost(&flow);
+	dtc_flow_gone(&flow);
 	dtc_flow_result(&flow, 42, READ, 3, 0, now);
 	check(failed_with("no_answer") && flow.read_seq == 0, "the result of a read that was given up is ignored");
+	at_reading();
+	dtc_flow_lost(&flow);
+	dtc_flow_result(&flow, 41, READ, 2, 0, now);
+	check(flow.phase == DTC_FLOW_READING && flow.read_seq == 0, "a result with another number while the read waits for a lost adapter is ignored");
+	dtc_flow_result(&flow, 42, READ, 3, 0, now);
+	check(flow.phase == DTC_FLOW_LIST && flow.read_seq == 42 && flow.list_count == 3, "the result of a read that waits for a lost adapter is taken when it comes: the list");
 	at_unknown();
 	dtc_flow_result(&flow, 43, CLEAR, 0, 0, now);
 	check(flow.phase == DTC_FLOW_UNKNOWN, "the result of a clear that was given up is ignored: the user reads again");
@@ -1459,9 +1484,9 @@ static void test_lost(void)
 		const char *what;
 	} cases[] = {
 		{at_read_waiting, DTC_FLOW_IDLE, "", "the adapter is lost while the read waits to be taken: it was never sent, idle without a failure, and it is not sent"},
-		{at_read_sent, DTC_FLOW_FAILED, "no_answer", "the adapter is lost while the POST of the read is under way: failed with no_answer"},
-		{at_read_silent, DTC_FLOW_FAILED, "no_answer", "the adapter is lost after the POST of the read got no answer: failed with no_answer"},
-		{at_reading, DTC_FLOW_FAILED, "no_answer", "the adapter is lost during the own read: failed with no_answer"},
+		{at_read_sent, DTC_FLOW_READ_SENT, "", "the adapter is lost while the POST of the read is under way: the read waits for the adapter, nothing failed, and it is not sent again"},
+		{at_read_silent, DTC_FLOW_READ_SENT, "", "the adapter is lost after the POST of the read got no answer: the read waits for the adapter, nothing failed, and it is not sent again"},
+		{at_reading, DTC_FLOW_READING, "", "the adapter is lost during the own read: the read waits for the adapter, nothing failed"},
 		{at_clear_waiting, DTC_FLOW_LIST, NULL, "the adapter is lost while the clear waits to be taken: it was never sent, back to the list and not unknown, and it is not sent"},
 		{at_clear_sent, DTC_FLOW_UNKNOWN, NULL, "the adapter is lost while the POST of the clear is under way: unknown"},
 		{at_clear_silent, DTC_FLOW_UNKNOWN, NULL, "the adapter is lost after the POST of the clear got no answer: unknown"},
@@ -1492,7 +1517,7 @@ static void test_lost(void)
 	dtc_flow_lost(&flow);
 	shows_done(READ, HTTP, 42, 3);
 	tick();
-	check(failed_with("no_answer") && flow.read_seq == 0, "the adapter is back with the result of the read that was given up: it stays failed");
+	check(flow.phase == DTC_FLOW_LIST && flow.read_seq == 42 && flow.list_count == 3, "the adapter is back with the result of the read that waited for it: the list");
 	at_clearing();
 	dtc_flow_lost(&flow);
 	shows_done(CLEAR, HTTP, 43, 0);
@@ -1500,8 +1525,420 @@ static void test_lost(void)
 	check(flow.phase == DTC_FLOW_UNKNOWN, "the adapter is back with the result of the clear that was given up: it stays unknown");
 	at_read_sent();
 	dtc_flow_lost(&flow);
-	dtc_flow_posted(&flow, 202, 42, NULL, now);
-	check(failed_with("no_answer"), "an answer to a read that was given up is ignored");
+	dtc_flow_posted(&flow, 202, 44, NULL, now);
+	check(flow.phase == DTC_FLOW_READ_SENT && flow.seq == 0 && flow.posted, "the answer to the POST of a read whose adapter was lost is ignored when it is reported after all: the states decide");
+
+	// Told twice of the same outage
+	at_reading();
+	dtc_flow_lost(&flow);
+	dtc_flow_lost(&flow);
+	check(flow.phase == DTC_FLOW_READING && flow.seq == 42 && flow.accepted_ms == 8000, "lost a second time: the own read waits as before, with its number and its time");
+	at_read_silent();
+	tick();
+	dtc_flow_lost(&flow);
+	dtc_flow_lost(&flow);
+	check(flow.phase == DTC_FLOW_READ_SENT && flow.rounds_without_answer == 1, "lost twice after one state without a trace of the read: that state still counts as one");
+}
+
+// A read that was handed out outlasts a pause of the connection: it waits for the adapter, and what the
+// adapter shows when it answers again decides. A clear does not wait.
+static void test_pause(void)
+{
+	static const struct
+	{
+		scene_t scene;
+		const char *what;
+	} clears[] = {
+		{at_clear_sent, "the adapter stops answering while the POST of the clear is under way: unknown at once, and it stays unknown whatever the adapter shows and however long it is silent"},
+		{at_clear_silent, "the adapter stops answering after the POST of the clear got no answer: unknown at once, and it stays unknown whatever the adapter shows and however long it is silent"},
+		{at_clearing, "the adapter stops answering during the own clear: unknown at once, and it stays unknown whatever the adapter shows and however long it is silent"},
+	};
+	uint32_t seq = 99;
+	size_t i;
+
+	// The adapter accepted the read. The pause begins before the scan has started.
+	check(at_reading() && adapter.dtc.phase == WICAN_DTC_QUEUED && flow.accepted_ms == 8000, "the scene: the own read 42 was accepted at 8000 and is queued");
+	pause_begins();
+	check(now == 20000 && conn_view(&conn, now) == CONN_VIEW_NO_ANSWER && flow.phase == DTC_FLOW_READING && flow.seq == 42 && flow.reason[0] == '\0',
+	      "the adapter stops answering while the own read is queued: the read waits for it, nothing failed");
+	check(nothing_to_take() && read_block() == DTC_FLOW_NO_ADAPTER && clear_block() == DTC_FLOW_NO_ADAPTER && ask_read() == DTC_FLOW_NO_ADAPTER && flow.phase == DTC_FLOW_READING,
+	      "while the read waits for the adapter nothing is sent and nothing is offered: no second read, no clear");
+	shows(WICAN_DTC_RUNNING, READ, HTTP, 42);
+	back();
+	check(now == 21000 && flow.phase == DTC_FLOW_READING && flow.seq == 42 && flow.accepted_ms == 8000 && nothing_to_take(),
+	      "the adapter answers again and shows the own read running: the read goes on, accepted when it was accepted");
+	shows_done(READ, HTTP, 42, 3);
+	tick();
+	check(flow.phase == DTC_FLOW_LIST && flow.read_seq == 42 && flow.list_count == 3 && flow.list_end_ms == 22000, "the read that outlasted the pause ends with its list");
+	tick();
+	check(clear_block() == DTC_FLOW_ALLOWED && ask_clear() == DTC_FLOW_ALLOWED && dtc_flow_take(&flow, &seq, now) == DTC_FLOW_SEND_CLEAR && seq == 42 && nothing_to_take(),
+	      "that list is a list like any other: with an engine speed from after the read its clear is offered, and handed out once, with the number of the read, when the user confirms");
+
+	// ... in the middle of the scan, which ends 7 s before the adapter answers again
+	at_reading();
+	shows(WICAN_DTC_RUNNING, READ, HTTP, 42);
+	tick();
+	pause_begins();
+	check(flow.phase == DTC_FLOW_READING && flow.seq == 42, "the adapter stops answering while the own read runs: the read waits for it");
+	shows_done(READ, HTTP, 42, 2);
+	adapter.dtc.age_s = 7;
+	back();
+	check(now == 21000 && flow.phase == DTC_FLOW_LIST && flow.read_seq == 42 && flow.list_count == 2 && flow.list_end_ms == 14000 && dtc_flow_seconds_left(&flow, now) == 593,
+	      "the scan ended 7 s before the adapter answers again: its result is the list, and the time to clear it counts from the end of the scan");
+
+	// ... after the scan has finished, before its result was fetched
+	at_reading();
+	shows_done(READ, HTTP, 42, 3);
+	dtc_flow_state(&flow, &adapter, now);
+	check(flow.phase == DTC_FLOW_READING && now == 9000, "the scene: the display has seen the own read done at 9000, its result is not fetched yet");
+	pause_begins();
+	check(flow.phase == DTC_FLOW_READING && flow.read_seq == 0, "the adapter stops answering before the result is fetched: the read waits for it");
+	adapter.dtc.age_s = 12;
+	back();
+	check(flow.phase == DTC_FLOW_LIST && flow.read_seq == 42 && flow.list_count == 3 && flow.list_end_ms == 9000, "the adapter answers again: the result is fetched and is the list, ended when the scan ended");
+
+	// What the adapter shows when it answers again decides
+	at_reading();
+	pause_begins();
+	shows_error(READ, HTTP, 42, "ecu_offline");
+	back();
+	check(failed_with("ecu_offline") && flow.read_seq == 0, "the adapter answers again and shows the own read ended with an error: failed with the reason of the adapter");
+	at_reading();
+	pause_begins();
+	restarts();
+	back();
+	check(failed_with("restarted") && nothing_to_take(), "the adapter restarted during the pause: failed with restarted");
+	at_reading();
+	pause_begins();
+	restarts();
+	shows_done(READ, HTTP, 42, 3);
+	back();
+	tick();
+	check(failed_with("restarted") && flow.read_seq == 0, "the restarted adapter shows the very number of the own read as done: it is not the own read, its result makes no list");
+	at_reading();
+	pause_begins();
+	shows(WICAN_DTC_RUNNING, READ, MQTT, 43);
+	back();
+	check(failed_with("superseded"), "somebody else's scan runs when the adapter answers again, and the result of the own read is not stored: failed with superseded");
+	at_reading();
+	pause_begins();
+	shows_done(READ, MQTT, 43, 5);
+	back();
+	tick();
+	check(failed_with("superseded") && flow.read_seq == 0, "somebody else's read ran and ended during the pause: its result is not the own list");
+	at_reading();
+	pause_begins();
+	shows_done(READ, HTTP, 42, 3);
+	shows(WICAN_DTC_QUEUED, READ, MQTT, 43);
+	back();
+	check(flow.phase == DTC_FLOW_LIST && flow.read_seq == 42 && flow.list_count == 3,
+	      "somebody else's scan is queued when the adapter answers again, and the result of the own read is still stored: it is fetched and is the list");
+	tick();
+	check(flow.phase == DTC_FLOW_IDLE && flow.read_seq == 0, "the next state shows the other request as the last one: that list is dropped like any other");
+
+	// The adapter does not come back
+	check(at_reading() && flow.accepted_ms == 8000, "the scene: the own read was accepted at 8000");
+	pause_begins();
+	dtc_flow_silent(&flow, 0);
+	dtc_flow_silent(&flow, 7999);
+	dtc_flow_silent(&flow, 188000);
+	check(flow.phase == DTC_FLOW_READING, "the adapter is still silent 180000 ms after the read was accepted, and at times before that: the read still waits");
+	dtc_flow_silent(&flow, 188001);
+	check(failed_with("no_answer") && flow.read_seq == 0 && nothing_to_take(), "the adapter is still silent 180001 ms after the read was accepted: given up, failed with no_answer");
+	now = 200000;
+	shows_done(READ, HTTP, 42, 3);
+	back();
+	tick();
+	check(failed_with("no_answer") && flow.read_seq == 0 && clear_block() == DTC_FLOW_NO_LIST,
+	      "the adapter answers again with the read done after it was given up: it stays failed, and its result makes no list that could be cleared");
+	at_reading();
+	dtc_flow_silent(&flow, 188001);
+	check(failed_with("no_answer"), "whoever watches the silence decides when it is one: the time of the read is over without the flow being told that the adapter is lost");
+	epoch = DAYS_49 - 100000;
+	check(at_reading() && flow.accepted_ms == DAYS_49 - 92000, "the scene: a read accepted 92 s before 2^32 ms");
+	dtc_flow_lost(&flow);
+	dtc_flow_silent(&flow, DAYS_49 + 88000);
+	check(flow.phase == DTC_FLOW_READING, "silent 180000 ms after an acceptance shortly before 2^32 ms: the read still waits");
+	dtc_flow_silent(&flow, DAYS_49 + 88001);
+	check(failed_with("no_answer"), "silent 180001 ms after an acceptance shortly before 2^32 ms: given up");
+	epoch = 0;
+	at_reading();
+	dtc_flow_silent(&flow, 8000 + DAYS_49 + 5);
+	check(failed_with("no_answer"), "silent 2^32 ms after the acceptance: given up, the time does not begin anew");
+
+	// Two pauses in one read
+	at_reading();
+	pause_begins();
+	shows(WICAN_DTC_RUNNING, READ, HTTP, 42);
+	back();
+	tick();
+	silence();
+	dtc_flow_lost(&flow);
+	check(conn_view(&conn, now) == CONN_VIEW_NO_ANSWER && flow.phase == DTC_FLOW_READING && flow.seq == 42, "a second pause in the same read: it waits again");
+	shows_done(READ, HTTP, 42, 1);
+	back();
+	check(flow.phase == DTC_FLOW_LIST && flow.read_seq == 42 && flow.list_count == 1, "behind the second pause the read ends with its list");
+	at_reading();
+	pause_begins();
+	shows(WICAN_DTC_RUNNING, READ, HTTP, 42);
+	back();
+	silence();
+	dtc_flow_lost(&flow);
+	dtc_flow_silent(&flow, 188000);
+	check(flow.phase == DTC_FLOW_READING, "in the second pause, 180000 ms after the acceptance: the read still waits");
+	dtc_flow_silent(&flow, 188001);
+	check(failed_with("no_answer"), "the time of a read counts from its acceptance through both pauses, not from the last answer of the adapter");
+
+	// The display leaves the network and joins it again
+	at_reading();
+	conn_wifi(&conn, false, now);
+	dtc_flow_lost(&flow);
+	check(conn_view(&conn, now) == CONN_VIEW_NO_WIFI && flow.phase == DTC_FLOW_READING && nothing_to_take() && read_block() == DTC_FLOW_NO_ADAPTER,
+	      "the display leaves the network during the own read: the read waits");
+	now += 6000;
+	conn_wifi(&conn, true, now);
+	check(conn_view(&conn, now) == CONN_VIEW_CONNECTING && flow.phase == DTC_FLOW_READING && nothing_to_take(), "the display joins the network again: nothing is decided before the adapter answers");
+	shows(WICAN_DTC_RUNNING, READ, HTTP, 42);
+	tick();
+	check(conn.fetched_result_seq == 41 && flow.phase == DTC_FLOW_READING && flow.read_seq == 0,
+	      "the new connection fetches the result the adapter has stored, of somebody else's read 41: it is not the own list, the read goes on");
+	shows_done(READ, HTTP, 42, 3);
+	tick();
+	check(flow.phase == DTC_FLOW_LIST && flow.read_seq == 42 && flow.list_count == 3, "the read that outlasted the network ends with its list");
+	at_reading();
+	conn_wifi(&conn, false, now);
+	dtc_flow_lost(&flow);
+	restarts();
+	conn_wifi(&conn, true, now);
+	tick();
+	check(failed_with("restarted"), "the adapter restarted while the display was out of the network: failed with restarted");
+
+	// The POST of the read was handed out, and its answer never came
+	check(at_read_sent() && flow.sent_ms == 8000 && !flow.posted, "the scene: the read was handed out at 8000, its POST is under way");
+	pause_begins();
+	check(flow.phase == DTC_FLOW_READ_SENT && flow.posted && flow.seq == 0 && flow.reason[0] == '\0' && nothing_to_take(),
+	      "the adapter stops answering while the POST of the read is under way: the read waits, nothing failed, and it is not handed out a second time");
+	dtc_flow_posted(&flow, 202, 44, NULL, now);
+	dtc_flow_posted(&flow, 409, 41, "busy", now);
+	check(flow.phase == DTC_FLOW_READ_SENT && flow.seq == 0, "the end of that POST, reported after all, is ignored: the states decide");
+	shows(WICAN_DTC_RUNNING, READ, HTTP, 42);
+	back();
+	check(flow.phase == DTC_FLOW_READING && flow.seq == 42 && flow.accepted_ms == 21000 && nothing_to_take(),
+	      "the adapter answers again and shows a new read from HTTP running: the read did arrive, it goes on as accepted with that number");
+	shows_done(READ, HTTP, 42, 3);
+	tick();
+	check(flow.phase == DTC_FLOW_LIST && flow.read_seq == 42 && flow.list_count == 3, "the read whose answer never came ends with its list");
+	at_read_sent();
+	pause_begins();
+	shows_done(READ, HTTP, 42, 3);
+	adapter.dtc.age_s = 9;
+	back();
+	check(flow.phase == DTC_FLOW_LIST && flow.read_seq == 42 && flow.list_end_ms == 12000, "the adapter answers again and shows the read done 9 s ago: it did arrive, its result makes the list");
+	at_read_sent();
+	pause_begins();
+	shows_error(READ, HTTP, 42, "expired");
+	back();
+	check(failed_with("expired"), "the adapter answers again and shows the read ended with an error: failed with the reason of the adapter");
+	at_read_sent();
+	pause_begins();
+	back();
+	check(flow.phase == DTC_FLOW_READ_SENT && flow.rounds_without_answer == 1 && nothing_to_take(), "the adapter answers again without a trace of the read: one state decides nothing");
+	tick();
+	check(failed_with("no_answer") && flow.read_seq == 0 && nothing_to_take(), "the second state without a trace of the read: it did not arrive - failed with no_answer, and it is not sent a second time");
+	at_read_silent();
+	tick();
+	pause_begins();
+	back();
+	check(failed_with("no_answer"), "a state without a trace of the read before the pause and one behind it are the two that decide");
+	at_read_sent();
+	pause_begins();
+	shows(WICAN_DTC_QUEUED, READ, MQTT, 42);
+	back();
+	check(failed_with("superseded"), "the adapter answers again with a new request over MQTT: somebody else got in, the own read cannot be found");
+	at_read_sent();
+	pause_begins();
+	shows(WICAN_DTC_QUEUED, CLEAR, HTTP, 42);
+	back();
+	check(failed_with("superseded"), "the adapter answers again with a new request from HTTP that is a clear: not the read that was sent");
+	at_read_sent();
+	pause_begins();
+	restarts();
+	back();
+	check(failed_with("restarted") && nothing_to_take(), "the adapter restarted while the read without an answer waited: failed with restarted");
+
+	// The time a read without an answer is given: as long as an accepted one, from the moment it went out
+	setup();
+	check(ask_read() == DTC_FLOW_ALLOWED && now == 8000, "the scene: a read asked for at 8000");
+	check(dtc_flow_take(&flow, &seq, 8700) == DTC_FLOW_SEND_READ && flow.sent_ms == 8700, "the time a read went out is the time it was taken, not the time it was asked for");
+	check(dtc_flow_take(&flow, &seq, 100000) == DTC_FLOW_SEND_NOTHING && flow.sent_ms == 8700, "a take that hands out nothing leaves that time alone");
+	dtc_flow_lost(&flow);
+	dtc_flow_silent(&flow, 0);
+	dtc_flow_silent(&flow, 188700);
+	check(flow.phase == DTC_FLOW_READ_SENT, "the adapter is still silent 180000 ms after the read went out, and at a time before that: the read still waits");
+	dtc_flow_silent(&flow, 188701);
+	check(failed_with("no_answer") && nothing_to_take(), "the adapter is still silent 180001 ms after the read went out: given up, failed with no_answer");
+	at_read_silent();
+	dtc_flow_silent(&flow, 188000);
+	check(flow.phase == DTC_FLOW_READ_SENT, "a read whose POST ended without an answer, 180000 ms after it went out: it still waits");
+	dtc_flow_silent(&flow, 188001);
+	check(failed_with("no_answer"), "a read whose POST ended without an answer, 180001 ms after it went out: given up");
+	at_read_sent();
+	dtc_flow_silent(&flow, 8000 + DAYS_49 + 5);
+	check(failed_with("no_answer"), "silent 2^32 ms after a read went out: given up, the time does not begin anew");
+	epoch = DAYS_49 - 100000;
+	check(at_read_sent() && flow.sent_ms == DAYS_49 - 92000, "the scene: a read that went out 92 s before 2^32 ms");
+	dtc_flow_silent(&flow, DAYS_49 + 88000);
+	check(flow.phase == DTC_FLOW_READ_SENT, "silent 180000 ms after a read went out shortly before 2^32 ms: it still waits");
+	dtc_flow_silent(&flow, DAYS_49 + 88001);
+	check(failed_with("no_answer"), "silent 180001 ms after a read went out shortly before 2^32 ms: given up");
+	epoch = DAYS_49 + 1000000;
+	check(at_read_sent() && flow.sent_ms == DAYS_49 + 1008000, "a read that goes out after 2^32 ms went out at that whole time");
+	dtc_flow_silent(&flow, DAYS_49 + 1188000);
+	check(flow.phase == DTC_FLOW_READ_SENT, "silent 180000 ms after a read went out behind 2^32 ms: it still waits");
+	epoch = 0;
+	check(at_clear_sent() && flow.sent_ms == 12000, "the time a clear went out is kept like that of a read, although nothing waits by it");
+	at_read_sent();
+	pause_begins();
+	shows(WICAN_DTC_QUEUED, READ, HTTP, 42);
+	dtc_flow_state(&flow, &adapter, 150000);
+	check(flow.phase == DTC_FLOW_READING && flow.accepted_ms == 150000, "a read found by a state 142 s after it went out is accepted at the time of that state");
+	dtc_flow_silent(&flow, 188001);
+	dtc_flow_silent(&flow, 330000);
+	check(flow.phase == DTC_FLOW_READING, "from there on it has the time of an accepted read: silent 180000 ms after that state, it still waits");
+	dtc_flow_silent(&flow, 330001);
+	check(failed_with("no_answer"), "silent 180001 ms after the state that found it: given up");
+
+	// A clear does not wait
+	for(i = 0; i < sizeof(clears) / sizeof(clears[0]); i++)
+	{
+		bool there = clears[i].scene();
+		bool unknown;
+
+		pause_begins();
+		unknown = flow.phase == DTC_FLOW_UNKNOWN && nothing_to_take();
+		dtc_flow_silent(&flow, now + 900000);
+		shows_done(CLEAR, HTTP, 43, 0);
+		back();
+		tick();
+		dtc_flow_posted(&flow, 202, 43, NULL, now);
+		check(there && unknown && flow.phase == DTC_FLOW_UNKNOWN && nothing_to_take() && clear_block() == DTC_FLOW_NO_LIST && ask_clear() == DTC_FLOW_NO_LIST, clears[i].what);
+	}
+	check(at_clear_waiting(), "the scene: a clear waits to be taken");
+	pause_begins();
+	check(flow.phase == DTC_FLOW_LIST && flow.read_seq == 42 && nothing_to_take(), "the adapter stops answering while the clear waits to be taken: never sent, back to the list");
+	dtc_flow_silent(&flow, now + 900000);
+	check(flow.phase == DTC_FLOW_LIST && flow.read_seq == 42 && flow.list_end_ms == 11000, "the silence of the adapter leaves that list alone, however long it lasts");
+	back();
+	tick();
+	tick();
+	check(flow.phase == DTC_FLOW_LIST && nothing_to_take(), "the adapter answers again: the clear that was taken back is not sent by itself");
+	seq = 99;
+	check(clear_block() == DTC_FLOW_ALLOWED && ask_clear() == DTC_FLOW_ALLOWED && dtc_flow_take(&flow, &seq, now) == DTC_FLOW_SEND_CLEAR && seq == 42 && nothing_to_take(),
+	      "only a new confirmation hands the clear out, once");
+	at_reading();
+	pause_begins();
+	check(ask_clear() == DTC_FLOW_NO_ADAPTER && flow.phase == DTC_FLOW_READING && nothing_to_take(), "a clear asked for while the read waits for the adapter is not taken: there is nothing it could clear");
+}
+
+// The adapter the request went to is not there any more: another one answers in its place
+static void test_gone(void)
+{
+	static const struct
+	{
+		scene_t scene;
+		dtc_flow_phase_t phase;
+		const char *reason;
+		const char *what;
+	} cases[] = {
+		{setup_idle, DTC_FLOW_IDLE, NULL, "another adapter answers while nothing was asked: idle"},
+		{at_read_waiting, DTC_FLOW_IDLE, "", "another adapter answers while the read waits to be taken: it was never sent, idle without a failure, and it is not sent"},
+		{at_read_sent, DTC_FLOW_FAILED, "no_answer", "another adapter answers while the POST of the read is under way: failed with no_answer"},
+		{at_read_silent, DTC_FLOW_FAILED, "no_answer", "another adapter answers after the POST of the read got no answer: failed with no_answer"},
+		{at_reading, DTC_FLOW_FAILED, "no_answer", "another adapter answers during the own read: failed with no_answer"},
+		{at_list_of_three, DTC_FLOW_LIST, NULL, "another adapter answers while the list is shown: the flow keeps it, the caller drops it"},
+		{at_clear_waiting, DTC_FLOW_LIST, NULL, "another adapter answers while the clear waits to be taken: it was never sent, back to the list and not unknown, and it is not sent"},
+		{at_clear_sent, DTC_FLOW_UNKNOWN, NULL, "another adapter answers while the POST of the clear is under way: unknown"},
+		{at_clear_silent, DTC_FLOW_UNKNOWN, NULL, "another adapter answers after the POST of the clear got no answer: unknown"},
+		{at_clearing, DTC_FLOW_UNKNOWN, NULL, "another adapter answers during the own clear: unknown"},
+		{at_cleared, DTC_FLOW_CLEARED, NULL, "another adapter answers while the outcome of the clear is shown: the flow keeps it, the caller drops it"},
+		{at_unknown, DTC_FLOW_UNKNOWN, NULL, "another adapter answers after a clear with unknown outcome: it stays unknown"},
+		{at_failed, DTC_FLOW_FAILED, "busy", "another adapter answers after a failure: the failure stays with its reason"},
+	};
+	size_t i;
+
+	for(i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+	{
+		bool there = cases[i].scene();
+
+		dtc_flow_gone(&flow);
+		check(there && flow.phase == cases[i].phase && (cases[i].reason == NULL || strcmp(flow.reason, cases[i].reason) == 0) && nothing_to_take(), cases[i].what);
+	}
+
+	// A read that waited for its own adapter does not wait for another one
+	at_reading();
+	pause_begins();
+	dtc_flow_gone(&flow);
+	check(failed_with("no_answer") && flow.read_seq == 0, "another adapter answers behind the pause in which the own read waited: failed with no_answer");
+	shows_done(READ, HTTP, 42, 3);
+	back();
+	tick();
+	check(failed_with("no_answer") && flow.read_seq == 0, "the result of a read that ended this way makes no list, whoever shows its number");
+	at_read_sent();
+	pause_begins();
+	dtc_flow_gone(&flow);
+	shows(WICAN_DTC_RUNNING, READ, HTTP, 42);
+	back();
+	check(failed_with("no_answer"), "another adapter answers behind the pause in which a read without an answer waited: failed, and a state with a new read is not taken for it");
+	at_clear_waiting();
+	dtc_flow_gone(&flow);
+	dtc_flow_gone(&flow);
+	check(flow.phase == DTC_FLOW_LIST && flow.read_seq == 42 && flow.list_count == 3 && flow.list_end_ms == 11000, "told twice of the other adapter: the list a clear came back to stays as it is");
+}
+
+// The silence of an adapter that is out of sight ends the wait of a read that went out, and of nothing else
+static void test_silent(void)
+{
+	static const struct
+	{
+		scene_t scene;
+		dtc_flow_phase_t phase;
+		const char *reason;
+		dtc_flow_send_t send;
+		const char *what;
+	} cases[] = {
+		{setup_idle, DTC_FLOW_IDLE, NULL, DTC_FLOW_SEND_NOTHING, "silence for 83 minutes while nothing was asked: idle"},
+		{at_read_waiting, DTC_FLOW_READ_SENT, NULL, DTC_FLOW_SEND_READ, "silence for 83 minutes while the read waits to be taken: it has no time that could be over, and is still handed out"},
+		{at_read_sent, DTC_FLOW_FAILED, "no_answer", DTC_FLOW_SEND_NOTHING, "silence for 83 minutes while the POST of the read is under way: given up, failed with no_answer"},
+		{at_read_silent, DTC_FLOW_FAILED, "no_answer", DTC_FLOW_SEND_NOTHING, "silence for 83 minutes after the POST of the read got no answer: given up, failed with no_answer"},
+		{at_reading, DTC_FLOW_FAILED, "no_answer", DTC_FLOW_SEND_NOTHING, "silence for 83 minutes during the own read: given up, failed with no_answer"},
+		{at_list_of_three, DTC_FLOW_LIST, NULL, DTC_FLOW_SEND_NOTHING, "silence for 83 minutes while the list is shown: the list stays"},
+		{at_clear_waiting, DTC_FLOW_CLEAR_SENT, NULL, DTC_FLOW_SEND_CLEAR, "silence for 83 minutes while the clear waits to be taken: nothing changes, the lost adapter takes it back and not the time"},
+		{at_clear_sent, DTC_FLOW_CLEAR_SENT, NULL, DTC_FLOW_SEND_NOTHING, "silence for 83 minutes while the POST of the clear is under way: nothing changes, a clear is no read"},
+		{at_clear_silent, DTC_FLOW_CLEAR_SENT, NULL, DTC_FLOW_SEND_NOTHING, "silence for 83 minutes after the POST of the clear got no answer: nothing changes"},
+		{at_clearing, DTC_FLOW_CLEARING, NULL, DTC_FLOW_SEND_NOTHING, "silence for 83 minutes during the own clear: nothing changes, the lost adapter makes its outcome unknown and not the time"},
+		{at_cleared, DTC_FLOW_CLEARED, NULL, DTC_FLOW_SEND_NOTHING, "silence for 83 minutes while the outcome of the clear is shown: it stays"},
+		{at_unknown, DTC_FLOW_UNKNOWN, NULL, DTC_FLOW_SEND_NOTHING, "silence for 83 minutes after a clear with unknown outcome: it stays unknown"},
+		{at_failed, DTC_FLOW_FAILED, "busy", DTC_FLOW_SEND_NOTHING, "silence for 83 minutes after a failure: the failure stays with its reason"},
+	};
+	size_t i;
+
+	for(i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+	{
+		bool there = cases[i].scene();
+		uint32_t list = flow.read_seq, codes = flow.list_count, number = flow.seq;
+		uint64_t ended = flow.list_end_ms;
+
+		dtc_flow_silent(&flow, 5000000);
+		check(there && flow.phase == cases[i].phase && (cases[i].reason == NULL || strcmp(flow.reason, cases[i].reason) == 0) && flow.read_seq == list && flow.list_count == codes &&
+		      flow.list_end_ms == ended && flow.seq == number && dtc_flow_take(&flow, NULL, now) == cases[i].send, cases[i].what);
+	}
+
+	at_reading();
+	dtc_flow_silent(&flow, UINT64_MAX);
+	check(failed_with("no_answer"), "silence at the largest time there is: the own read is given up");
+	at_clearing();
+	dtc_flow_silent(&flow, UINT64_MAX);
+	check(flow.phase == DTC_FLOW_CLEARING && flow.read_seq == 42, "silence at the largest time there is: the own clear stays what it is");
 }
 
 // A request that waits to be taken was never sent: taken back, it has done nothing
@@ -2237,6 +2674,7 @@ typedef struct
 	uint32_t before;            // number the adapter showed then
 	uint32_t number;            // of the own request once it is accepted
 	uint64_t since;             // the time it was accepted at
+	uint64_t sent;              // the time it was taken to be sent
 	int silent_states;
 	shown_t shown;
 	char why[32];
@@ -2344,6 +2782,7 @@ static dtc_flow_send_t model_take(model_t *model, uint32_t *seq, uint64_t at)
 		return DTC_FLOW_SEND_NOTHING;
 	}
 	model->stage = STAGE_POSTING;
+	model->sent = at;
 	if(send == DTC_FLOW_SEND_CLEAR) *seq = model->list_number;
 	return send;
 }
@@ -2470,12 +2909,46 @@ static void model_no_result(model_t *model)
 	if(model->own != OWN_NONE && model->stage == STAGE_ACCEPTED) model_gone(model, "no_result");
 }
 
+// The adapter is out of reach for now. A read that went out waits for it: all that changes is that nobody
+// will report the end of a POST that was under way. Of a clear that went out nothing is known from here on.
 static void model_lost(model_t *model)
 {
 	if(model->own == OWN_NONE) return;
 
-	if(model->stage == STAGE_WAITING) model_never_sent(model, true);
-	else model_gone(model, "no_answer");
+	if(model->stage == STAGE_WAITING)
+	{
+		model_never_sent(model, true);
+	}
+	else if(model->own == OWN_CLEAR)
+	{
+		model->own = OWN_NONE;
+		model->shown = SHOWN_UNKNOWN;
+	}
+	else if(model->stage == STAGE_POSTING)
+	{
+		model->stage = STAGE_SILENT;
+		model->silent_states = 0;
+	}
+}
+
+// Another adapter answers in place of the one the request went to: a read that went out does not wait for
+// that one. Everything else as for an adapter that is out of reach.
+static void model_replaced(model_t *model)
+{
+	if(model->own == OWN_READ && model->stage != STAGE_WAITING) model_failed(model, "no_answer");
+	else model_lost(model);
+}
+
+// Time passed and the adapter sent no state: a read that went out has had its time 180 s after it was
+// accepted, or - as long as nobody knows whether it arrived - 180 s after it went out
+static void model_silent(model_t *model, uint64_t at)
+{
+	uint64_t from;
+
+	if(model->own != OWN_READ || model->stage == STAGE_WAITING) return;
+
+	from = model->stage == STAGE_ACCEPTED ? model->since : model->sent;
+	if(at > from && at - from > 180000) model_failed(model, "no_answer");
 }
 
 static void model_result(model_t *model, uint32_t seq, bool clear, uint32_t count, uint32_t age_s, uint64_t at)
@@ -2656,6 +3129,9 @@ typedef struct
 	uint32_t list_boot;         // boot number the adapter showed when that read was asked for
 	uint64_t list_end;          // when that read ended: the time its result came minus the age it came with
 	bool restarted;             // a state with another boot number was seen since
+	uint64_t sent_at;           // when the last read was handed out
+	uint64_t accepted_at;       // when the flow last went from READ_SENT to READING
+	bool paused;                // the read that is under way has waited for a lost adapter
 } promises_t;
 
 // The promises of dtc_flow.h about what is offered and handed out, each watched on its own
@@ -2666,6 +3142,8 @@ typedef enum
 	PROMISE_TIME,               // no clear later than 600 s after its read ended
 	PROMISE_OFFER,              // only with the engine off, a clear also with the switch free
 	PROMISE_OUTCOME,            // a list and a "cleared" only from the result of a request that was handed out
+	PROMISE_PAUSE,              // a lost adapter ends no read that went out and leaves no clear that went out under way;
+	                            // silence ends a read that went out when its 180 s are over, and nothing else
 	PROMISES,
 } promise_t;
 
@@ -2680,6 +3158,15 @@ typedef struct
 	long reads_out, clears_out, lists, cleared, adopted, back_to_list, no_answer, restarted, superseded, refused, scan_errors, unknown;
 	long steps_back, without_seq, without_state, ignored_results, late_told, too_late, last_moment, last_moment_out;
 	long lost_unsent_reads, lost_unsent_clears, restart_unsent, waited_out_reads, waited_out_clears, no_results, old_speeds;
+	// What became of a request that went out when the adapter was lost: reads accepted and reads without an
+	// answer that waited on, clears whose outcome became unknown
+	long kept_reading, kept_sent, lost_clears;
+	long paused_lists;          // lists of reads that had waited for a lost adapter
+	long paused_found;          // reads without an answer that were found by a state after they had waited for one
+	long paused_failed;         // reads that had waited for a lost adapter and failed by what a state showed
+	long silent_reading, silent_sent;   // reads given up because the adapter stayed silent: accepted, and without an answer
+	long silent_last_ms;        // silences in the last two milliseconds of the time of a read, which left it waiting
+	long gone_reads, gone_clears;       // requests that went out and ended because another adapter answered
 } walk_result_t;
 
 // The engine as the top of dtc_flow.h asks for it: a speed below 50 that is a number, seen less than 10000 ms
@@ -2700,6 +3187,50 @@ static void walk_gone(promises_t *promise, bool restarted)
 	if(restarted) promise->restarted = true;
 	promise->read_due = false;
 	promise->clear_due = false;
+}
+
+// What dtc_flow.h says of the three calls that tell of an adapter that is not there, as far as it shows in the
+// phase and in what waits to be taken: before the call `before` and `waited`, the time of the call `at`.
+// gone: another adapter answers. silent: nothing answers, and time passed.
+static void walk_absent(promises_t *promise, walk_result_t *result, const dtc_flow_t *f, dtc_flow_phase_t before, dtc_flow_send_t waited, bool gone, bool silent, uint64_t at)
+{
+	bool read_out = (before == DTC_FLOW_READ_SENT && waited == DTC_FLOW_SEND_NOTHING) || before == DTC_FLOW_READING;
+	bool clear_out = (before == DTC_FLOW_CLEAR_SENT && waited == DTC_FLOW_SEND_NOTHING) || before == DTC_FLOW_CLEARING;
+	uint64_t from = before == DTC_FLOW_READING ? promise->accepted_at : promise->sent_at;
+	uint64_t waited_ms = at > from ? at - from : 0;
+	bool given_up = f->phase == DTC_FLOW_FAILED && strcmp(f->reason, "no_answer") == 0;
+	bool holds;
+
+	if(silent)
+	{
+		// Only the time of a read that went out can be over
+		holds = read_out && waited_ms > 180000 ? given_up : f->phase == before && f->to_send == waited;
+		if(read_out && given_up && before == DTC_FLOW_READING) result->silent_reading++;
+		if(read_out && given_up && before == DTC_FLOW_READ_SENT) result->silent_sent++;
+		if(read_out && !given_up && waited_ms >= 179999) result->silent_last_ms++;
+	}
+	else if(waited == DTC_FLOW_SEND_READ) holds = f->phase == DTC_FLOW_IDLE;
+	else if(waited == DTC_FLOW_SEND_CLEAR) holds = f->phase == DTC_FLOW_LIST;
+	else if(clear_out)
+	{
+		holds = f->phase == DTC_FLOW_UNKNOWN;
+		if(gone) result->gone_clears++;
+		else result->lost_clears++;
+	}
+	else if(read_out && gone)
+	{
+		holds = given_up;
+		result->gone_reads++;
+	}
+	else
+	{
+		// A read that went out waits on; a list, an outcome and a failure stay
+		holds = f->phase == before;
+		if(read_out && before == DTC_FLOW_READING) result->kept_reading++;
+		if(read_out && before == DTC_FLOW_READ_SENT) result->kept_sent++;
+		if(read_out) promise->paused = true;
+	}
+	if(!holds || (!silent && f->to_send != DTC_FLOW_SEND_NOTHING)) result->broken[PROMISE_PAUSE]++;
 }
 
 // A result made a list or the outcome of a clear: only for a request of that kind that was handed out
@@ -2792,6 +3323,7 @@ static bool walk(uint32_t seed, walk_result_t *result)
 		uint32_t operation = walk_random(1000);
 		uint64_t before = at;
 		dtc_flow_phase_t phase_before = f->phase;
+		dtc_flow_send_t waited_before = f->to_send;
 		shown_t shown_before = model.shown;
 		own_t own_before = model.own;
 		stage_t stage_before = model.stage;
@@ -2826,6 +3358,11 @@ static bool walk(uint32_t seed, walk_result_t *result)
 		{
 			// To the end of the time an accepted request is given
 			if(model.own != OWN_NONE && model.stage == STAGE_ACCEPTED && at < model.since + 179999) at = model.since + 179999 + walk_random(3);
+		}
+		else if(pace < 914)
+		{
+			// To the end of the time a read is given of which nobody knows whether it arrived
+			if(model.own == OWN_READ && (model.stage == STAGE_POSTING || model.stage == STAGE_SILENT) && at < model.sent + 179999) at = model.sent + 179999 + walk_random(3);
 		}
 		if(at < before) result->steps_back++;
 
@@ -2958,6 +3495,7 @@ static bool walk(uint32_t seed, walk_result_t *result)
 					dtc_flow_lost(f);
 					model_lost(&model);
 					walk_gone(&promise, false);
+					walk_absent(&promise, result, f, phase_before, waited_before, false, false, at);
 					told_lost = true;
 				}
 				else if(mishap == 2)
@@ -2981,6 +3519,8 @@ static bool walk(uint32_t seed, walk_result_t *result)
 				if(!promise.read_due) result->broken[PROMISE_ONCE]++;
 				if(with_seq && got_seq != 0) result->broken[PROMISE_LIST]++;
 				promise.read_out = true;
+				promise.sent_at = at;
+				promise.paused = false;
 				result->reads_out++;
 			}
 			else if(got == DTC_FLOW_SEND_CLEAR)
@@ -3073,6 +3613,7 @@ static bool walk(uint32_t seed, walk_result_t *result)
 			dtc_flow_lost(f);
 			walk_gone(&promise, false);
 			model_lost(&model);
+			walk_absent(&promise, result, f, phase_before, waited_before, false, false, at);
 			told_lost = true;
 			what = "lost";
 		}
@@ -3191,6 +3732,30 @@ static bool walk(uint32_t seed, walk_result_t *result)
 			if(f->phase != phase_before) result->no_results++;
 			what = "no result";
 		}
+		else if(operation < 860)
+		{
+			// Another adapter answers in place of the one the request went to
+			dtc_flow_gone(f);
+			walk_gone(&promise, false);
+			model_replaced(&model);
+			walk_absent(&promise, result, f, phase_before, waited_before, true, false, at);
+			what = "gone";
+		}
+		else if(operation < 880)
+		{
+			// The adapter is out of sight and the display looks at the time. Now and then in the last moment of
+			// a read that went out, or one millisecond later.
+			if(model.own == OWN_READ && model.stage != STAGE_WAITING && walk_random(3) == 0)
+			{
+				uint64_t from = model.stage == STAGE_ACCEPTED ? model.since : model.sent;
+
+				if(at < from + 179999) at = from + 179999 + walk_random(3);
+			}
+			dtc_flow_silent(f, at);
+			model_silent(&model, at);
+			walk_absent(&promise, result, f, phase_before, waited_before, false, true, at);
+			what = "silent";
+		}
 
 		// After every call: the same phase, the same reason of a failure, the same request waiting to be taken,
 		// the same list, the same reasons against a read and a clear, the same time left
@@ -3206,6 +3771,20 @@ static bool walk(uint32_t seed, walk_result_t *result)
 			uint64_t asked = model.list_ended + (i == 0 ? walk_random(700000) : i == 1 ? 599001 : 600000 - walk_random(2));
 
 			same = dtc_flow_seconds_left(f, asked) == model_seconds_left(&model, asked);
+		}
+
+		// The promise about a pause watches the phases of the module alone: when a read was accepted, and what
+		// became of one that had waited for a lost adapter
+		if(phase_before == DTC_FLOW_READ_SENT && f->phase == DTC_FLOW_READING)
+		{
+			promise.accepted_at = at;
+			if(promise.paused) result->paused_found++;
+		}
+		if(promise.paused && (phase_before == DTC_FLOW_READ_SENT || phase_before == DTC_FLOW_READING) && f->phase != DTC_FLOW_READ_SENT && f->phase != DTC_FLOW_READING)
+		{
+			if(f->phase == DTC_FLOW_LIST) result->paused_lists++;
+			if(f->phase == DTC_FLOW_FAILED && told_state) result->paused_failed++;
+			promise.paused = false;
 		}
 
 		result->calls++;
@@ -3303,10 +3882,10 @@ static void test_walk(void)
 	close(ends[0]);
 	alarm(0);
 
-	printf("  walk: %ld calls; promises broken: %ld once, %ld list, %ld time, %ld offer, %ld outcome; handed out %ld reads and %ld clears; %ld lists, %ld cleared, "
+	printf("  walk: %ld calls; promises broken: %ld once, %ld list, %ld time, %ld offer, %ld outcome, %ld pause; handed out %ld reads and %ld clears; %ld lists, %ld cleared, "
 	       "%ld adopted without an answer, %ld back to the list, %ld no_answer, %ld restarted, %ld superseded, %ld refused, %ld scan errors, %ld unknown\n",
 	       result.calls, result.broken[PROMISE_ONCE], result.broken[PROMISE_LIST], result.broken[PROMISE_TIME], result.broken[PROMISE_OFFER], result.broken[PROMISE_OUTCOME],
-	       result.reads_out, result.clears_out, result.lists, result.cleared, result.adopted, result.back_to_list, result.no_answer,
+	       result.broken[PROMISE_PAUSE], result.reads_out, result.clears_out, result.lists, result.cleared, result.adopted, result.back_to_list, result.no_answer,
 	       result.restarted, result.superseded, result.refused, result.scan_errors, result.unknown);
 	printf("  walk: %ld steps back, %ld takes without a place for the number, %ld states that are NULL, %ld results ignored, %ld states told late, "
 	       "%ld clears allowed in the last second of their list, %ld handed out in its last 2 ms, %ld not handed out because they waited too long\n",
@@ -3316,6 +3895,11 @@ static void test_walk(void)
 	       "given up after their time; %ld results that cannot be had; %ld reads allowed with an engine speed that is not fresh\n",
 	       result.lost_unsent_reads, result.lost_unsent_clears, result.restart_unsent, result.waited_out_reads, result.waited_out_clears, result.no_results,
 	       result.old_speeds);
+	printf("  walk: when the adapter was lost %ld accepted reads and %ld reads without an answer waited on and %ld clears became unknown; of the reads that had waited %ld made "
+	       "their list, %ld were found by a state and %ld failed by what a state showed; %ld accepted reads and %ld without an answer given up in the silence, %ld silences in "
+	       "the last 2 ms of a read; %ld reads and %ld clears ended by another adapter\n",
+	       result.kept_reading, result.kept_sent, result.lost_clears, result.paused_lists, result.paused_found, result.paused_failed, result.silent_reading, result.silent_sent,
+	       result.silent_last_ms, result.gone_reads, result.gone_clears);
 	printf("  walk: phases");
 	for(i = 0; i <= DTC_FLOW_UNKNOWN; i++)
 	{
@@ -3347,6 +3931,9 @@ static void test_walk(void)
 	check(complete && result.broken[PROMISE_TIME] == 0, "in the walk no clear is allowed or handed out later than 600000 ms after its read ended");
 	check(complete && result.broken[PROMISE_OFFER] == 0, "in the walk a read is allowed only with the engine off, a clear only with the engine off since its read ended and the switch free");
 	check(complete && result.broken[PROMISE_OUTCOME] == 0, "in the walk a list and the outcome of a clear only come from the result of a request of that kind that was handed out");
+	check(complete && result.broken[PROMISE_PAUSE] == 0,
+	      "in the walk a lost adapter ends no read that went out and leaves no clear that went out under way, another adapter ends both, silence ends a read that went out "
+	      "exactly when more than 180000 ms have passed since it was accepted or - without an answer - handed out, and none of the three hands anything out");
 	check(complete && result.reads_out > 2000 && result.clears_out > 400 && result.last_moment > 30 && result.last_moment_out > 30 && result.too_late > 30,
 	      "the walk hands out reads and clears, allows clears in the last second of a list, hands them out in its last 2 ms and withholds those that waited too long, in numbers");
 	check(complete && every_phase && every_read_block && every_clear_block, "the walk reaches every phase and every reason against a read and a clear in numbers");
@@ -3359,6 +3946,13 @@ static void test_walk(void)
 	      "the walk reaches reads and clears that are taken back before they were sent, by a lost adapter and by a restart, in numbers");
 	check(complete && result.waited_out_reads > 100 && result.waited_out_clears > 30 && result.no_results > 100 && result.old_speeds > 100,
 	      "the walk reaches requests given up after their time, results that cannot be had and reads allowed with an engine speed that is not fresh in numbers");
+	check(complete && result.kept_reading > 200 && result.kept_sent > 200 && result.lost_clears > 15 && result.gone_reads > 300 && result.gone_clears > 15,
+	      "the walk reaches accepted reads and reads without an answer that wait on when the adapter is lost, clears whose outcome becomes unknown then, and reads and clears "
+	      "that another adapter ends, in numbers");
+	check(complete && result.paused_lists > 100 && result.paused_found > 100 && result.paused_failed > 200,
+	      "the walk reaches reads that waited for a lost adapter and then made their list, were found by a state, or failed by what a state showed, in numbers");
+	check(complete && result.silent_reading > 150 && result.silent_sent > 200 && result.silent_last_ms > 400,
+	      "the walk reaches accepted reads and reads without an answer that are given up in the silence, and silences in the last 2 ms of the time of a read, in numbers");
 }
 
 int main(void)
@@ -3378,6 +3972,9 @@ int main(void)
 	test_restart();
 	test_foreign_scan();
 	test_lost();
+	test_pause();
+	test_gone();
+	test_silent();
 	test_never_sent();
 	test_wait();
 	test_no_result();

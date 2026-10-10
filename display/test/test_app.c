@@ -195,8 +195,8 @@ static void test_constants(void)
 	      "the events are twelve different bits");
 	printf("  sizeof(app_t) is %lu: poll %lu, three layouts %lu, three lists of lines %lu, layout text %lu\n", (unsigned long)sizeof(app_t),
 	       (unsigned long)sizeof(app->poll), (unsigned long)(3 * sizeof(layout_t)), (unsigned long)(3 * sizeof(app->list)), (unsigned long)sizeof(app->layout_text));
-	check(sizeof(void *) != 8 || sizeof(app_t) == 227128, "app_t has the 227128 bytes app.h names (on a 64 bit host)");
-	check(sizeof(app->poll) == 39512 && 3 * sizeof(layout_t) == 105360 && 3 * sizeof(app->list) == 62376 && sizeof(app->layout_text) == 16385,
+	check(sizeof(void *) != 8 || sizeof(app_t) == 227136, "app_t has the 227136 bytes app.h names (on a 64 bit host)");
+	check(sizeof(app->poll) == 39520 && 3 * sizeof(layout_t) == 105360 && 3 * sizeof(app->list) == 62376 && sizeof(app->layout_text) == 16385,
 	      "the large parts of app_t have the sizes app.h names: the poll, the two layouts and the room for a third, the lines of three lists, the layout text");
 }
 
@@ -4015,6 +4015,215 @@ static void test_more_failures(void)
 	check(on(NAV_DTC_FAILED) && has_line("line: Motorsteuergerät offline – Zündung an?") && has_line("ring: grey"), "the ignition goes off during the read: the failure with the reason of the adapter");
 }
 
+/* A read that outlasts a pause of the connection ---------------------------------------------------- */
+
+// Measured on the vehicle on 2026-10-10: the display asked to read, the adapter took the request with the number
+// 1687630824, scanned all 18 control units and held a result with two trouble codes - and the display, whose
+// link to the adapter dropped out in phases, had given the read up after three rounds without an answer and
+// had no list. The adapter of the first story is that one: 18 control units in 35 s, two codes.
+static void test_read_through_pause(void)
+{
+	drive();
+	wican.steps = 18;
+	wican.names = UNITS_W906;
+	wican.scan_ms = 35000;
+	wican.next_seq = 1687630824;
+	wican.memory = 2;
+	wican.read_text = NULL;
+	run_to(20000);
+	short_press();
+	short_press();
+	short_press();
+	check(phase() == DTC_FLOW_READING && app->poll.flow.seq == 1687630824 && app->poll.flow.accepted_ms == 20440 && on(NAV_DTC_BUSY),
+	      "the story of 2026-10-10: the adapter accepts the read at 20440 as number 1687630824");
+	run_to(22500);
+	check(has_line("big: 0/18") && has_line("line: Prüfe Motor …"), "the state of 22000 shows the scan at its engine check");
+	wican.dead = true;
+	run_to(37900);
+	check(view() == CONN_VIEW_SCAN && phase() == DTC_FLOW_READING && has_line("big: 0/18") && has_line("ring: none"),
+	      "the link drops out: after two rounds without an answer the connection still counts as there, and the progress shows the last state");
+	run_to(38100);
+	check(view() == CONN_VIEW_NO_ANSWER && app->poll.lost && phase() == DTC_FLOW_READING && on(NAV_DTC_BUSY) && app_busy(app),
+	      "the third round without an answer, at 38000: the connection shows no answer - and the read waits for the adapter, where it was given up on the vehicle");
+	shows("busy_paused", "the progress while the read waits: the connection is interrupted and the adapter reads on; no step of the state of 16 s ago, a red ring");
+	wican.dead = false;
+	run_to(43100);
+	check(view() == CONN_VIEW_SCAN && phase() == DTC_FLOW_READING && has_line("big: 12/18") && has_line("permille: 666") && has_line("ring: none"),
+	      "the link is back: the state of 43000 shows the scan at control unit 12 of 18, and the progress goes on");
+	wican.dead = true;
+	run_to(59100);
+	check(view() == CONN_VIEW_NO_ANSWER && phase() == DTC_FLOW_READING && wican.phase == WICAN_DTC_DONE && wican.result_seq == 1687630824 && wican.result_count == 2,
+	      "the link drops out a second time, and the adapter ends its scan of 18 control units with two trouble codes while nobody hears it");
+	shows("busy_paused", "the progress in the second pause: the same - what the display knows is that the adapter read on");
+	wican.dead = false;
+	run_to(64300);
+	check(on(NAV_DTC_LIST) && phase() == DTC_FLOW_LIST && app->poll.flow.read_seq == 1687630824 && app->summary.codes == 2 && app->poll.flow.list_end_ms == 56000 && !app_busy(app),
+	      "the link is back at 64000: the state shows the read done, its result is fetched, and the list with two trouble codes is on the screen");
+	check(sent[POLL_DTC_READ] == 1 && wican.next_seq == 1687630825 && sent[POLL_RESULT] == 1 && app->poll.http_failed == 6,
+	      "one read was sent and the adapter ran one scan; six requests got no answer on the way");
+	run_to(65100);
+	check(can_clear() && has_line("note: Löschen möglich: 9:51"), "with the values of the next round the list may be cleared, for ten minutes from the end of the scan");
+
+	// While the read waits the display is busy as during every read
+	drive();
+	run_to(20000);
+	short_press();
+	short_press();
+	short_press();
+	wican.dead = true;
+	run_to(36100);
+	check(view() == CONN_VIEW_NO_ANSWER && phase() == DTC_FLOW_READING && app_busy(app) && now == 36100, "the scene: a read accepted at 20440 waits for an adapter that fell silent");
+	long_press();
+	shows("no_answer", "a long press leaves the progress for the value pages: the adapter does not answer");
+	check(phase() == DTC_FLOW_READING && app_busy(app), "the read waits on while the value pages show");
+	short_press();
+	short_press();
+	check(on(NAV_DTC_BUSY) && has_line("line: Verbindung unterbrochen"), "while the read waits a short press on Fehlerspeicher leads to its progress, as during every read");
+	long_press();
+	short_press();
+	turn(5);
+	short_press();
+	turn(2);
+	check(has_line("row: > action | Neustart |  | disabled") && has_line("row: - action | Werkseinstellungen |  | disabled"), "while the read waits the settings show restart and factory reset as disabled");
+	short_press();
+	check(on(NAV_SETTINGS) && app->nav.row == 2 && restarts() == 0 && phase() == DTC_FLOW_READING, "while the read waits a short press on Neustart opens no dialog");
+	tap(4);
+	check(on(NAV_SETTINGS) && app->nav.row == 4 && restarts() == 0, "while the read waits a tap on Werkseinstellungen opens no dialog either");
+	wican.dead = false;
+	run_to(41300);
+	check(phase() == DTC_FLOW_LIST && app->list_lines == 7 && !app_busy(app) && on(NAV_SETTINGS), "the adapter answers again at 41000: the list is there, the display is free");
+	short_press();
+	check(on(NAV_CONFIRM) && app->nav.confirm == NAV_DO_FACTORY_RESET, "with the list there a short press on Werkseinstellungen asks again");
+
+	// The adapter does not come back: accepted at 20440, the read has its 180 s
+	drive();
+	run_to(20000);
+	short_press();
+	short_press();
+	short_press();
+	wican.dead = true;
+	run_to(21000);
+	stride = 200;
+	run_to(200600);
+	check(on(NAV_DTC_BUSY) && phase() == DTC_FLOW_READING && app_busy(app) && has_line("line: WiCAN liest weiter"),
+	      "the adapter is silent for 179.96 s after it accepted the read: the display still waits, and no idle time leaves the progress");
+	run_to(201000);
+	check(phase() == DTC_FLOW_FAILED && !app_busy(app) && sent[POLL_DTC_READ] == 1, "silent for more than 180 s after the acceptance: the read is given up");
+	shows("failed_silent", "the failure of a read whose adapter never answered again: no answer, under the red ring of the silence");
+	run_to(201200);
+	check(on(NAV_PAGES) && phase() == DTC_FLOW_FAILED && has_line("line: WiCAN antwortet nicht") && light() == 0,
+	      "nobody touched the display for 180 s: one tick later it is back on the value pages, as from every screen left alone for 120 s, and dark by the standby rule; "
+	      "the failure is kept to be looked at");
+	stride = STEP_MS;
+
+	// The adapter comes back after more than two minutes: the list is there, and the idle time of the display,
+	// which nobody touched since the read was asked for at 20440, is over. The rounds of the silent adapter go
+	// out every 14 s by then; the one of 153000 is answered.
+	drive();
+	run_to(20000);
+	short_press();
+	short_press();
+	short_press();
+	wican.dead = true;
+	run_to(21000);
+	stride = 200;
+	run_to(150000);
+	check(phase() == DTC_FLOW_READING && on(NAV_DTC_BUSY) && has_line("line: Verbindung unterbrochen"), "the scene: the read waits for 129 s for an adapter that is silent");
+	wican.dead = false;
+	run_to(153400);
+	check(on(NAV_DTC_LIST) && phase() == DTC_FLOW_LIST && app->list_lines == 7 && app->poll.flow.list_end_ms == 24000,
+	      "the adapter answers again at 153000: the list of the scan that ended 129 s before is on the screen with the next tick");
+	run_to(153600);
+	check(on(NAV_PAGES) && phase() == DTC_FLOW_LIST && app->poll.has_list && app->list_lines == 7,
+	      "nobody touched the display for more than 120 s: one tick later it is back on the value pages, as from every screen but the progress - the list is kept");
+	stride = STEP_MS;
+	short_press();
+	short_press();
+	turn(1);
+	short_press();
+	check(on(NAV_DTC_LIST) && has_line("row: > head | 3 Fehler | 3 Steuergeräte · 35 s | enabled"), "the menu leads to that list: Fehlerspeicher, Liste ansehen");
+
+	// The display leaves the network during the read, and finds it again at once
+	scene_dtc();
+	short_press();
+	run_to(3100);
+	lose_wifi();
+	check(view() == CONN_VIEW_NO_WIFI && phase() == DTC_FLOW_READING && app_busy(app) && has_line("line: Verbindung unterbrochen") && has_line("line: WiCAN liest weiter") && has_line("ring: red"),
+	      "the network is lost during the own read: the read waits, and the progress says that the connection is interrupted");
+	run(100);
+	check(view() == CONN_VIEW_SCAN && phase() == DTC_FLOW_READING && has_line("big: 0/3") && wifi.joins == 2, "the network is still there: joined again, the first state shows the scan, the progress goes on");
+	run_to(6300);
+	check(on(NAV_DTC_LIST) && phase() == DTC_FLOW_LIST && app->list_lines == 7 && sent[POLL_DTC_READ] == 1 && wican.next_seq == 43, "the read that outlasted the network ends with its list; it was sent once");
+
+	// ... and finds it again only with the scan of 20100
+	scene_dtc();
+	short_press();
+	run_to(3100);
+	wifi.in_range_count = 0;
+	lose_wifi();
+	run_to(15000);
+	check(view() == CONN_VIEW_NO_WIFI && phase() == DTC_FLOW_READING && on(NAV_DTC_BUSY) && has_line("line: Verbindung unterbrochen"), "the network is out of range for 12 s: the read waits");
+	wifi.in_range_count = 1;
+	run_to(20300);
+	check(view() == CONN_VIEW_LIVE && on(NAV_DTC_LIST) && phase() == DTC_FLOW_LIST && app->poll.flow.list_end_ms == 6100 && sent[POLL_DTC_READ] == 1,
+	      "the scan of 20100 finds the network: the first round of the new connection brings the result of the read that ended 14 s before, and the list shows");
+	scene_dtc();
+	short_press();
+	run_to(3100);
+	wifi.in_range_count = 0;
+	lose_wifi();
+	run_to(4000);
+	stride = 200;
+	run_to(182400);
+	check(phase() == DTC_FLOW_READING && on(NAV_DTC_BUSY), "out of every network for 179.86 s after the read was accepted at 2540: the read still waits");
+	run_to(183000);
+	check(on(NAV_DTC_FAILED) && phase() == DTC_FLOW_FAILED && has_line("line: Keine Antwort vom WiCAN") && has_line("ring: red"), "out of every network for more than 180 s: the read is given up, no answer");
+	stride = STEP_MS;
+
+	// The POST of the read gets no answer, and then nothing does; the adapter did take the read
+	scene_dtc();
+	wican.swallow = true;
+	short_press();
+	wican.dead = true;
+	check(phase() == DTC_FLOW_READ_SENT && app->poll.flow.posted && wican.seq == 42 && app->poll.flow.sent_ms == 2540, "the scene: the read went out at 2540, the adapter took it, its answer got lost");
+	run_to(18100);
+	check(view() == CONN_VIEW_NO_ANSWER && phase() == DTC_FLOW_READ_SENT && app_busy(app) && on(NAV_DTC_BUSY), "then the adapter falls silent: the read waits for it");
+	shows("busy_paused_sent", "the progress while a read without an answer waits: the connection is interrupted, the display waits for the answer - it does not say that the adapter reads");
+	wican.dead = false;
+	run_to(23300);
+	check(on(NAV_DTC_LIST) && phase() == DTC_FLOW_LIST && app->poll.flow.read_seq == 42 && app->list_lines == 7 && sent[POLL_DTC_READ] == 1 && wican.next_seq == 43,
+	      "the adapter answers again at 23000 and shows a read from HTTP done: it is the own one, and its list shows - one POST, one scan");
+	// ... the adapter never saw the read
+	scene_dtc();
+	wican.lose = true;
+	short_press();
+	wican.dead = true;
+	run_to(18100);
+	check(phase() == DTC_FLOW_READ_SENT && wican.seq == 0, "the scene: a read that did not arrive waits for an adapter that fell silent");
+	wican.dead = false;
+	run_to(23100);
+	check(phase() == DTC_FLOW_READ_SENT && on(NAV_DTC_BUSY) && view() == CONN_VIEW_LIVE && has_line("line: Auftrag gesendet"), "the adapter answers again without a trace of the read: one state decides nothing");
+	run_to(24300);
+	shows("failed_no_answer", "the second state without a trace of the read: it did not arrive, and failed");
+	check(sent[POLL_DTC_READ] == 1 && wican.seq == 0 && wican.next_seq == 42, "the read that did not arrive was handed out once; the adapter never saw one");
+
+	// A clear does not wait. The clear of the scene was accepted at 10600.
+	scene_clearing();
+	wican.dead = true;
+	run_to(26000);
+	check(phase() == DTC_FLOW_CLEARING && on(NAV_DTC_BUSY), "the adapter falls silent during the own clear: until the third round has failed the display waits");
+	run_to(26300);
+	check(view() == CONN_VIEW_NO_ANSWER && phase() == DTC_FLOW_UNKNOWN && on(NAV_DTC_FAILED) && has_line("title: Stand unbekannt") && !app_busy(app) && sent[POLL_DTC_CLEAR] == 1 && done.old == 1,
+	      "the third round without an answer, at 26000: the outcome of the clear is unknown at once - a clear does not wait for the adapter");
+	wican.dead = false;
+	run_to(40000);
+	check(wican.phase == WICAN_DTC_DONE && wican.clear && phase() == DTC_FLOW_UNKNOWN && on(NAV_DTC_FAILED) && sent[POLL_DTC_CLEAR] == 1 && app->cleared_lines == 0,
+	      "the adapter answers again with the clear done: the outcome stays unknown, and nothing is cleared a second time");
+	short_press();
+	check(on(NAV_DTC) && phase() == DTC_FLOW_IDLE && !can_clear() && can_read() && sent[POLL_DTC_CLEAR] == 1, "acknowledged: the user reads again before anything can be cleared");
+}
+
+/* What lies over the clear dialog -------------------------------------------------------------------- */
 /* What lies over the clear dialog -------------------------------------------------------------------- */
 
 static void test_dialog_under_question(void)
@@ -4345,11 +4554,13 @@ enum
 	PROMISE_LAYOUT,     // the choice of the layout
 	PROMISE_INFO,       // the info lines
 	PROMISE_MEMORY,     // a byte outside of the app
+	PROMISE_PAUSE,      // a read that went out was given up as unanswered although no state said so and its 180 s were not
+	                    // over, the loss of the network ended one, or it left a clear under way
 	PROMISE_HEAL,       // no way back to live values on the first page
 	PROMISES,
 };
 
-static const char *const PROMISE_NAMES[PROMISES] = {"clear", "danger", "store", "old list", "scene", "light", "wake", "world", "layout", "info", "memory", "heal"};
+static const char *const PROMISE_NAMES[PROMISES] = {"clear", "danger", "store", "old list", "scene", "light", "wake", "world", "layout", "info", "memory", "pause", "heal"};
 
 #define RESTARTS        (APP_EVENT_REBOOT | APP_EVENT_FACTORY_RESET | APP_EVENT_PREVIOUS_FIRMWARE | APP_EVENT_INSTALL_FIRMWARE)
 // The events with one cause each that the run knows before the call
@@ -4384,6 +4595,12 @@ typedef struct
 	long asks_refused;          // presses and taps on a row of the settings that asks first, while a request was under way
 	long kept[2];               // looks at the world in which the own access point is not kept, and is
 	long hotspot[2];            // short presses and taps on Hotspot that asked the link to switch it, and that did not: kept
+	long paused_steps;          // steps behind which a read that went out waited for an adapter out of sight
+	long paused_screens;        // looks at a progress screen that said so
+	long paused_lists;          // lists of reads that had waited that way
+	long silenced;              // reads given up as unanswered in a step without an answered state: their time was over
+	long lost_reads;            // losses of the network while a read that went out was under way
+	long lost_clears;           // ... while a clear of the display was under way or waited to be sent
 } run_result_t;
 
 // What the run knows by itself
@@ -4410,6 +4627,8 @@ typedef struct
 	bool hold_done;             // ... for three seconds with the reading of this step
 	int confirmed;              // clears that a hold confirmed and that were not handed out yet
 	dtc_flow_phase_t phase;     // of the flow, as last seen
+	bool paused;                // the read that is under way has waited for an adapter that was out of sight
+	uint64_t net_ms;            // the latest time the task of the network read: the one the poll counts with
 
 	// Around the call that is going on
 	uint64_t time;              // the time of the app with it
@@ -4417,6 +4636,7 @@ typedef struct
 	nav_overlay_t over;
 	bool dark;
 	bool answered;              // an answer of the adapter was applied
+	bool state_told;            // ... to a request for the state, and it was a state or a 404
 	bool input;                 // it is an input: a detent, a tap, a swipe
 	bool turned;                // ... a detent
 	nav_t twin;                 // what nav makes of that input, asked of a copy of it
@@ -4601,6 +4821,21 @@ static void follow_phase(bool by_hold)
 		m.confirmed = 0;
 		tally->withdrawn++;
 	}
+	// A read is given up as unanswered by what a state of the adapter says - two of them without a trace of it,
+	// one of another adapter - or by its time, and by nothing else: not by a network that goes, not by answers
+	// that do not come
+	if(seen == DTC_FLOW_FAILED && (m.phase == DTC_FLOW_READ_SENT || m.phase == DTC_FLOW_READING) && strcmp(app->poll.flow.reason, "no_answer") == 0)
+	{
+		uint64_t from = m.phase == DTC_FLOW_READING ? app->poll.flow.accepted_ms : app->poll.flow.sent_ms;
+
+		// By the time of the task of the network, which handed the read out and heard of its acceptance: the
+		// task of the screen may read its time 20 s late
+		if(!m.state_told && !(m.net_ms > from && m.net_ms - from > DTC_FLOW_WAIT_MS))
+		{
+			broke(PROMISE_PAUSE, "a read was given up as unanswered although no state of the adapter said so and its 180 s were not over");
+		}
+		if(!m.state_told) tally->silenced++;
+	}
 	// The clear did not arrive: nothing is stored for it any more
 	if(seen == DTC_FLOW_LIST && m.phase == DTC_FLOW_CLEAR_SENT) m.clear_out = false;
 	if(seen == DTC_FLOW_LIST && m.phase == DTC_FLOW_READING) tally->lists++;
@@ -4680,6 +4915,22 @@ static void honest(void)
 			}
 			else tally->values++;
 		}
+	}
+	// The progress says that the connection is interrupted exactly while a read waits for an adapter that is out
+	// of sight, and then shows nothing it does not know: no step, and that the adapter reads only if it accepted
+	if(on(NAV_DTC_BUSY) && shown.kind == SCENE_PROGRESS)
+	{
+		dtc_flow_phase_t flow = phase();
+		conn_view_t seen = view();
+		bool waits = (flow == DTC_FLOW_READ_SENT || flow == DTC_FLOW_READING) && (seen == CONN_VIEW_NO_WIFI || seen == CONN_VIEW_CONNECTING || seen == CONN_VIEW_NO_ANSWER);
+		bool says = shown.line_count > 0 && strcmp(shown.lines[0], "Verbindung unterbrochen") == 0;
+
+		if(says != waits) broke(PROMISE_SCENE, "the progress does not tell of the interrupted connection while a read waits for an adapter out of sight, or tells of it otherwise");
+		else if(says && (strcmp(shown.big, "…") != 0 || shown.permille != 0 || shown.line_count != 2 || strcmp(shown.lines[1], flow == DTC_FLOW_READING ? "WiCAN liest weiter" : "Warte auf Antwort") != 0))
+		{
+			broke(PROMISE_SCENE, "the progress of a read that waits shows a step, or says something else than what the display knows of it");
+		}
+		if(says) tally->paused_screens++;
 	}
 	if(poll->has_list)
 	{
@@ -4883,6 +5134,7 @@ static void before(uint64_t time)
 	m.must = 0;
 	m.events = 0;
 	m.answered = false;
+	m.state_told = false;
 	m.page = app->nav.page;
 	m.tapped = -1;
 	m.ap_on = link_ap_on(&app->link);
@@ -5086,9 +5338,30 @@ static void run_after(void)
 {
 	// The step that is over began one stride ago
 	bool ticked = (now - stride) % 200 == 0;
+	uint64_t began = now - stride;
+	uint64_t net = began > net_skew ? began - net_skew : 0;
 
+	if(net > m.net_ms) m.net_ms = net;
 	if(!on(NAV_BRIGHTNESS)) m.preview = -1;
 	behind(true, !ticked && m.knob == KNOB_NONE && m.events == 0 && !m.answered && !m.hold_done);
+
+	// A read that went out and waits for an adapter that is out of sight, and what becomes of it
+	{
+		dtc_flow_phase_t flow = phase();
+		conn_view_t seen = view();
+		bool out = (flow == DTC_FLOW_READ_SENT && app->poll.flow.to_send == DTC_FLOW_SEND_NOTHING) || flow == DTC_FLOW_READING;
+
+		if(out && (seen == CONN_VIEW_NO_WIFI || seen == CONN_VIEW_CONNECTING || seen == CONN_VIEW_NO_ANSWER))
+		{
+			m.paused = true;
+			tally->paused_steps++;
+		}
+		if(!out)
+		{
+			if(m.paused && flow == DTC_FLOW_LIST) tally->paused_lists++;
+			m.paused = false;
+		}
+	}
 
 	tally->steps++;
 	tally->screens[app->nav.screen]++;
@@ -5208,6 +5481,7 @@ static void run_answer(const poll_request_t *asked, int status, const char *body
 	if(app->link.no_answer != (seen == CONN_VIEW_NO_ANSWER || seen == CONN_VIEW_CONNECTING)) broke(PROMISE_WORLD, "the link is not told what the connection shows behind an answer");
 	if(!waited) return;
 
+	if(asked->kind == POLL_STATE && (status == 200 || status == 404)) m.state_told = true;
 	if(asked->kind == POLL_RESULT && status == 200)
 	{
 		m.result_seq = wican.result_seq;
@@ -5315,6 +5589,29 @@ static void feel(int celsius, bool valid)
 	}
 }
 
+// The network goes. By itself that ends no read that went out, and it leaves no clear of the display under way:
+// one that went out has an unknown outcome from then on, one that still waited is taken back to its list.
+static void network_goes(void)
+{
+	dtc_flow_phase_t was = phase();
+	bool waited = app->poll.flow.to_send != DTC_FLOW_SEND_NOTHING;
+	bool told = app->poll.wifi;
+
+	lose_wifi();
+	if(!told) return;
+
+	if(!waited && (was == DTC_FLOW_READ_SENT || was == DTC_FLOW_READING))
+	{
+		if(phase() != was) broke(PROMISE_PAUSE, "the loss of the network ended a read that went out");
+		tally->lost_reads++;
+	}
+	if(was == DTC_FLOW_CLEAR_SENT || was == DTC_FLOW_CLEARING)
+	{
+		if(phase() != (waited ? DTC_FLOW_LIST : DTC_FLOW_UNKNOWN)) broke(PROMISE_PAUSE, "the loss of the network left a clear under way, or made an unknown outcome of one that was never sent");
+		tally->lost_clears++;
+	}
+}
+
 // The configuration the adapter of the run started with. A real one reads it when it starts and runs it
 // until it starts again; the faults of a run also swap it under a running adapter.
 static const char *started_with;
@@ -5414,7 +5711,7 @@ static void trouble(void)
 			break;
 		case 16: wican.manual = !wican.manual; break;
 		case 17: latency_ms = 20u * (uint32_t)pick(160); break;
-		case 18: if(wifi.joined) lose_wifi(); break;
+		case 18: if(wifi.joined) network_goes(); break;
 		case 19: wifi.in_range_count = pick(4); break;
 		case 20: wifi.join_fails = !wifi.join_fails; break;
 		case 21: wifi.found = wifi.found == NULL ? "192.168.1.50" : NULL; break;
@@ -5592,6 +5889,34 @@ static void release(void)
 	}
 }
 
+// The link to the adapter drops out while the progress of a read shows, as measured on the vehicle on
+// 2026-10-10: the adapter falls silent, or its network goes out of range. Mostly for less than a minute; three
+// times in ten for longer than a read is given.
+static void link_drops_out(void)
+{
+	bool network = chance(40);
+	int seconds = 16 + pick(40);
+
+	if(chance(30)) seconds = 185 + pick(20);
+	doing = "the link drops out during the read";
+	if(network)
+	{
+		wifi.in_range_count = 0;
+		if(wifi.joined) network_goes();
+	}
+	else wican.dead = true;
+	while(now % 200 != 0) step();
+	stride = 200;
+	run(1000u * (uint32_t)seconds);
+	stride = STEP_MS;
+
+	doing = "the link is back";
+	wican.dead = false;
+	wifi.in_range_count = 3;
+	// The next round of the connection is up to 10 s away, the next scan for the network up to 30 s
+	run(1000u * (uint32_t)(2 + pick(40)));
+}
+
 // Something the user sets out to do, done the honest way
 static void intent(void)
 {
@@ -5618,6 +5943,7 @@ static void intent(void)
 				focus_on(0);
 				short_press();
 			}
+			if(on(NAV_DTC_BUSY) && (phase() == DTC_FLOW_READ_SENT || phase() == DTC_FLOW_READING) && chance(45)) link_drops_out();
 			if(chance(70)) wait_for_scan(pick(30));
 			break;
 		case 1:
@@ -5653,6 +5979,7 @@ static void intent(void)
 				focus_on(0);
 				short_press();
 			}
+			if(on(NAV_DTC_BUSY) && (phase() == DTC_FLOW_READ_SENT || phase() == DTC_FLOW_READING) && chance(25)) link_drops_out();
 			wait_for_scan(40);
 			run(1200);
 			if(on(NAV_DTC_LIST))
@@ -5673,7 +6000,8 @@ static void intent(void)
 					default: break;
 				}
 				hold_in_dialog();
-				if(phase() == DTC_FLOW_CLEAR_SENT && chance(50) && wifi.joined) lose_wifi();
+				if(phase() == DTC_FLOW_CLEAR_SENT && chance(50) && wifi.joined) network_goes();
+				else if(phase() == DTC_FLOW_CLEARING && chance(30) && wifi.joined) network_goes();
 			}
 			if(chance(75)) wait_for_scan(40);
 			if(on(NAV_DTC_CLEARED) && chance(60))
@@ -5872,7 +6200,7 @@ static void intent(void)
 					break;
 				default:
 					wifi.in_range_count = 0;
-					if(wifi.joined) lose_wifi();
+					if(wifi.joined) network_goes();
 					break;
 			}
 			home();
@@ -6143,6 +6471,8 @@ static void test_random_runs(void)
 		"in every random run the layout is the built-in one where it suits the catalogue, a generated one where it does not, and the one of the user stays whatever the catalogue does",
 		"in every random run the info lines are what the platform, the adapter and the views say at the tick",
 		"in every random run no byte outside of the app is written",
+		"in every random run a read that went out is given up as unanswered only in a step in which the adapter answered with its state, or when more than 180 s have passed "
+		"since it was accepted or handed out; the loss of the network ends no such read, makes the outcome of a clear that went out unknown and takes one back that still waited",
 		"after every random run a healthy adapter, honest inputs and time lead back to live values on the first page",
 	};
 	run_result_t result;
@@ -6208,6 +6538,9 @@ static void test_random_runs(void)
 	       "%ld taps on a question of the browser, %ld on the update question\n", result.heat_refused, result.heat_left, result.heat_presses, result.taps_on_asks, result.taps_on_updates);
 	printf("  random runs: the own access point kept on at %ld looks at the world and not kept at %ld; %ld short presses and taps on Hotspot that asked the link to switch it, "
 	       "%ld while it was kept on\n", result.kept[1], result.kept[0], result.hotspot[0], result.hotspot[1]);
+	printf("  random runs: %ld steps behind which a read that went out waited for an adapter out of sight, %ld looks at a progress that said so, %ld lists of reads that had "
+	       "waited, %ld reads given up by their time alone; the network lost %ld times during a read that went out and %ld times during a clear\n",
+	       result.paused_steps, result.paused_screens, result.paused_lists, result.silenced, result.lost_reads, result.lost_clears);
 
 	check(complete && status != -1 && WIFEXITED(status) && WEXITSTATUS(status) == 0, "24 random runs of 240 deeds each: no crash and no hang");
 	for(int i = 0; i < PROMISES; i++) check(complete && result.broken[i] == 0, promises[i]);
@@ -6235,6 +6568,9 @@ static void test_random_runs(void)
 	      "on the update question");
 	check(complete && result.kept[0] >= 5000 && result.kept[1] >= 5000 && result.hotspot[0] >= 3 && result.hotspot[1] >= 5,
 	      "the random runs look at the world with the own access point kept on and not, and press the row Hotspot in both");
+	check(complete && result.paused_steps >= 3000 && result.paused_screens >= 2000 && result.paused_lists >= 10 && result.silenced >= 2 && result.lost_reads >= 5 && result.lost_clears >= 2,
+	      "the random runs let reads wait for an adapter that is out of sight and look at their progress, let such reads end with their list and by their time alone, and lose "
+	      "the network during reads and during clears");
 }
 
 
@@ -6277,6 +6613,7 @@ int main(void)
 	test_net();
 	test_events_add_up();
 	test_more_failures();
+	test_read_through_pause();
 	test_dialog_under_question();
 	test_replaced();
 	test_real_adapter();

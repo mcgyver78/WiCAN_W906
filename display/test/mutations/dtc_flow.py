@@ -50,6 +50,7 @@ TAKE_FIRST = "\tdtc_flow_send_t send = flow->to_send;\n\n\tflow->to_send = DTC_F
 TAKE_LATE = ("\tif(send == DTC_FLOW_SEND_CLEAR && passed(now_ms, flow->list_end_ms) > DTC_FLOW_LIST_MS)\n"
              "\t{\n\t\tflow->phase = DTC_FLOW_LIST;\n\t\tsend = DTC_FLOW_SEND_NOTHING;\n\t}\n")
 TAKE_SEQ = "\tif(seq != NULL) *seq = send == DTC_FLOW_SEND_CLEAR ? flow->read_seq : 0;"
+TAKE_SENT = "\tif(send != DTC_FLOW_SEND_NOTHING) flow->sent_ms = now_ms;\n"
 
 P_MATCH = "\tif((flow->phase != DTC_FLOW_READ_SENT && flow->phase != DTC_FLOW_CLEAR_SENT) || flow->to_send != DTC_FLOW_SEND_NOTHING || flow->posted) return;"
 P_ACCEPTED = "\tif(status == 202 && seq != 0)"
@@ -83,7 +84,20 @@ R_CLEAR = "\telse if(flow->phase == DTC_FLOW_CLEARING && clear)"
 
 NO_RESULT = "\tif(accepted(flow)) give_up(flow, \"no_result\");"
 L_UNSENT = "\tif(flow->to_send != DTC_FLOW_SEND_NOTHING) withdraw(flow, true);\n"
-LOST = L_UNSENT + "\telse if(under_way(flow)) give_up(flow, \"no_answer\");"
+L_CLEAR_NOTE = "\t// Nobody can say what a clear did, and nobody may clear again on a guess: the user reads first\n"
+L_CLEAR = "\telse if(clearing(flow)) flow->phase = DTC_FLOW_UNKNOWN;\n"
+L_READ_NOTE = ("\t// A read waits for the adapter to answer again; its scan goes on without the display. The end of a POST\n"
+               "\t// that was under way will not be reported: from now on the states have to tell what became of it.\n")
+L_READ = "\telse if(flow->phase == DTC_FLOW_READ_SENT) flow->posted = true;\n"
+LOST = L_UNSENT + L_CLEAR_NOTE + L_CLEAR + L_READ_NOTE + L_READ
+G_LOST = "\tdtc_flow_lost(flow);\n"
+G_NOTE = "\t// What is left under way is a read that was taken. No state of another adapter says anything about it.\n"
+G_READ = "\tif(under_way(flow)) fail(flow, \"no_answer\");\n"
+GONE = G_LOST + G_NOTE + G_READ
+Q_ACCEPTED = "\tbool accepted_late = flow->phase == DTC_FLOW_READING && passed(now_ms, flow->accepted_ms) > DTC_FLOW_WAIT_MS;\n"
+Q_SENT = ("\tbool sent_late = flow->phase == DTC_FLOW_READ_SENT && flow->to_send == DTC_FLOW_SEND_NOTHING && "
+          "passed(now_ms, flow->sent_ms) > DTC_FLOW_WAIT_MS;\n")
+Q_FAIL = "\tif(accepted_late || sent_late) fail(flow, \"no_answer\");\n"
 DISMISS = "\tif(!under_way(flow)) drop_list(flow);"
 LEFT = "\tif(flow->phase != DTC_FLOW_LIST || age_ms >= DTC_FLOW_LIST_MS) return 0;"
 ROUNDED = "\treturn (uint32_t)((DTC_FLOW_LIST_MS - age_ms + 999) / 1000);"
@@ -275,6 +289,13 @@ MUTATIONS = [
     ("flow_number_only_with_clear", T, F, TAKE_SEQ, "\tif(seq != NULL && send == DTC_FLOW_SEND_CLEAR) *seq = flow->read_seq;"),
     ("flow_clear_with_number_of_request", T, F, TAKE_SEQ, TAKE_SEQ.replace("flow->read_seq : 0", "flow->seq : 0")),
     ("flow_clear_with_number_plus_one", T, F, TAKE_SEQ, TAKE_SEQ.replace("flow->read_seq : 0", "flow->read_seq + 1 : 0")),
+    ("flow_time_handed_out_not_kept", T, F, TAKE_SENT, ""),
+    ("flow_time_handed_out_moves_with_every_take", T, F, TAKE_SENT, "\tflow->sent_ms = now_ms;\n"),
+    ("flow_time_handed_out_only_of_a_clear", T, F, TAKE_SENT, TAKE_SENT.replace("send != DTC_FLOW_SEND_NOTHING", "send == DTC_FLOW_SEND_CLEAR")),
+    ("flow_time_handed_out_only_of_a_read", T, F, TAKE_SENT, TAKE_SENT.replace("send != DTC_FLOW_SEND_NOTHING", "send == DTC_FLOW_SEND_READ")),
+    ("flow_time_handed_out_kept_in_32_bit", T, F, TAKE_SENT, TAKE_SENT.replace("= now_ms;", "= (uint32_t)now_ms;")),
+    ("flow_time_handed_out_one_ms_early", T, F, TAKE_SENT, TAKE_SENT.replace("= now_ms;", "= now_ms > 0 ? now_ms - 1 : 0;")),
+    ("flow_time_handed_out_one_ms_late", T, F, TAKE_SENT, TAKE_SENT.replace("= now_ms;", "= now_ms + 1;")),
 
     # the answer to the POST
     ("flow_answer_in_any_phase", T, F, P_MATCH, "\tif(flow->to_send != DTC_FLOW_SEND_NOTHING || flow->posted) return;"),
@@ -496,21 +517,77 @@ MUTATIONS = [
     ("flow_seconds_left_only_after_an_answer", T, F, LEFT, LEFT.replace("flow->phase != DTC_FLOW_LIST || ", "flow->phase != DTC_FLOW_LIST || !flow->posted || ")),
     ("flow_dismiss_only_after_an_answer", T, F, DISMISS, "\tif(!under_way(flow) && (flow->posted || flow->phase != DTC_FLOW_LIST)) drop_list(flow);"),
 
-    # lost and dismissed
-    ("flow_lost_adapter_ignored", T, F, LOST, "\t(void)flow;"),
-    ("flow_lost_adapter_drops_list", T, F, LOST, LOST + "\n\telse drop_list(flow);"),
-    ("flow_lost_adapter_only_ends_accepted", T, F, LOST, LOST.replace("else if(under_way(flow))", "else if(accepted(flow))")),
-    ("flow_lost_adapter_only_ends_sent", T, F, LOST, LOST.replace("else if(under_way(flow))", "else if(flow->phase == DTC_FLOW_READ_SENT || flow->phase == DTC_FLOW_CLEAR_SENT)")),
-    ("flow_lost_reason_changed", T, F, LOST, LOST.replace("\"no_answer\"", "\"restarted\"")),
-    ("flow_lost_unsent_request_is_given_up", T, F, LOST, LOST.replace(L_UNSENT + "\telse if", "\tif")),
-    ("flow_lost_unsent_request_given_up_and_withdrawn", T, F, LOST,
-     "\tif(under_way(flow))\n\t{\n\t\tflow->to_send = DTC_FLOW_SEND_NOTHING;\n\t\tgive_up(flow, \"no_answer\");\n\t}"),
+    # lost: what waited is taken back, a clear that went out is unknown, a read that went out waits
+    ("flow_lost_adapter_ignored", T, F, LOST, "\t(void)flow;\n"),
+    ("flow_lost_adapter_drops_list", T, F, L_READ, L_READ + "\telse if(!under_way(flow)) drop_list(flow);\n"),
+    ("flow_lost_clear_sent_goes_on", T, F, L_CLEAR, L_CLEAR.replace("clearing(flow)", "flow->phase == DTC_FLOW_CLEARING")),
+    ("flow_lost_clearing_goes_on", T, F, L_CLEAR, L_CLEAR.replace("clearing(flow)", "flow->phase == DTC_FLOW_CLEAR_SENT")),
+    ("flow_lost_clear_waits_like_a_read", T, F, L_CLEAR_NOTE + L_CLEAR, ""),
+    ("flow_lost_clear_back_to_list", T, F, L_CLEAR, L_CLEAR.replace("DTC_FLOW_UNKNOWN", "DTC_FLOW_LIST")),
+    ("flow_lost_clear_is_a_failure", T, F, L_CLEAR, "\telse if(clearing(flow)) fail(flow, \"no_answer\");\n"),
+    ("flow_lost_clear_is_idle", T, F, L_CLEAR, "\telse if(clearing(flow)) drop_list(flow);\n"),
+    ("flow_lost_ends_every_read", T, F, L_READ_NOTE + L_READ, "\telse if(under_way(flow)) fail(flow, \"no_answer\");\n"),
+    ("flow_lost_ends_accepted_read", T, F, L_READ, L_READ + "\telse if(flow->phase == DTC_FLOW_READING) fail(flow, \"no_answer\");\n"),
+    ("flow_lost_ends_read_without_answer", T, F, L_READ, "\telse if(flow->phase == DTC_FLOW_READ_SENT) fail(flow, \"no_answer\");\n"),
+    ("flow_lost_ends_read_whose_post_is_under_way", T, F, L_READ,
+     "\telse if(flow->phase == DTC_FLOW_READ_SENT && !flow->posted) fail(flow, \"no_answer\");\n"),
+    ("flow_lost_read_is_unknown", T, F, L_CLEAR, L_CLEAR.replace("clearing(flow)", "under_way(flow)")),
+    ("flow_lost_read_is_idle", T, F, L_READ, L_READ + "\telse if(flow->phase == DTC_FLOW_READING) drop_list(flow);\n"),
+    ("flow_lost_post_under_way_still_expected", T, F, L_READ_NOTE + L_READ, ""),
+    ("flow_lost_forgets_states_counted", T, F, L_READ,
+     "\telse if(flow->phase == DTC_FLOW_READ_SENT)\n\t{\n\t\tflow->posted = true;\n\t\tflow->rounds_without_answer = 0;\n\t}\n"),
+    ("flow_lost_counts_as_a_state", T, F, L_READ,
+     "\telse if(flow->phase == DTC_FLOW_READ_SENT)\n\t{\n\t\tflow->posted = true;\n\t\tflow->rounds_without_answer++;\n\t}\n"),
+    ("flow_lost_accepted_read_begins_its_time_anew", T, F, L_READ, L_READ + "\telse if(flow->phase == DTC_FLOW_READING) flow->accepted_ms += DTC_FLOW_WAIT_MS;\n"),
+    ("flow_lost_unsent_request_is_given_up", T, F, L_UNSENT + L_CLEAR_NOTE + "\telse if", L_CLEAR_NOTE + "\tif"),
+    ("flow_lost_unsent_request_given_up_and_withdrawn", T, F, L_UNSENT + L_CLEAR_NOTE + "\telse if", "\tflow->to_send = DTC_FLOW_SEND_NOTHING;\n" + L_CLEAR_NOTE + "\tif"),
     ("flow_lost_unsent_clear_drops_list", T, F, L_UNSENT, L_UNSENT.replace("withdraw(flow, true)", "withdraw(flow, false)")),
     ("flow_lost_taken_request_never_sent", T, F, L_UNSENT,
      L_UNSENT.replace("flow->to_send != DTC_FLOW_SEND_NOTHING", "(flow->phase == DTC_FLOW_READ_SENT || flow->phase == DTC_FLOW_CLEAR_SENT)")),
     ("flow_lost_request_under_way_never_sent", T, F, L_UNSENT, L_UNSENT.replace("flow->to_send != DTC_FLOW_SEND_NOTHING", "!flow->posted && !accepted(flow) && under_way(flow)")),
     ("flow_lost_only_unsent_read_withdrawn", T, F, L_UNSENT, L_UNSENT.replace("!= DTC_FLOW_SEND_NOTHING", "== DTC_FLOW_SEND_READ")),
     ("flow_lost_only_unsent_clear_withdrawn", T, F, L_UNSENT, L_UNSENT.replace("!= DTC_FLOW_SEND_NOTHING", "== DTC_FLOW_SEND_CLEAR")),
+
+    # another adapter answers: as lost, and a read that went out is over
+    ("flow_gone_ignored", T, F, GONE, "\t(void)flow;\n"),
+    ("flow_gone_read_waits", T, F, G_NOTE + G_READ, ""),
+    ("flow_gone_nothing_taken_back", T, F, G_LOST, ""),
+    ("flow_gone_read_fails_before_the_rest", T, F, GONE, G_READ + G_LOST),
+    ("flow_gone_only_ends_accepted_read", T, F, G_READ, G_READ.replace("under_way(flow)", "flow->phase == DTC_FLOW_READING")),
+    ("flow_gone_only_ends_read_without_answer", T, F, G_READ, G_READ.replace("under_way(flow)", "flow->phase == DTC_FLOW_READ_SENT")),
+    ("flow_gone_reason_changed", T, F, G_READ, G_READ.replace("\"no_answer\"", "\"restarted\"")),
+    ("flow_gone_without_reason", T, F, G_READ, G_READ.replace("\"no_answer\"", "NULL")),
+    ("flow_gone_ends_list", T, F, G_READ, G_READ.replace("under_way(flow)", "under_way(flow) || flow->phase == DTC_FLOW_LIST")),
+    ("flow_gone_drops_list_and_outcome", T, F, G_READ, G_READ + "\telse if(flow->phase == DTC_FLOW_LIST || flow->phase == DTC_FLOW_CLEARED) drop_list(flow);\n"),
+    ("flow_gone_replaces_reason_of_failure", T, F, G_READ, G_READ.replace("under_way(flow)", "under_way(flow) || flow->phase == DTC_FLOW_FAILED")),
+    ("flow_gone_unknown_is_a_failure", T, F, G_READ, G_READ.replace("under_way(flow)", "under_way(flow) || flow->phase == DTC_FLOW_UNKNOWN")),
+
+    # silence: the time of a read that went out
+    ("flow_silence_ends_nothing", T, F, Q_FAIL, "\t(void)accepted_late;\n\t(void)sent_late;\n"),
+    ("flow_silence_accepted_read_waits_for_ever", T, F, Q_FAIL, "\tif(sent_late) fail(flow, \"no_answer\");\n\t(void)accepted_late;\n"),
+    ("flow_silence_read_without_answer_waits_for_ever", T, F, Q_FAIL, "\tif(accepted_late) fail(flow, \"no_answer\");\n\t(void)sent_late;\n"),
+    ("flow_silence_reason_changed", T, F, Q_FAIL, Q_FAIL.replace("\"no_answer\"", "\"superseded\"")),
+    ("flow_silence_accepted_one_ms_early", T, F, Q_ACCEPTED, Q_ACCEPTED.replace("> DTC_FLOW_WAIT_MS", ">= DTC_FLOW_WAIT_MS")),
+    ("flow_silence_accepted_one_ms_late", T, F, Q_ACCEPTED, Q_ACCEPTED.replace("> DTC_FLOW_WAIT_MS", "> DTC_FLOW_WAIT_MS + 1")),
+    ("flow_silence_accepted_from_handing_out", T, F, Q_ACCEPTED, Q_ACCEPTED.replace("flow->accepted_ms", "flow->sent_ms")),
+    ("flow_silence_accepted_has_time_of_a_list", T, F, Q_ACCEPTED, Q_ACCEPTED.replace("> DTC_FLOW_WAIT_MS", "> DTC_FLOW_LIST_MS")),
+    ("flow_silence_accepted_time_steps_back_with_the_caller", T, F, Q_ACCEPTED, Q_ACCEPTED.replace("passed(now_ms, flow->accepted_ms)", "now_ms - flow->accepted_ms")),
+    ("flow_silence_accepted_counted_in_32_bit", T, F, Q_ACCEPTED, Q_ACCEPTED.replace("passed(now_ms, flow->accepted_ms)", "(uint32_t)passed(now_ms, flow->accepted_ms)")),
+    ("flow_silence_accepted_compared_in_32_bit", T, F, Q_ACCEPTED, Q_ACCEPTED.replace("passed(now_ms, flow->accepted_ms)", "passed((uint32_t)now_ms, (uint32_t)flow->accepted_ms)")),
+    ("flow_silence_ends_accepted_clear", T, F, Q_ACCEPTED, Q_ACCEPTED.replace("flow->phase == DTC_FLOW_READING", "accepted(flow)")),
+    ("flow_silence_sent_one_ms_early", T, F, Q_SENT, Q_SENT.replace("> DTC_FLOW_WAIT_MS", ">= DTC_FLOW_WAIT_MS")),
+    ("flow_silence_sent_one_ms_late", T, F, Q_SENT, Q_SENT.replace("> DTC_FLOW_WAIT_MS", "> DTC_FLOW_WAIT_MS + 1")),
+    ("flow_silence_sent_from_acceptance", T, F, Q_SENT, Q_SENT.replace("flow->sent_ms", "flow->accepted_ms")),
+    ("flow_silence_sent_has_time_of_a_list", T, F, Q_SENT, Q_SENT.replace("> DTC_FLOW_WAIT_MS", "> DTC_FLOW_LIST_MS")),
+    ("flow_silence_sent_time_steps_back_with_the_caller", T, F, Q_SENT, Q_SENT.replace("passed(now_ms, flow->sent_ms)", "now_ms - flow->sent_ms")),
+    ("flow_silence_sent_counted_in_32_bit", T, F, Q_SENT, Q_SENT.replace("passed(now_ms, flow->sent_ms)", "(uint32_t)passed(now_ms, flow->sent_ms)")),
+    ("flow_silence_sent_compared_in_32_bit", T, F, Q_SENT, Q_SENT.replace("passed(now_ms, flow->sent_ms)", "passed((uint32_t)now_ms, (uint32_t)flow->sent_ms)")),
+    ("flow_silence_ends_clear_without_answer", T, F, Q_SENT, Q_SENT.replace("flow->phase == DTC_FLOW_READ_SENT", "(flow->phase == DTC_FLOW_READ_SENT || flow->phase == DTC_FLOW_CLEAR_SENT)")),
+    ("flow_silence_ends_read_that_waits_to_be_taken", T, F, Q_SENT, Q_SENT.replace(" && flow->to_send == DTC_FLOW_SEND_NOTHING", "")),
+    ("flow_silence_only_ends_read_whose_post_ended", T, F, Q_SENT, Q_SENT.replace("flow->to_send == DTC_FLOW_SEND_NOTHING", "flow->posted")),
+    ("flow_silence_only_ends_read_whose_post_is_under_way", T, F, Q_SENT, Q_SENT.replace("flow->to_send == DTC_FLOW_SEND_NOTHING", "flow->to_send == DTC_FLOW_SEND_NOTHING && !flow->posted")),
+
+    # dismissed
     ("flow_dismissed_while_under_way", T, F, DISMISS, "\tdrop_list(flow);"),
     ("flow_dismiss_ignored", T, F, DISMISS, "\t(void)flow;"),
     ("flow_dismiss_only_a_list", T, F, DISMISS, "\tif(flow->phase == DTC_FLOW_LIST) drop_list(flow);"),

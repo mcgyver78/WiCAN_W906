@@ -1,0 +1,8 @@
+kind: progress
+ring: red
+title: Fehlerspeicher lesen
+note:
+line: Verbindung unterbrochen
+line: WiCAN liest weiter
+big: …
+permille: 0

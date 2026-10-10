@@ -271,6 +271,16 @@ typedef struct
  *                the state names none), or "Prüfe Motor …" at step 0; permille = step * 1000 / total (0 if
  *                total is 0, at most 1000). Otherwise big "…", line 1 "Auftrag gesendet", permille 0. The
  *                last line is then always "ca. 35 s – Live-Werte pausieren".
+ *                A read that waits for an adapter that is out of sight (flow READ_SENT or READING while the
+ *                view of the connection is NO_WIFI, CONNECTING or NO_ANSWER; dtc_flow.h) shows none of that:
+ *                big "…", permille 0, line 1 "Verbindung unterbrochen", line 2 "WiCAN liest weiter" (READING:
+ *                the adapter accepted the read and scans without the display) or "Warte auf Antwort"
+ *                (READ_SENT: nobody knows yet whether the read arrived), and no third line. The state the
+ *                connection may still hold is from before the pause: its step is not shown, and "ca. 35 s"
+ *                would promise an end. A clear is shown as above in every view: it does not wait (its outcome
+ *                is unknown as soon as the adapter is out of reach, and nav_tick() leaves the screen).
+ *                The ring is that of the view, as on every screen: red without a network and without an
+ *                answer, yellow while connecting.
  * NAV_DTC_LIST   SCENE_LIST "Fehlerspeicher": the lines of `list`, then "Erneut lesen" (enabled if can_read),
  *                "Fehler löschen" (enabled if can_clear), "Zurück".
  *                note: if can_clear "Löschen möglich: 9:12" (dtc_flow_seconds_left() as minutes:seconds, two

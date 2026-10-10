@@ -215,6 +215,10 @@ MUTATIONS = [
     # a fault memory request under way
     ("app_web_under_way_not_while_a_read_waits_for_its_answer", T, F, UNDER_WAY, UNDER_WAY.replace("phase == DTC_FLOW_READ_SENT || ", "")),
     ("app_web_under_way_not_while_reading", T, F, UNDER_WAY, UNDER_WAY.replace("phase == DTC_FLOW_READING || ", "")),
+    ("app_web_under_way_not_while_a_read_waits_for_a_lost_adapter", T, F, UNDER_WAY,
+     UNDER_WAY.replace("phase == DTC_FLOW_READ_SENT || phase == DTC_FLOW_READING || ", "((phase == DTC_FLOW_READ_SENT || phase == DTC_FLOW_READING) && !app->poll.lost) || ")),
+    ("app_web_under_way_not_while_a_read_waits_without_a_network", T, F, UNDER_WAY,
+     UNDER_WAY.replace("phase == DTC_FLOW_READ_SENT || phase == DTC_FLOW_READING || ", "((phase == DTC_FLOW_READ_SENT || phase == DTC_FLOW_READING) && app->poll.wifi) || ")),
     ("app_web_under_way_not_while_a_clear_waits_for_its_answer", T, F, UNDER_WAY, UNDER_WAY.replace("phase == DTC_FLOW_CLEAR_SENT || ", "")),
     ("app_web_under_way_not_while_clearing", T, F, UNDER_WAY, UNDER_WAY.replace(" || phase == DTC_FLOW_CLEARING", "")),
     ("app_web_under_way_while_a_list_is_shown", T, F, UNDER_WAY, UNDER_WAY.replace(";", " || phase == DTC_FLOW_LIST;")),

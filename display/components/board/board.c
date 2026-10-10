@@ -12,6 +12,7 @@
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "esp_log.h"
 #include "esp_check.h"
 #include "esp_timer.h"
@@ -25,6 +26,9 @@
 #include "esp_lcd_panel_rgb.h"
 #include "esp_lcd_panel_io_additions.h"
 #include "esp_lcd_st7701.h"
+#include "esp_rom_gpio.h"
+#include "soc/lcd_periph.h"
+#include "soc/gpio_sig_map.h"
 
 /*
  * Written without the board: every call was read in the sources of ESP-IDF v5.5.2 and of the components
@@ -515,10 +519,101 @@ static esp_err_t panel_create(esp_lcd_panel_io_handle_t io, esp_lcd_panel_handle
 	return err;
 }
 
+/*
+ * EXPERIMENT of 2026-10-10 (the second), on its own branch, not for the firmware that is kept.
+ *
+ * The radio link of the board stays poor also with the weakest drive of the panel lines and with a signal
+ * of -54 dBm: 17 to 36 KB/s, pings lost. To see how good the radio gets when the panel is silent, two
+ * things are switched off by turns, two minutes each, beginning ten minutes after the start (so that an
+ * update can be confirmed on a normal screen):
+ *
+ *   phase 0   panel lines run, backlight as the display wants it      (the normal picture)
+ *   phase 1   panel lines held low, backlight as the display wants it (no picture, or a fading one)
+ *   phase 2   panel lines run, backlight off                          (dark)
+ *   phase 3   panel lines held low, backlight off                     (dark)
+ *
+ * phase = ((seconds since the start - 600) / 120) % 4, by the clock /api/info reports as "up". "Held low":
+ * the twenty lines are taken from the LCD peripheral and driven low as plain outputs; the peripheral, its
+ * interrupt and the copying out of the PSRAM run on. So a difference between phase 0 and 1 is the lines
+ * themselves, not the work behind them.
+ */
+#define EXPERIMENT_START_S  600
+#define EXPERIMENT_PHASE_S  120
+
+static SemaphoreHandle_t experiment_lock;   // the two tasks that set the backlight
+static int backlight_wanted;                // percent, as the display asked last
+static bool experiment_dark;
+
+// Under experiment_lock
+static void backlight_apply(void)
+{
+	int percent = experiment_dark ? 0 : backlight_wanted;
+
+	if(ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, (uint32_t)percent * BOARD_BACKLIGHT_DUTY_FULL / 100) != ESP_OK ||
+	   ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0) != ESP_OK)
+	{
+		ESP_LOGE(TAG, "backlight: %d %% not set", percent);
+	}
+}
+
+static void experiment_step(void)
+{
+	static const int data_pins[] = { BOARD_PANEL_DATA_PINS };
+	static int phase;
+	int64_t seconds = esp_timer_get_time() / 1000000;
+	int now = seconds < EXPERIMENT_START_S ? 0 : (int)(((seconds - EXPERIMENT_START_S) / EXPERIMENT_PHASE_S) % 4);
+	bool quiet, dark;
+
+	// Without the lock nothing is changed, and the next call (10 ms later) tries again
+	if(now == phase || experiment_lock == NULL || xSemaphoreTake(experiment_lock, 0) != pdTRUE)
+	{
+		return;
+	}
+	quiet = now == 1 || now == 3;
+	dark = now == 2 || now == 3;
+
+	if(quiet && !(phase == 1 || phase == 3))
+	{
+		// A plain output takes the line from the peripheral (gpio_set_direction() of ESP-IDF v5.5.2 sets
+		// the output matrix of the pin back), and it is driven low
+		gpio_set_direction((gpio_num_t)BOARD_PANEL_PCLK, GPIO_MODE_OUTPUT);
+		gpio_set_level((gpio_num_t)BOARD_PANEL_PCLK, 0);
+		gpio_set_direction((gpio_num_t)BOARD_PANEL_DE, GPIO_MODE_OUTPUT);
+		gpio_set_level((gpio_num_t)BOARD_PANEL_DE, 0);
+		gpio_set_direction((gpio_num_t)BOARD_PANEL_HSYNC, GPIO_MODE_OUTPUT);
+		gpio_set_level((gpio_num_t)BOARD_PANEL_HSYNC, 0);
+		gpio_set_direction((gpio_num_t)BOARD_PANEL_VSYNC, GPIO_MODE_OUTPUT);
+		gpio_set_level((gpio_num_t)BOARD_PANEL_VSYNC, 0);
+		for(size_t i = 0; i < sizeof(data_pins) / sizeof(data_pins[0]); i++)
+		{
+			gpio_set_direction((gpio_num_t)data_pins[i], GPIO_MODE_OUTPUT);
+			gpio_set_level((gpio_num_t)data_pins[i], 0);
+		}
+	}
+	if(!quiet && (phase == 1 || phase == 3))
+	{
+		// Back to the peripheral, the way its driver connected them (esp_lcd_panel_rgb.c)
+		esp_rom_gpio_connect_out_signal(BOARD_PANEL_PCLK, lcd_periph_rgb_signals.panels[0].pclk_sig, false, false);
+		esp_rom_gpio_connect_out_signal(BOARD_PANEL_DE, lcd_periph_rgb_signals.panels[0].de_sig, false, false);
+		esp_rom_gpio_connect_out_signal(BOARD_PANEL_HSYNC, lcd_periph_rgb_signals.panels[0].hsync_sig, false, false);
+		esp_rom_gpio_connect_out_signal(BOARD_PANEL_VSYNC, lcd_periph_rgb_signals.panels[0].vsync_sig, false, false);
+		for(size_t i = 0; i < sizeof(data_pins) / sizeof(data_pins[0]); i++)
+		{
+			esp_rom_gpio_connect_out_signal(data_pins[i], lcd_periph_rgb_signals.panels[0].data_sigs[i], false, false);
+		}
+	}
+	phase = now;
+	experiment_dark = dark;
+	backlight_apply();
+	xSemaphoreGive(experiment_lock);
+	ESP_LOGW(TAG, "EXPERIMENT: phase %d - panel lines %s, backlight %s", phase, quiet ? "held low" : "run", dark ? "off" : "as wanted");
+}
+
 // Only sets a flag in the driver, under its spinlock: the restart itself is done by the interrupt of the
 // next vertical blanking
 static void panel_restart_cb(void *arg)
 {
+	experiment_step();
 	esp_lcd_rgb_panel_restart(arg);
 }
 
@@ -541,6 +636,8 @@ static esp_err_t panel_restart_start(esp_lcd_panel_handle_t panel)
 	esp_timer_handle_t timer;
 	esp_err_t err;
 
+	// EXPERIMENT: before the timer can run its first step
+	experiment_lock = xSemaphoreCreateMutex();
 	ESP_RETURN_ON_ERROR(esp_timer_create(&timer_args, &timer), TAG, "panel: timer of the restart");
 	err = esp_timer_start_periodic(timer, (uint64_t)BOARD_PANEL_RESTART_MS * 1000);
 	if(err != ESP_OK)
@@ -616,6 +713,15 @@ void board_backlight(int percent)
 	{
 		percent = 100;
 	}
+	// EXPERIMENT: the wish is kept, and the experiment may hold the light off (experiment_step())
+	if(experiment_lock != NULL && xSemaphoreTake(experiment_lock, portMAX_DELAY) == pdTRUE)
+	{
+		backlight_wanted = percent;
+		backlight_apply();
+		xSemaphoreGive(experiment_lock);
+		return;
+	}
+	backlight_wanted = percent;
 	if(ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, (uint32_t)percent * BOARD_BACKLIGHT_DUTY_FULL / 100) != ESP_OK ||
 	   ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0) != ESP_OK)
 	{

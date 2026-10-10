@@ -15,6 +15,7 @@
 #include "esp_log.h"
 #include "esp_check.h"
 #include "esp_timer.h"
+#include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "driver/ledc.h"
 #include "driver/pulse_cnt.h"
@@ -480,10 +481,43 @@ static esp_err_t panel_create(esp_lcd_panel_io_handle_t io, esp_lcd_panel_handle
 	return err;
 }
 
+/*
+ * EXPERIMENT of 2026-10-10, on its own branch, not for the firmware that is kept.
+ *
+ * The radio link of the board fails at about -69 dBm, where a healthy ESP32-S3 has 20 dB to spare, and is
+ * clean two dB above that: it looks like a receiver that hears noise of the board itself. The first
+ * suspect are the twenty lines to the panel, which toggle at up to 12 MHz a few centimetres from the
+ * antenna with the strongest drive the pins have. So their drive strength alternates every two minutes
+ * between the default (GPIO_DRIVE_CAP_2, in the even two minutes since the start) and the weakest
+ * (GPIO_DRIVE_CAP_0, in the odd ones), and a PC that pings the display and reads its uptime from
+ * /api/info sees whether the losses follow. If the picture breaks in the odd minutes, the weakest drive is
+ * too weak for this panel - that is a finding as well.
+ */
+#define EXPERIMENT_PHASE_S  120
+
+static void experiment_drive(void)
+{
+	static const int pins[] = { BOARD_PANEL_DE, BOARD_PANEL_VSYNC, BOARD_PANEL_HSYNC, BOARD_PANEL_PCLK, BOARD_PANEL_DATA_PINS };
+	static int phase = -1;
+	int now = (int)((esp_timer_get_time() / 1000000 / EXPERIMENT_PHASE_S) % 2);
+
+	if(now == phase)
+	{
+		return;
+	}
+	phase = now;
+	for(size_t i = 0; i < sizeof(pins) / sizeof(pins[0]); i++)
+	{
+		gpio_set_drive_capability((gpio_num_t)pins[i], phase == 1 ? GPIO_DRIVE_CAP_0 : GPIO_DRIVE_CAP_2);
+	}
+	ESP_LOGW(TAG, "EXPERIMENT: drive of the panel lines %s", phase == 1 ? "weakest" : "default");
+}
+
 // Only sets a flag in the driver, under its spinlock: the restart itself is done by the interrupt of the
 // next vertical blanking
 static void panel_restart_cb(void *arg)
 {
+	experiment_drive();
 	esp_lcd_rgb_panel_restart(arg);
 }
 
